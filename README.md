@@ -3,9 +3,19 @@ Standalone WIFI ESP32 Moving Head Controller
 
 ---
 
-# ESP32 Pro Fixture Console (SHEHDS 160W Pro)
+![BSW moving head](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/moving_head._sm.jpg)
+
+# ESP32 Pro Fixture Console (i.e. Sheds, U'King, Fieryzeal)
 
 A highly advanced, standalone, web-based lighting console and Art-Net node built on the ESP32. Originally tailored for 18-channel moving heads (like the SHEHDS 160W Pro), this project brings professional-grade console features—such as LFO modulators, BPM synchronization, executor playbacks, and a dedicated followspot engine—into a compact, zero-install embedded web application.
+
+## Other names/brands
+* Sheds 160W Pro
+* Rudderstar 200W 3in1 LED Moving Head
+* Fieryzeal 200W LED Moving Head
+* Datewink 200W LED Moving Head
+* U'King 200W LED Moving Head 
+
 
 ## 🚀 Key Features
 
@@ -31,6 +41,8 @@ Designed for high-stress live environments, focusing on rapid access and executi
 * **Global Sync Hub:** Tap-tempo button with 8-beat sliding average and a `SYNC PHASE` button to manually hard-reset all LFO and chaser phases.
 * **Live Joystick:** A condensed Pan/Tilt XY-pad with axis inversion and instant `CENTER` recall.
 
+![Live Tab GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_1.png)
+
 ### 2. FOLLOWSPOT Tab (Tracking Mode)
 Transforms the moving head into a manually operated tracking spot with advanced physics.
 * **Tracking Joystick Engine:** Features a customizable response curve (Linear to Exponential) and adjustable maximum speed for smooth, cinematic panning.
@@ -39,10 +51,14 @@ Transforms the moving head into a manually operated tracking spot with advanced 
 * **One-Shot Auto Fade:** Triggers automated fade-ins and fade-outs with configurable durations and transition curves (Linear, Sine, Quadratic).
 * **Direct Beam Controls:** Quick access to Focus, Zoom, Color, Frost, and a dedicated `OPEN WHITE` panic button to clear all gobos/prisms instantly.
 
+![Followspot Gui](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_2.png)
+
 ### 3. PROGRAMMER Tab (Setup & FX Mode)
 The deep-dive configuration layer for building scenes and tweaking modulators.
 * **Smart DMX Labels:** Automatically translates raw integer values into human-readable strings for complex channels (e.g., rotating gobos translate `135-255` into `[FWD]`, `[STOP]`, `[REV]` with percentage speeds).
 * **Compound Dropdowns:** Merges base index selections (e.g., "Gobo 2") with continuous offset sliders (e.g., "Gobo Shake") into single UI elements.
+
+![Programmer tab GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_3.png)
 
 ---
 
@@ -65,6 +81,13 @@ The core of the console relies on an object-oriented C++ backend calculating DMX
 * **Independent Engines:** Separate chasers for the Color Wheel, Static Gobo Wheel, and Rotating Gobo Wheel.
 * **Range Selection:** Configurable start and end indexes (e.g., loop only from Color 2 to Color 5).
 * **FX Overlays:** Injectable physical DMX offsets, such as overlaying a "Shake/Wobble" effect while the chaser steps through the gobos.
+
+![FX GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_4.png)
+
+![FX GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_5.png)
+
+![FX GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_6.png)
+
 
 ---
 
