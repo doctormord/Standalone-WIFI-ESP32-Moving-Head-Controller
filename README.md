@@ -34,6 +34,15 @@ Building on the foundation of V1 (which introduced the core web UI, basic modula
 
 ---
 
+### V2 GUI
+
+![Live Tab GUI V2](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v2_1.png)
+![Follow Tab GUI V2](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v2_2.png)
+![Programmer Tab GUI V2](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v2_3.png)
+![Programmer Tab GUI V2](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v2_4.png)
+![Patch Tab GUI V2](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v2_5.png)
+
+
 ### System Architecture & Data Flow
 
 The following diagram illustrates how the web frontend, the virtual master fixture, and the dynamic patch matrix interact:
