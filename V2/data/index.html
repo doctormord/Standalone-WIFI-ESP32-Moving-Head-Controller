@@ -1,0 +1,1298 @@
+<!DOCTYPE HTML><html><head><title>PRO FIXTURE CONSOLE</title><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+body{font-family:sans-serif;text-align:center;background:#121212;color:#fff;padding:10px;margin:0;overscroll-behavior-y:contain;}
+h2{color:#00d2ff;font-size:1.4em;margin-bottom:15px;letter-spacing:2px;text-transform:uppercase;}
+.grid-wrapper{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:15px;align-items:start;text-align:left;}
+.tab-bar{display:flex;gap:5px;margin-bottom:15px;border-bottom:2px solid #333; overflow-x:auto; white-space:nowrap;}
+.tab-bar button{flex:1;padding:15px 5px;font-size:0.9em;background:#222;color:#888;border:none;border-radius:8px 8px 0 0;font-weight:bold;cursor:pointer;transition:0.2s;}
+.tab-bar button.active{background:#1e1e1e;color:#00d2ff;border-bottom:3px solid #00d2ff;}
+.tab-content{display:none;} .tab-content.active{display:block;}
+.bump-btn{font-size:1.1em;padding:25px 5px;border-radius:10px;font-weight:bold;text-transform:uppercase;border:none;cursor:pointer;touch-action:manipulation;transition:0.1s;}
+.bump-btn:active{transform:scale(0.95);opacity:0.8;}
+.grid-5{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:15px;}
+.preset-btn{background:#222;border:2px solid #333;color:#555;padding:12px 5px;font-size:1.2em;border-radius:10px;font-weight:bold;transition:0.2s;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.3;overflow:hidden;}
+.preset-btn.active{background:#007bff;border-color:#00d2ff;color:#fff;box-shadow:0 0 15px rgba(0,210,255,0.4);text-shadow:0 0 5px #fff;}
+.p-num{font-size:1.1em;}
+.p-name{font-size:0.55em;font-weight:normal;color:#aaa;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;width:100%;margin-top:4px;}
+.preset-btn.active .p-name{color:#e0e0e0;text-shadow:none;}
+.section{background:#1e1e1e;padding:15px;border-radius:10px;border:1px solid #333;}
+h3{margin-top:0;font-size:0.85em;color:#aaa;text-align:left;border-bottom:1px solid #333;padding-bottom:5px;text-transform:uppercase;}
+.slider-row{margin-bottom:15px;}
+label{font-weight:bold;font-size:0.85em;display:flex;justify-content:space-between;margin-bottom:6px;}
+.val{color:#00d2ff;}
+input[type=range]{-webkit-appearance:none;width:100%;background:#333;height:12px;border-radius:6px;outline:none;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:#00d2ff;}
+select{width:100%;padding:12px;border-radius:6px;background:#333;color:white;border:1px solid #555;font-size:0.95em;}
+optgroup{background:#222;color:#00d2ff;}
+.btn-group{display:flex;gap:8px;margin-bottom:8px;}
+button{flex:1;padding:12px;border:none;border-radius:6px;font-size:0.85em;font-weight:bold;cursor:pointer;background:#333;color:white;touch-action:manipulation;}
+.btn-active{background:#00d2ff!important;color:#000!important;}
+.btn-danger{background:#5a1010;color:white!important;}
+.btn-toggle{width:100%;padding:15px;font-size:1.1em;margin-top:10px;transition:0.2s;}
+.joy-container{width:200px;height:200px;background:#222;border-radius:50%;margin:15px auto;position:relative;border:2px solid #555;touch-action:none;background-image:radial-gradient(#444 1px,transparent 1px);background-size:20px 20px;}
+.stick{width:45px;height:45px;background:#00d2ff;border-radius:50%;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 15px rgba(0,210,255,0.5);}
+.compound-row{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;align-items:stretch;} 
+.compound-row select{width:100%;} .compound-row input{width:100%;display:none;margin-top:5px;}
+details{background:#222;border-radius:8px;margin-bottom:15px;border:1px solid #444;text-align:left;}
+summary{padding:12px;cursor:pointer;font-weight:bold;color:#00d2ff;text-align:center;}
+input[type=text],input[type=password],input[type=number]{width:100%;padding:12px;background:#333;color:white;border:1px solid #555;border-radius:6px;box-sizing:border-box;}
+
+/* 2D Mapping CSS */
+.map-container { position: relative; width: 100%; max-width: 400px; margin: 0 auto 15px auto; background: #000; border: 2px solid #444; border-radius: 8px; overflow: hidden; touch-action: none; cursor: crosshair;}
+#stageCanvas { width: 100%; height: auto; display: block; opacity: 0.7; pointer-events: none;}
+.map-marker { position: absolute; width: 30px; height: 30px; border: 2px solid #fff; border-radius: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.4); display: flex; justify-content: center; align-items: center; font-size: 12px; font-weight: bold; color: #fff; box-shadow: 0 0 10px #000; cursor: move; }
+.map-marker.active { border-color: #e83e8c; background: rgba(232, 62, 140, 0.4); box-shadow: 0 0 15px #e83e8c; z-index: 10; transform: translate(-50%, -50%) scale(1.2); }
+.map-status { padding: 10px; background: #1e1e1e; border: 1px dashed #e83e8c; border-radius: 6px; margin-bottom: 10px; font-size: 0.9em; display: none; }
+
+/* GLOBAL UNMUTE WARNING */
+.muted-warning { position: fixed; top: 15px; left: 50%; transform: translateX(-50%); background: #e83e8c; color: #fff; padding: 12px 25px; border-radius: 30px; font-weight: bold; font-size: 1.1em; z-index: 9999; box-shadow: 0 0 20px rgba(232, 62, 140, 0.8); cursor: pointer; animation: blinkWarning 1s infinite; display: none; }
+@keyframes blinkWarning { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* PATCH TABLE CSS */
+.patch-row { display: flex; flex-wrap: wrap; gap: 8px; background: #222; padding: 10px; border-radius: 6px; margin-bottom: 10px; align-items: center; border: 1px solid #444;}
+.patch-row label { font-size: 0.7em; margin: 0; align-items: center; gap: 5px;}
+.patch-row input[type=number] { width: 60px; padding: 6px; }
+.patch-row input[type=checkbox] { width: 20px; height: 20px; }
+</style>
+<script>
+  const CH_DIMMER=1, CH_STROBE=2, CH_PAN=3, CH_TILT=4, CH_SPEED=5, CH_COLOR=6;
+  const CH_GOBO=7, CH_GOBO_ROT=8, CH_GOBO_IDX=9, CH_PRISM=10, CH_PRISM_ROT=11;
+  const CH_FROST=12, CH_FOCUS=13, CH_ZOOM=14, CH_PAN_FINE=15, CH_TILT_FINE=16, CH_MACRO=17;
+
+  const COLORS=[{n:"White",v:0},{n:"W/R",v:50},{n:"Red",v:5},{n:"R/Y",v:55},{n:"Yellow",v:10},{n:"Y/B",v:60},{n:"Blue",v:15},{n:"B/G",v:65},{n:"Green",v:20},{n:"G/P",v:70},{n:"Purple",v:25},{n:"P/A",v:75},{n:"Amber",v:30},{n:"A/C",v:80},{n:"Cyan",v:35},{n:"C/E",v:85},{n:"Emerald",v:40},{n:"E/O",v:90},{n:"Orange",v:45},{n:"O/W",v:95}];
+  const SGOBOS=[{n:"White (Open)",v:0},{n:"Gobo 1",v:10},{n:"Gobo 2",v:20},{n:"Gobo 3",v:30},{n:"Gobo 4",v:40},{n:"Gobo 5",v:50},{n:"Gobo 6",v:60},{n:"Gobo 7",v:70},{n:"Gobo 8",v:80},{n:"Gobo 9",v:90}];
+  const RGOBOS=[{n:"White (Open)",v:0},{n:"Gobo 1",v:10},{n:"Gobo 2",v:20},{n:"Gobo 3",v:30},{n:"Gobo 4",v:40},{n:"Gobo 5",v:50},{n:"Gobo 6",v:60}];
+
+  const syncOpts = `<option value="0">Sync: 8 Beats</option><option value="1">Sync: 4 Beats</option><option value="2">Sync: 2 Beats</option><option value="3" selected>Sync: 1 Beat</option><option value="4">Sync: 1/2 Beat</option><option value="5">Sync: 1/4 Beat</option><option value="6">Sync: 1/8 Beat</option>`;
+
+  let pendingUpdates={},sendTimer=null,dmxState={};
+  let currentPan16=32767,currentTilt16=32767,joyPanRev=false,joyTiltRev=false;
+  let presetNamesArr = Array(10).fill(''); 
+
+  function formatRot(v) {
+    if(v < 135) return '';
+    if(v <= 180) return `[REV ${Math.round(((180-v)/45)*100)}%]`;
+    if(v <= 190) return `[STOP]`;
+    return `[FWD ${Math.round(((v-190)/65)*100)}%]`;
+  }
+
+  function syncJoySettings(src) {
+    let spd = document.getElementById(src+'JoySpd').value; 
+    let crv = document.getElementById(src+'JoyCrv').value;
+    let mom = document.getElementById(src+'JoyMom').value;
+    
+    ['l','f','p'].forEach(t => {
+      if(t !== src) {
+        if(document.getElementById(t+'JoySpd')) document.getElementById(t+'JoySpd').value = spd;
+        if(document.getElementById(t+'JoyCrv')) document.getElementById(t+'JoyCrv').value = crv;
+        if(document.getElementById(t+'JoyMom')) document.getElementById(t+'JoyMom').value = mom;
+      }
+      if(document.getElementById('v'+t+'JoySpd')) document.getElementById('v'+t+'JoySpd').innerText = spd;
+      if(document.getElementById('v'+t+'JoyCrv')) document.getElementById('v'+t+'JoyCrv').innerText = crv;
+      if(document.getElementById('v'+t+'JoyMom')) document.getElementById('v'+t+'JoyMom').innerText = mom;
+    });
+  }
+
+  function initDropdowns() {
+    document.querySelectorAll('.sync-list').forEach(s => s.innerHTML = syncOpts);
+    let cOpt=''; COLORS.forEach((c,i)=>cOpt+=`<option value="${i}">${c.n}</option>`); document.querySelectorAll('.col-list').forEach(s=>s.innerHTML=cOpt);
+    let sOpt=''; SGOBOS.forEach((g,i)=>sOpt+=`<option value="${i}">${g.n}</option>`); document.querySelectorAll('.sgob-list').forEach(s=>s.innerHTML=sOpt);
+    let rOpt=''; RGOBOS.forEach((g,i)=>rOpt+=`<option value="${i}">${g.n}</option>`); document.querySelectorAll('.rgob-list').forEach(s=>s.innerHTML=rOpt);
+    
+    if(document.getElementById('colEn')) document.getElementById('colEn').value=19; 
+    if(document.getElementById('sgobEn')) document.getElementById('sgobEn').value=9; 
+    if(document.getElementById('rgobEn')) document.getElementById('rgobEn').value=6;
+    
+    if(document.getElementById('base6')) { let h='<optgroup label="Colors">'; COLORS.forEach(c=>h+=`<option value="${c.v},0">${c.n}</option>`); h+='</optgroup><optgroup label="Rot"><option value="100,155">Rot(Slow to Fast)</option></optgroup>'; document.getElementById('base6').innerHTML=h; }
+    if(document.getElementById('base7')) { let h='<optgroup label="Gobos">'; SGOBOS.forEach(g=>h+=`<option value="${g.v},0">${g.n}</option>`); h+='</optgroup><optgroup label="Rot"><option value="100,29">Rev</option><option value="130,4">Stop</option><option value="135,75">Fwd</option><option value="211,44">Shake</option></optgroup>'; document.getElementById('base7').innerHTML=h; }
+    if(document.getElementById('base8')) { let h='<optgroup label="Gobos">'; RGOBOS.forEach(g=>h+=`<option value="${g.v},0">${g.n}</option>`); h+='</optgroup><optgroup label="Rot"><option value="70,57">Fwd</option><option value="128,1">Stop</option><option value="130,62">Rev</option><option value="193,62">Shake</option></optgroup>'; document.getElementById('base8').innerHTML=h; }
+  }
+
+  function switchTab(id,btn) { document.querySelectorAll('.tab-content,.tab-bar button').forEach(e=>e.classList.remove('active')); document.getElementById(id).classList.add('active'); btn.classList.add('active'); }
+  function sendBump(t,s) { fetch(`/bump?t=${t}&s=${s}`); }
+  function killAllFx() { fetch('/kill_fx').then(()=>syncUI()); }
+  function clearBeam() { killAllFx(); updateDMX(CH_COLOR,0); updateDMX(CH_GOBO,0); updateDMX(CH_GOBO_ROT,0); updateDMX(CH_GOBO_IDX,0); updateDMX(CH_PRISM,0); updateDMX(CH_PRISM_ROT,0); updateDMX(CH_FROST,0); }
+  function updateDimSmooth(val) { document.getElementById('vDimSm').innerText = val; fetch('/smooth?v=' + val); }
+  
+  function triggerAutoFade() {
+    let time = document.getElementById('afTime').value; let crv = document.getElementById('afCurve').value;
+    fetch(`/autofade?t=${time}&c=${crv}`);
+    setTimeout(syncUI, 100);
+  }
+
+  function unmuteOutput() {
+    fetch('/unmute').then(() => syncUI());
+    document.getElementById('globalMutedWarning').style.display = 'none';
+  }
+
+  function updateSlotInput() {
+    let sel = document.getElementById('slotSel');
+    if(sel) document.getElementById('slotName').value = presetNamesArr[sel.value - 1] || "";
+  }
+
+  let tapTimes=[];
+  function tapTempo() {
+    let now=Date.now(); if(tapTimes.length>0 && now-tapTimes[tapTimes.length-1]>2000) tapTimes=[]; tapTimes.push(now); if(tapTimes.length>8) tapTimes.shift(); 
+    if(tapTimes.length>1){ let d=[]; for(let i=1;i<tapTimes.length;i++) d.push(tapTimes[i]-tapTimes[i-1]); let avg=d.reduce((a,b)=>a+b)/d.length; let bpm=Math.round(60000/avg); document.querySelectorAll('.bpm-disp').forEach(e=>e.innerText=bpm); fetch(`/bpm?v=${bpm}`); } else { fetch('/beat'); }
+  }
+  function hardSync() { fetch('/sync'); }
+
+  let audioCtx,analyser,dataArr,audioSync=false,lastBeat=0;
+  async function toggleAudio() {
+    if(!audioSync) {
+      try {
+        const stream=await navigator.mediaDevices.getUserMedia({audio:true}); audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+        const src=audioCtx.createMediaStreamSource(stream); analyser=audioCtx.createAnalyser(); analyser.fftSize=256; src.connect(analyser);
+        dataArr=new Uint8Array(analyser.frequencyBinCount); audioSync=true; document.querySelectorAll('.btn-mic').forEach(b=>b.style.background="#e83e8c"); detectBeat();
+      } catch(e){alert("Mic error/HTTPS needed");}
+    } else { audioSync=false; audioCtx.close(); document.querySelectorAll('.btn-mic').forEach(b=>b.style.background="#28a745"); }
+  }
+  function detectBeat() {
+    if(!audioSync) return; requestAnimationFrame(detectBeat); analyser.getByteFrequencyData(dataArr);
+    if(((dataArr[1]+dataArr[2]+dataArr[3])/3)>210 && Date.now()-lastBeat>350) { lastBeat=Date.now(); fetch('/beat'); document.querySelectorAll('.btn-mic').forEach(b=>{b.style.background="#fff"; setTimeout(()=>b.style.background="#e83e8c",100);}); }
+  }
+
+  setInterval(async()=>{ 
+    if(document.visibilityState!=='visible') return; 
+    try{
+      const r=await fetch('/api/state');const d=await r.json();
+      document.querySelectorAll('.bpm-disp').forEach(e=>e.innerText=d.bpm);
+      document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
+      if(d.pr>0){let pb=document.getElementById('pre'+d.pr);if(pb)pb.classList.add('active');} 
+      if(d.pn){
+        presetNamesArr = d.pn;
+        d.pn.forEach((n,i)=>{
+          let el=document.getElementById('pn'+(i+1)); if(el) el.innerText=n;
+          let opt=document.querySelector(`#slotSel option[value="${i+1}"]`); if(opt) opt.innerText = (i+1)+": "+(n||"Empty");
+        });
+      } 
+      setToggleBtn(d.chA===1,'btnChaToggleL','SHOW','#ffc107');setToggleBtn(d.chA===1,'btnChaToggle','SHOW','#ffc107');
+      
+      let fadeBtn = document.getElementById('btnAutoFade');
+      if(fadeBtn) {
+        if(d.fO === 1) { 
+            fadeBtn.innerText = "FADE IN (TO SLIDER)"; fadeBtn.style.background = "#28a745"; 
+            document.getElementById('globalMutedWarning').style.display = 'block'; 
+        } else { 
+            fadeBtn.innerText = "FADE OUT (TO BLACK)"; fadeBtn.style.background = "#5a1010"; 
+            document.getElementById('globalMutedWarning').style.display = 'none'; 
+        }
+      }
+    }catch(e){} 
+  }, 500);
+
+  function toggleJoyRev(a) { if(a==='pan'){joyPanRev=!joyPanRev;document.querySelectorAll('.btn-pan-rev').forEach(b=>b.className='btn-pan-rev '+(joyPanRev?'btn-active':''));}else{joyTiltRev=!joyTiltRev;document.querySelectorAll('.btn-tilt-rev').forEach(b=>b.className='btn-tilt-rev '+(joyTiltRev?'btn-active':''));} }
+  function resetCenter() { currentPan16=32767; currentTilt16=32767; updateDMX(CH_PAN,127); updateDMX(CH_PAN_FINE,255); updateDMX(CH_TILT,127); updateDMX(CH_TILT_FINE,255); document.querySelectorAll('.stick').forEach(s=>{s.style.left='50%';s.style.top='50%';}); }
+  function toggleEffect(ch,selector) { let newVal=(dmxState[ch]||0)>127?0:255; updateDMX(ch,newVal); document.querySelectorAll(selector).forEach(b=>b.classList.toggle('btn-active',newVal>127)); }
+  
+  function updateDMX(ch,val) { 
+    val=Math.round(val); if(dmxState[ch]===val) return; dmxState[ch]=val; 
+    document.querySelectorAll(".v"+ch).forEach(e=>{ e.innerText = (ch===CH_GOBO_IDX || ch===CH_PRISM_ROT) && val>=135 ? val + " " + formatRot(val) : val; });
+    document.querySelectorAll(".in"+ch).forEach(e=>e.value=val);
+    pendingUpdates[ch]=val; if(!sendTimer) sendTimer=setTimeout(sendBatch,40); 
+  }
+  
+  async function sendBatch() { sendTimer=null; const k=Object.keys(pendingUpdates); if(k.length===0) return; const p=new URLSearchParams(); k.forEach(x=>p.append("c"+x,pendingUpdates[x])); pendingUpdates={}; try{await fetch(`/set_all?${p.toString()}`);}catch(e){} }
+  function updateCompound(ch,bc,id) { const sel=document.getElementById(id), sld=document.getElementById('off'+ch); if(!sel||!sld) return; const p=sel.value.split(','); const b=parseInt(p[0]), m=parseInt(p[1]); if(bc){sld.max=m;if(parseInt(sld.value)>m)sld.value=m;sld.style.display=m>0?'block':'none';} updateDMX(ch,Math.min(255,b+(m>0?parseInt(sld.value):0))); }
+  function setToggleBtn(st,id,lbl,col) { const b=document.getElementById(id); if(!b)return; if(st){b.innerText="STOP "+lbl;b.style.background=col;b.style.color="#000";}else{b.innerText="START "+lbl;b.style.background="#28a745";b.style.color="#fff";} }
+
+  async function syncUI() {
+    const r=await fetch('/api/get_dmx'); const d=await r.json(); currentPan16=d.cp; currentTilt16=d.ct; document.querySelectorAll('.bpm-disp').forEach(e=>e.innerText=d.bpm);
+    document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active')); if(d.pr>0){let p=document.getElementById('pre'+d.pr);if(p)p.classList.add('active');}
+    
+    if(d.pn){
+      presetNamesArr = d.pn;
+      d.pn.forEach((n,i)=>{
+        let el=document.getElementById('pn'+(i+1)); if(el)el.innerText=n;
+        let opt=document.querySelector(`#slotSel option[value="${i+1}"]`); if(opt) opt.innerText = (i+1)+": "+(n||"Empty");
+      });
+    }
+    
+    if(d.dSm!==undefined) { if(document.getElementById('dimSm')) document.getElementById('dimSm').value=d.dSm; if(document.getElementById('vDimSm')) document.getElementById('vDimSm').innerText=d.dSm; }
+    
+    if(d.fO === 1) document.getElementById('globalMutedWarning').style.display = 'block';
+    else document.getElementById('globalMutedWarning').style.display = 'none';
+
+    for(let i=1;i<=18;i++){ 
+      const v=d[i]; dmxState[i]=v; 
+      document.querySelectorAll(".v"+i).forEach(e=>{ e.innerText = (i===CH_GOBO_IDX || i===CH_PRISM_ROT) && v>=135 ? v + " " + formatRot(v) : v; });
+      document.querySelectorAll(".in"+i).forEach(e=>e.value=v);
+      if(i===CH_PRISM) document.querySelectorAll('.btn-prism').forEach(b=>b.classList.toggle('btn-active',v>127)); 
+      if(i===CH_FROST) document.querySelectorAll('.btn-frost').forEach(b=>b.classList.toggle('btn-active',v>127)); 
+      if(i===CH_COLOR) { let cv=COLORS.find(x=>x.v===v); if(cv) document.querySelectorAll('.col-list').forEach(s=>s.value=COLORS.indexOf(cv)); }
+      const bs=document.getElementById("base"+i); if(bs){ for(let opt of bs.options){ let p=opt.value.split(',');let b=parseInt(p[0]),rg=parseInt(p[1]); if(v>=b&&v<=b+rg){ bs.value=opt.value;const sld=document.getElementById("off"+i); if(sld){sld.max=rg;sld.value=v-b;sld.style.display=rg>0?'block':'none';}break; } } } 
+    }
+
+    if(d.fA!==undefined){
+      if(document.getElementById('fxType')) document.getElementById('fxType').value=d.fT;
+      if(document.getElementById('fxRot')) document.getElementById('fxRot').value=d.fR;
+      if(document.getElementById('fxTr')) document.getElementById('fxTr').value=d.fTr;
+      if(document.getElementById('fxSy')) document.getElementById('fxSy').value=d.fSy;
+      if(document.getElementById('fxSS')) document.getElementById('fxSS').value=d.fSS;
+      if(document.getElementById('fxSE')) document.getElementById('fxSE').value=d.fSE;
+      if(document.getElementById('fxZS')) document.getElementById('fxZS').value=d.fZS;
+      if(document.getElementById('fxZE')) document.getElementById('fxZE').value=d.fZE;
+      if(document.getElementById('fxMM')) document.getElementById('fxMM').value=d.fMM;
+      if(document.getElementById('fxMC')) document.getElementById('fxMC').value=d.fMC;
+      if(document.getElementById('fxMS')) document.getElementById('fxMS').value=d.fMS;
+      updateFxUI(false); setToggleBtn(d.fA,'btnFxToggle','MOVEMENT FX','#17a2b8');
+      
+      if(document.getElementById('dimSt')) document.getElementById('dimSt').value=d.dSt;
+      if(document.getElementById('dimEn')) document.getElementById('dimEn').value=d.dEn;
+      if(document.getElementById('dimMo')) document.getElementById('dimMo').value=d.dMo;
+      if(document.getElementById('dimCu')) document.getElementById('dimCu').value=d.dCu;
+      if(document.getElementById('dimSp')) document.getElementById('dimSp').value=d.dSp;
+      if(document.getElementById('dimTr')) document.getElementById('dimTr').value=d.dTr;
+      if(document.getElementById('dimSy')) document.getElementById('dimSy').value=d.dSy;
+      updateModUI('dim',false); setToggleBtn(d.dA,'btnDimToggle','DIMMER FX','#e83e8c');
+
+      if(document.getElementById('grSt')) document.getElementById('grSt').value=d.grSt;
+      if(document.getElementById('grEn')) document.getElementById('grEn').value=d.grEn;
+      if(document.getElementById('grMo')) document.getElementById('grMo').value=d.grMo;
+      if(document.getElementById('grCu')) document.getElementById('grCu').value=d.grCu;
+      if(document.getElementById('grSp')) document.getElementById('grSp').value=d.grSp;
+      if(document.getElementById('grTr')) document.getElementById('grTr').value=d.grTr;
+      if(document.getElementById('grSy')) document.getElementById('grSy').value=d.grSy;
+      updateModUI('gr',false); setToggleBtn(d.grA,'btnGRotToggle','GOBO ROT FX','#6f42c1');
+
+      if(document.getElementById('prSt')) document.getElementById('prSt').value=d.prSt;
+      if(document.getElementById('prEn')) document.getElementById('prEn').value=d.prEn;
+      if(document.getElementById('prMo')) document.getElementById('prMo').value=d.prMo;
+      if(document.getElementById('prCu')) document.getElementById('prCu').value=d.prCu;
+      if(document.getElementById('prSp')) document.getElementById('prSp').value=d.prSp;
+      if(document.getElementById('prTr')) document.getElementById('prTr').value=d.prTr;
+      if(document.getElementById('prSy')) document.getElementById('prSy').value=d.prSy;
+      updateModUI('pr',false); setToggleBtn(d.prA,'btnPRotToggle','PRISM ROT FX','#6f42c1');
+      
+      if(document.getElementById('colSt')) document.getElementById('colSt').value=d.cSt;
+      if(document.getElementById('colEn')) document.getElementById('colEn').value=d.cEn;
+      if(document.getElementById('colHo')) document.getElementById('colHo').value=d.cHo;
+      if(document.getElementById('colTr')) document.getElementById('colTr').value=d.cTr;
+      if(document.getElementById('colSy')) document.getElementById('colSy').value=d.cSy;
+      updateColFxUI(false); setToggleBtn(d.cA,'btnColToggle','COLOR CHASER','#fd7e14');
+
+      if(document.getElementById('sgobSt')) document.getElementById('sgobSt').value=d.sgSt;
+      if(document.getElementById('sgobEn')) document.getElementById('sgobEn').value=d.sgEn;
+      if(document.getElementById('sgobHo')) document.getElementById('sgobHo').value=d.sgHo;
+      if(document.getElementById('sgobTr')) document.getElementById('sgobTr').value=d.sgTr;
+      if(document.getElementById('sgobSy')) document.getElementById('sgobSy').value=d.sgSy;
+      if(document.getElementById('sgobSc')) document.getElementById('sgobSc').value=d.sgSc;
+      updateSGobFxUI(false); setToggleBtn(d.sgA,'btnSGobToggle','STATIC GOBO CHASER','#20c997');
+
+      if(document.getElementById('rgobSt')) document.getElementById('rgobSt').value=d.rgSt;
+      if(document.getElementById('rgobEn')) document.getElementById('rgobEn').value=d.rgEn;
+      if(document.getElementById('rgobHo')) document.getElementById('rgobHo').value=d.rgHo;
+      if(document.getElementById('rgobTr')) document.getElementById('rgobTr').value=d.rgTr;
+      if(document.getElementById('rgobSy')) document.getElementById('rgobSy').value=d.rgSy;
+      if(document.getElementById('rgobSc')) document.getElementById('rgobSc').value=d.rgSc;
+      updateRGobFxUI(false); setToggleBtn(d.rgA,'btnRGobToggle','ROTATING GOBO CHASER','#20c997');
+      
+      if(document.getElementById('cStSlot')) document.getElementById('cStSlot').value=d.chSS;
+      if(document.getElementById('cEnSlot')) document.getElementById('cEnSlot').value=d.chES;
+      if(document.getElementById('cFade')) document.getElementById('cFade').value=d.chF;
+      if(document.getElementById('cHold')) document.getElementById('cHold').value=d.chH;
+      if(document.getElementById('chaTr')) document.getElementById('chaTr').value=d.chTr;
+      if(document.getElementById('chaSy')) document.getElementById('chaSy').value=d.chSy;
+      if(document.getElementById('chaOrd')) document.getElementById('chaOrd').value=d.chOrd;
+      if(document.getElementById('chaFTr')) document.getElementById('chaFTr').value=d.chFTr || 0;
+      if(document.getElementById('chaFSy')) document.getElementById('chaFSy').value=d.chFSy || 3;
+      updateChaserUI(false); updateChaserUIL(false); setToggleBtn(d.chA,'btnChaToggle','SHOW','#ffc107'); setToggleBtn(d.chA,'btnChaToggleL','SHOW','#ffc107');
+
+      if(d.pr > 0) {
+        if(document.getElementById('slotSel')) document.getElementById('slotSel').value = d.pr;
+      }
+      updateSlotInput();
+    }
+  }
+
+  function sceneAction(act) { 
+    const s=document.getElementById("slotSel").value; 
+    const n=document.getElementById("slotName").value;
+    if(act==='save') {
+      if(confirm('SAVE to Preset '+s+'?')) fetch(`/save?slot=${s}&n=${encodeURIComponent(n)}`).then(()=>alert("Saved!")); 
+    } else {
+      recallPreset(s);
+    }
+  }
+  function recallPreset(s) { fetch(`/recall?slot=${s}`).then(()=>syncUI()); }
+
+  function updateFxUI(t=true) {
+    if(document.getElementById('vFxRot')) document.getElementById('vFxRot').innerText=document.getElementById('fxRot').value; 
+    if(document.getElementById('vFxSS')) document.getElementById('vFxSS').innerText=document.getElementById('fxSS').value; 
+    if(document.getElementById('vFxSE')) document.getElementById('vFxSE').innerText=document.getElementById('fxSE').value; 
+    if(document.getElementById('vFxZS')) document.getElementById('vFxZS').innerText=document.getElementById('fxZS').value; 
+    if(document.getElementById('vFxZE')) document.getElementById('vFxZE').innerText=document.getElementById('fxZE').value; 
+    if(document.getElementById('vFxMS')) document.getElementById('vFxMS').innerText=document.getElementById('fxMS').value;
+    if(document.getElementById('fxTr') && document.getElementById('fxTr').value=="1") { document.getElementById('fxSpdContainer').style.display='none'; document.getElementById('fxSyContainer').style.display='block'; } 
+    else if(document.getElementById('fxTr')) { document.getElementById('fxSpdContainer').style.display='block'; document.getElementById('fxSyContainer').style.display='none'; }
+    if(t&&document.getElementById('btnFxToggle') && document.getElementById('btnFxToggle').innerText.includes("STOP")) toggleFx(1); 
+  }
+  
+  function toggleFx(fs=-1) {
+    let s=fs===-1?(document.getElementById('btnFxToggle').innerText.includes("START")?1:0):fs; setToggleBtn(s,'btnFxToggle','MOVEMENT FX','#17a2b8');
+    let t=document.getElementById('fxType').value,r=document.getElementById('fxRot').value,ss=document.getElementById('fxSS').value,se=document.getElementById('fxSE').value,zs=document.getElementById('fxZS').value,ze=document.getElementById('fxZE').value,mm=document.getElementById('fxMM').value,mc=document.getElementById('fxMC').value,ms=document.getElementById('fxMS').value,tr=document.getElementById('fxTr').value,sy=document.getElementById('fxSy').value;
+    fetch(`/fx?a=${s}&t=${t}&r=${r}&ss=${ss}&se=${se}&zs=${zs}&ze=${ze}&mm=${mm}&mc=${mc}&ms=${ms}&tr=${tr}&sy=${sy}`);
+    
+    if(s === 0) {
+      updateDMX(3, currentPan16 >> 8); updateDMX(15, currentPan16 & 0xFF);
+      updateDMX(4, currentTilt16 >> 8); updateDMX(16, currentTilt16 & 0xFF);
+    }
+  }
+
+  function updateModUI(p,t=true) {
+    if(!document.getElementById(p+'St')) return;
+    let st = parseInt(document.getElementById(p+'St').value); let en = parseInt(document.getElementById(p+'En').value);
+    document.getElementById('v'+p+'St').innerText = (p==='gr'||p==='pr') && st>=135 ? st + ' ' + formatRot(st) : st;
+    document.getElementById('v'+p+'En').innerText = (p==='gr'||p==='pr') && en>=135 ? en + ' ' + formatRot(en) : en;
+    document.getElementById('v'+p+'Sp').innerText=document.getElementById(p+'Sp').value;
+    if(document.getElementById(p+'Tr').value=="1"){document.getElementById(p+'SpContainer').style.display='none';document.getElementById(p+'SyContainer').style.display='block';} 
+    else {document.getElementById(p+'SpContainer').style.display='block';document.getElementById(p+'SyContainer').style.display='none';}
+    if(t){if(p==='dim'&&document.getElementById('btnDimToggle')&&document.getElementById('btnDimToggle').innerText.includes("STOP")) toggleModFx('dim',1); if(p==='gr'&&document.getElementById('btnGRotToggle')&&document.getElementById('btnGRotToggle').innerText.includes("STOP")) toggleModFx('gr',1); if(p==='pr'&&document.getElementById('btnPRotToggle')&&document.getElementById('btnPRotToggle').innerText.includes("STOP")) toggleModFx('pr',1); } 
+  }
+  
+  function toggleModFx(p,fs=-1) {
+    let bId=p==='dim'?'btnDimToggle':(p==='gr'?'btnGRotToggle':'btnPRotToggle'), lbl=p==='dim'?'DIMMER FX':(p==='gr'?'GOBO ROT FX':'PRISM ROT FX'), col=p==='dim'?'#e83e8c':'#6f42c1';
+    let s=fs===-1?(document.getElementById(bId).innerText.includes("START")?1:0):fs; setToggleBtn(s,bId,lbl,col);
+    let st=document.getElementById(p+'St').value,en=document.getElementById(p+'En').value,sp=document.getElementById(p+'Sp').value,mo=document.getElementById(p+'Mo').value,cu=document.getElementById(p+'Cu').value,tr=document.getElementById(p+'Tr').value,sy=document.getElementById(p+'Sy').value;
+    fetch(`/modfx?pfx=${p}&a=${s}&st=${st}&en=${en}&sp=${sp}&mo=${mo}&cu=${cu}&tr=${tr}&sy=${sy}`);
+    
+    if(s === 0) {
+        if(p === 'dim') updateDMX(1, document.querySelector('.in1').value);
+        if(p === 'gr') updateCompound(9, false, 'base9');
+        if(p === 'pr') updateCompound(11, false, 'base11');
+    }
+  }
+
+  function updateColFxUI(t=true) { if(!document.getElementById('colHo'))return; document.getElementById('vColHo').innerText=document.getElementById('colHo').value; if(document.getElementById('colTr').value=="1"){document.getElementById('colHoContainer').style.display='none';document.getElementById('colSyContainer').style.display='block';}else{document.getElementById('colHoContainer').style.display='block';document.getElementById('colSyContainer').style.display='none';} if(t&&document.getElementById('btnColToggle').innerText.includes("STOP")) toggleColFx(1); }
+  function toggleColFx(fs=-1) { let s=fs===-1?(document.getElementById('btnColToggle').innerText.includes("START")?1:0):fs; setToggleBtn(s,'btnColToggle','COLOR CHASER','#fd7e14'); let st=document.getElementById('colSt').value,en=document.getElementById('colEn').value,ho=document.getElementById('colHo').value,tr=document.getElementById('colTr').value,sy=document.getElementById('colSy').value; fetch(`/colfx?a=${s}&st=${st}&en=${en}&ho=${ho}&tr=${tr}&sy=${sy}`); }
+  function updateSGobFxUI(t=true) { if(!document.getElementById('sgobHo'))return; document.getElementById('vSGobHo').innerText=document.getElementById('sgobHo').value; if(document.getElementById('sgobTr').value=="1"){document.getElementById('sgobHoContainer').style.display='none';document.getElementById('sgobSyContainer').style.display='block';}else{document.getElementById('sgobHoContainer').style.display='block';document.getElementById('sgobSyContainer').style.display='none';} if(t&&document.getElementById('btnSGobToggle').innerText.includes("STOP")) toggleSGobFx(1); }
+  function toggleSGobFx(fs=-1) { let s=fs===-1?(document.getElementById('btnSGobToggle').innerText.includes("START")?1:0):fs; setToggleBtn(s,'btnSGobToggle','STATIC GOBO CHASER','#20c997'); let st=document.getElementById('sgobSt').value,en=document.getElementById('sgobEn').value,ho=document.getElementById('sgobHo').value,tr=document.getElementById('sgobTr').value,sy=document.getElementById('sgobSy').value,sc=document.getElementById('sgobSc').value; fetch(`/sgobfx?a=${s}&st=${st}&en=${en}&ho=${ho}&tr=${tr}&sy=${sy}&sc=${sc}`); }
+  function updateRGobFxUI(t=true) { if(!document.getElementById('rgobHo'))return; document.getElementById('vRGobHo').innerText=document.getElementById('rgobHo').value; if(document.getElementById('rgobTr').value=="1"){document.getElementById('rgobHoContainer').style.display='none';document.getElementById('rgobSyContainer').style.display='block';}else{document.getElementById('rgobHoContainer').style.display='block';document.getElementById('rgobSyContainer').style.display='none';} if(t&&document.getElementById('btnRGobToggle').innerText.includes("STOP")) toggleRGobFx(1); }
+  function toggleRGobFx(fs=-1) { let s=fs===-1?(document.getElementById('btnRGobToggle').innerText.includes("START")?1:0):fs; setToggleBtn(s,'btnRGobToggle','ROTATING GOBO CHASER','#20c997'); let st=document.getElementById('rgobSt').value,en=document.getElementById('rgobEn').value,ho=document.getElementById('rgobHo').value,tr=document.getElementById('rgobTr').value,sy=document.getElementById('rgobSy').value,sc=document.getElementById('rgobSc').value; fetch(`/rgobfx?a=${s}&st=${st}&en=${en}&ho=${ho}&tr=${tr}&sy=${sy}&sc=${sc}`); }
+  
+  function updateChaserUI(t=true) { 
+      if(!document.getElementById('cFade')) return; 
+      document.getElementById('vcFade').innerText=document.getElementById('cFade').value; 
+      document.getElementById('vcHold').innerText=document.getElementById('cHold').value; 
+      
+      if(document.getElementById('chaTr').value=="1"){
+          document.getElementById('chaHoContainer').style.display='none';
+          document.getElementById('chaSyContainer').style.display='block';
+      } else {
+          document.getElementById('chaHoContainer').style.display='block';
+          document.getElementById('chaSyContainer').style.display='none';
+      } 
+      
+      if(document.getElementById('chaFTr').value=="1"){
+          document.getElementById('chaFSpContainer').style.display='none';
+          document.getElementById('chaFSyContainer').style.display='block';
+      } else {
+          document.getElementById('chaFSpContainer').style.display='block';
+          document.getElementById('chaFSyContainer').style.display='none';
+      }
+
+      document.getElementById('cStSlotL').value=document.getElementById('cStSlot').value; 
+      document.getElementById('cEnSlotL').value=document.getElementById('cEnSlot').value; 
+      document.getElementById('cFadeL').value=document.getElementById('cFade').value; 
+      document.getElementById('cHoldL').value=document.getElementById('cHold').value; 
+      document.getElementById('chaTrL').value=document.getElementById('chaTr').value; 
+      document.getElementById('chaSyL').value=document.getElementById('chaSy').value; 
+      document.getElementById('chaOrdL').value=document.getElementById('chaOrd').value; 
+      document.getElementById('chaFTrL').value=document.getElementById('chaFTr').value; 
+      document.getElementById('chaFSyL').value=document.getElementById('chaFSy').value; 
+      
+      updateChaserUIL(false); 
+      if(t&&document.getElementById('btnChaToggle').innerText.includes("STOP")) toggleChaser(1); 
+  }
+
+  function updateChaserUIL(t=true) { 
+      if(!document.getElementById('cFadeL')) return; 
+      document.getElementById('vcFadeL').innerText=document.getElementById('cFadeL').value; 
+      document.getElementById('vcHoldL').innerText=document.getElementById('cHoldL').value; 
+      
+      if(document.getElementById('chaTrL').value=="1"){
+          document.getElementById('chaHoContainerL').style.display='none';
+          document.getElementById('chaSyContainerL').style.display='block';
+      } else {
+          document.getElementById('chaHoContainerL').style.display='block';
+          document.getElementById('chaSyContainerL').style.display='none';
+      } 
+      
+      if(document.getElementById('chaFTrL').value=="1"){
+          document.getElementById('chaFSpContainerL').style.display='none';
+          document.getElementById('chaFSyContainerL').style.display='block';
+      } else {
+          document.getElementById('chaFSpContainerL').style.display='block';
+          document.getElementById('chaFSyContainerL').style.display='none';
+      }
+
+      document.getElementById('cStSlot').value=document.getElementById('cStSlotL').value; 
+      document.getElementById('cEnSlot').value=document.getElementById('cEnSlotL').value; 
+      document.getElementById('cFade').value=document.getElementById('cFadeL').value; 
+      document.getElementById('cHold').value=document.getElementById('cHoldL').value; 
+      document.getElementById('chaTr').value=document.getElementById('chaTrL').value; 
+      document.getElementById('chaSy').value=document.getElementById('chaSyL').value; 
+      document.getElementById('chaOrd').value=document.getElementById('chaOrdL').value; 
+      document.getElementById('chaFTr').value=document.getElementById('chaFTrL').value; 
+      document.getElementById('chaFSy').value=document.getElementById('chaFSyL').value; 
+      
+      document.getElementById('vcFade').innerText=document.getElementById('cFade').value; 
+      document.getElementById('vcHold').innerText=document.getElementById('cHold').value; 
+      
+      if(t&&document.getElementById('btnChaToggleL').innerText.includes("STOP")) toggleChaser(1); 
+  }
+
+  function toggleChaser(fs=-1) { 
+      let s=fs===-1?(document.getElementById('btnChaToggle').innerText.includes("START")?1:0):fs; 
+      setToggleBtn(s,'btnChaToggle','SHOW','#ffc107'); 
+      setToggleBtn(s,'btnChaToggleL','SHOW','#ffc107'); 
+      let st=document.getElementById('cStSlot').value, en=document.getElementById('cEnSlot').value, fade=document.getElementById('cFade').value, hold=document.getElementById('cHold').value, tr=document.getElementById('chaTr').value, sy=document.getElementById('chaSy').value, ord=document.getElementById('chaOrd').value, ftr=document.getElementById('chaFTr').value, fsy=document.getElementById('chaFSy').value; 
+      fetch(`/chaser?active=${s}&st=${st}&en=${en}&fade=${fade}&hold=${hold}&tr=${tr}&sy=${sy}&o=${ord}&ftr=${ftr}&fsy=${fsy}`); 
+  }
+  function saveWiFi() { const s=document.getElementById('w_ssid').value,p=document.getElementById('w_pass').value; if(confirm("Save and Restart?")) fetch(`/set_wifi?s=${encodeURIComponent(s)}&p=${encodeURIComponent(p)}`).then(()=>alert("Restarting...")); }
+
+  function initJoystick(jId,sId,pref) {
+    const joy=document.getElementById(jId),stick=document.getElementById(sId); if(!joy||!stick) return;
+    let jx=0,jy=0,jA=false,jL=null;
+    function startJoy(e){jA=true;moveJoy(e);jL=setInterval(applyJoy,40);}
+    function endJoy(e){jA=false;clearInterval(jL);stick.style.left='50%';stick.style.top='50%';jx=0;jy=0;}
+    function moveJoy(e){
+      if(!jA) return; let rect=joy.getBoundingClientRect(),evt=e.touches?e.touches[0]:e;
+      let x=evt.clientX-rect.left-rect.width/2,y=evt.clientY-rect.top-rect.height/2,mD=rect.width/2-20; 
+      let dist=Math.sqrt(x*x+y*y); if(dist>mD){x=(x/dist)*mD;y=(y/dist)*mD;}
+      stick.style.left=(x+rect.width/2)+'px'; stick.style.top=(y+rect.height/2)+'px';
+      jx=x/mD; jy=y/mD; 
+    }
+    function applyJoy(){
+      if(jx===0&&jy===0) return;
+      let spdEl=document.getElementById(pref+'JoySpd'),crvEl=document.getElementById(pref+'JoyCrv');
+      let spd=spdEl?parseInt(spdEl.value):2000; let crv=crvEl?parseFloat(crvEl.value):1.0;
+      let pMinEl=document.getElementById(pref+'PanMin'),pMaxEl=document.getElementById(pref+'PanMax'),tMinEl=document.getElementById(pref+'TiltMin'),tMaxEl=document.getElementById(pref+'TiltMax');
+      let pMin=pMinEl?parseInt(pMinEl.value)<<8:0,pMax=pMaxEl?(parseInt(pMaxEl.value)<<8)|0xFF:65535,tMin=tMinEl?parseInt(tMinEl.value)<<8:0,tMax=tMaxEl?(parseInt(tMaxEl.value)<<8)|0xFF:65535;
+      let mx=Math.pow(Math.abs(jx),crv)*Math.sign(jx); let my=Math.pow(Math.abs(jy),crv)*Math.sign(jy);
+      let pD=Math.round(mx*spd),tD=Math.round(my*spd);
+      if(joyPanRev)currentPan16+=pD;else currentPan16-=pD; if(joyTiltRev)currentTilt16-=tD;else currentTilt16+=tD;
+      currentPan16=Math.max(pMin,Math.min(pMax,currentPan16)); currentTilt16=Math.max(tMin,Math.min(tMax,currentTilt16));
+      updateDMX(CH_PAN,currentPan16>>8);updateDMX(CH_PAN_FINE,currentPan16&0xFF);updateDMX(CH_TILT,currentTilt16>>8);updateDMX(CH_TILT_FINE,currentTilt16&0xFF);
+    }
+    joy.addEventListener('touchstart',startJoy);joy.addEventListener('touchmove',e=>{e.preventDefault();moveJoy(e);},{passive:false});joy.addEventListener('touchend',endJoy);joy.addEventListener('mousedown',startJoy);window.addEventListener('mousemove',moveJoy);window.addEventListener('mouseup',()=>{if(jA)endJoy();});
+  }
+
+  // =======================================================
+  // --- KEYBOARD JOYSTICK CONTROL (WASD / ARROWS) ---
+  // =======================================================
+  let keyState = { u: 0, d: 0, l: 0, r: 0, shift: false, alt: false };
+  let keyInterval = null;
+  let smoothJx = 0; 
+  let smoothJy = 0;
+
+  window.addEventListener('keydown', (e) => {
+    let tag = e.target.tagName.toUpperCase();
+    let type = e.target.type;
+    if (tag === 'TEXTAREA' || tag === 'SELECT' || (tag === 'INPUT' && (type === 'text' || type === 'password' || type === 'number'))) return;
+    
+    keyState.shift = e.shiftKey;
+    keyState.alt = e.altKey;
+    
+    let k = e.key.toLowerCase();
+    let match = false;
+    if(k==='arrowup' || k==='w') { keyState.u = 1; match=true; }
+    if(k==='arrowdown' || k==='s') { keyState.d = 1; match=true; }
+    if(k==='arrowleft' || k==='a') { keyState.l = 1; match=true; }
+    if(k==='arrowright' || k==='d') { keyState.r = 1; match=true; }
+    
+    if(match) {
+      e.preventDefault(); 
+      if(document.activeElement !== document.body) document.activeElement.blur(); 
+      if(!keyInterval) keyInterval = setInterval(applyKeyJoy, 40); 
+    }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    keyState.shift = e.shiftKey;
+    keyState.alt = e.altKey;
+
+    let k = e.key.toLowerCase();
+    if(k==='arrowup' || k==='w') keyState.u = 0;
+    if(k==='arrowdown' || k==='s') keyState.d = 0;
+    if(k==='arrowleft' || k==='a') keyState.l = 0;
+    if(k==='arrowright' || k==='d') keyState.r = 0;
+  });
+
+  function applyKeyJoy() {
+    let pref = 'l', stickId = 'stickLive';
+    if (document.getElementById('foll-tab').classList.contains('active')) { pref = 'f'; stickId = 'stickFoll'; }
+    if (document.getElementById('prog-tab').classList.contains('active')) { pref = 'p'; stickId = 'stickProg'; }
+
+    let targetJx = keyState.r - keyState.l;
+    let targetJy = keyState.d - keyState.u;
+    
+    let dist = Math.sqrt(targetJx*targetJx + targetJy*targetJy);
+    if(dist > 0) { targetJx /= dist; targetJy /= dist; }
+
+    let isFineMode = keyState.shift || keyState.alt; 
+    
+    let momEl = document.getElementById(pref+'JoyMom');
+    let momVal = momEl ? parseInt(momEl.value) : 70;
+    
+    let smoothFactor = 1.0 - (momVal / 100.0);
+    
+    if (isFineMode || momVal === 0) smoothFactor = 1.0;
+
+    smoothJx += (targetJx - smoothJx) * smoothFactor;
+    smoothJy += (targetJy - smoothJy) * smoothFactor;
+
+    if (Math.abs(smoothJx) < 0.01 && targetJx === 0) smoothJx = 0;
+    if (Math.abs(smoothJy) < 0.01 && targetJy === 0) smoothJy = 0;
+
+    if (smoothJx === 0 && smoothJy === 0 && targetJx === 0 && targetJy === 0) {
+      clearInterval(keyInterval);
+      keyInterval = null;
+      document.querySelectorAll('.stick').forEach(s=>{s.style.left='50%';s.style.top='50%';});
+      return;
+    }
+
+    let stick = document.getElementById(stickId);
+    if (stick) {
+      let box = document.getElementById(stickId.replace('stick', 'joystick'));
+      if(box) {
+         let mD = box.getBoundingClientRect().width/2 - 20;
+         stick.style.left = `calc(50% + ${smoothJx * mD}px)`;
+         stick.style.top = `calc(50% + ${smoothJy * mD}px)`;
+      }
+    }
+
+    let pMinEl=document.getElementById(pref+'PanMin'), pMaxEl=document.getElementById(pref+'PanMax'), tMinEl=document.getElementById(pref+'TiltMin'), tMaxEl=document.getElementById(pref+'TiltMax');
+    let pMin=pMinEl?parseInt(pMinEl.value)<<8:0, pMax=pMaxEl?(parseInt(pMaxEl.value)<<8)|0xFF:65535, tMin=tMinEl?parseInt(tMinEl.value)<<8:0, tMax=tMaxEl?(parseInt(tMaxEl.value)<<8)|0xFF:65535;
+    
+    let pD = 0, tD = 0;
+
+    if (isFineMode) {
+        let stepSize = 25; 
+        if (keyState.shift && keyState.alt) stepSize = 1; 
+
+        if (targetJx !== 0) pD = targetJx * stepSize;
+        if (targetJy !== 0) tD = targetJy * stepSize;
+    } else {
+        let spdEl=document.getElementById(pref+'JoySpd'), crvEl=document.getElementById(pref+'JoyCrv');
+        let spd=spdEl?parseInt(spdEl.value):2000; let crv=crvEl?parseFloat(crvEl.value):1.0;
+        
+        let mx=Math.pow(Math.abs(smoothJx),crv)*Math.sign(smoothJx); 
+        let my=Math.pow(Math.abs(smoothJy),crv)*Math.sign(smoothJy);
+        
+        pD=Math.round(mx*spd); tD=Math.round(my*spd);
+    }
+
+    if (pD === 0 && tD === 0) return;
+
+    if(joyPanRev)currentPan16+=pD;else currentPan16-=pD; 
+    if(joyTiltRev)currentTilt16-=tD;else currentTilt16+=tD;
+    
+    currentPan16=Math.max(pMin,Math.min(pMax,currentPan16)); 
+    currentTilt16=Math.max(tMin,Math.min(tMax,currentTilt16));
+    
+    updateDMX(CH_PAN,currentPan16>>8); updateDMX(CH_PAN_FINE,currentPan16&0xFF);
+    updateDMX(CH_TILT,currentTilt16>>8); updateDMX(CH_TILT_FINE,currentTilt16&0xFF);
+  }
+
+  // =======================================================
+  // --- PATCH SYSTEM (FIXTURE MATRIX) ---
+  // =======================================================
+  
+  let patchData = []; 
+  
+  async function loadPatch() {
+    try {
+      const res = await fetch('/api/patch');
+      if(res.ok) {
+        patchData = await res.json();
+        renderPatch();
+      }
+    } catch(e) {}
+  }
+  
+  function renderPatch() {
+    const list = document.getElementById('patchList');
+    if(!list) return;
+    list.innerHTML = '';
+    
+    patchData.forEach((fix, i) => {
+        list.innerHTML += `
+        <div class="patch-row">
+            <span style="font-weight:bold; color:#00d2ff; width:20px;">#${i+1}</span>
+            <label>ADDR: <input type="number" id="pf_a_${i}" min="1" max="512" value="${fix.a}"></label>
+            <label>INV PAN: <input type="checkbox" id="pf_ip_${i}" ${fix.ip ? 'checked' : ''}></label>
+            <label>INV TILT: <input type="checkbox" id="pf_it_${i}" ${fix.it ? 'checked' : ''}></label>
+            <label>PHASE: <input type="number" id="pf_ph_${i}" min="0" max="360" value="${fix.ph}"></label>
+            ${i > 0 ? `<button onclick="removeFixture(${i})" style="flex:0 0 auto; width:40px; background:#5a1010; color:white; padding:5px; margin-left:auto;">X</button>` : '<div style="margin-left:auto; width:40px;"></div>'}
+        </div>`;
+    });
+    
+    document.getElementById('btnAddFix').style.display = patchData.length < 8 ? 'inline-block' : 'none';
+  }
+  
+  function addFixture() {
+    if(patchData.length >= 8) return;
+    let lastAddr = patchData[patchData.length-1].a;
+    patchData.push({a: lastAddr + 18, ip: 0, it: 0, ph: 0});
+    renderPatch();
+  }
+  
+  function removeFixture(idx) {
+    patchData.splice(idx, 1);
+    renderPatch();
+  }
+  
+  function applyFan() {
+    let startDeg = parseInt(document.getElementById('fanStart').value) || 0;
+    let endDeg = parseInt(document.getElementById('fanEnd').value) || 360;
+    
+    if(patchData.length === 1) {
+        document.getElementById('pf_ph_0').value = startDeg;
+    } else {
+        let step = (endDeg - startDeg) / patchData.length; 
+        for(let i=0; i<patchData.length; i++) {
+            document.getElementById('pf_ph_'+i).value = Math.round(startDeg + (step * i));
+        }
+    }
+  }
+  
+  function savePatchToESP() {
+      for(let i=0; i<patchData.length; i++) {
+          patchData[i].a = parseInt(document.getElementById('pf_a_'+i).value);
+          patchData[i].ip = document.getElementById('pf_ip_'+i).checked ? 1 : 0;
+          patchData[i].it = document.getElementById('pf_it_'+i).checked ? 1 : 0;
+          patchData[i].ph = parseInt(document.getElementById('pf_ph_'+i).value);
+      }
+      
+      let params = new URLSearchParams();
+      params.append('n', patchData.length);
+      patchData.forEach((f, i) => {
+          params.append('a'+i, f.a);
+          params.append('ip'+i, f.ip);
+          params.append('it'+i, f.it);
+          params.append('ph'+i, f.ph);
+      });
+      
+      fetch('/save_patch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+      }).then(() => alert('Patch Saved!'));
+  }
+
+  // =======================================================
+  // --- 2D STAGE MAPPING LOGIC (DRAG & SWIPE) ---
+  // =======================================================
+  
+  let mapData = { 
+    image: "", 
+    points: [
+      {x: 0.1, y: 0.1, pan: 32767, tilt: 32767}, 
+      {x: 0.9, y: 0.1, pan: 32767, tilt: 32767}, 
+      {x: 0.9, y: 0.9, pan: 32767, tilt: 32767}, 
+      {x: 0.1, y: 0.9, pan: 32767, tilt: 32767}  
+    ] 
+  };
+  let mapMode = 0; 
+  let activeMarker = -1;
+  let draggingMarker = null;
+
+  async function loadMap() {
+    try {
+      const res = await fetch('/load_map');
+      if (res.ok) {
+        const json = await res.json();
+        if (json.image) {
+          mapData = json;
+          document.getElementById('stageCanvas').src = mapData.image;
+          document.getElementById('mapArea').style.display = 'block';
+          document.getElementById('btnCalibrateMap').style.display = 'block';
+          drawMarkers();
+        }
+      }
+    } catch(e) {}
+  }
+
+  function handleImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(event) {
+      const img = new Image();
+      img.onload = function() {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 400;
+        let width = img.width;
+        let height = img.height;
+        if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        mapData.image = canvas.toDataURL('image/jpeg', 0.6); 
+        mapData.points = [
+          {x: 0.1, y: 0.1, pan: 32767, tilt: 32767},
+          {x: 0.9, y: 0.1, pan: 32767, tilt: 32767},
+          {x: 0.9, y: 0.9, pan: 32767, tilt: 32767},
+          {x: 0.1, y: 0.9, pan: 32767, tilt: 32767}
+        ];
+        
+        document.getElementById('stageCanvas').src = mapData.image;
+        document.getElementById('mapArea').style.display = 'block';
+        document.getElementById('btnCalibrateMap').style.display = 'block';
+        drawMarkers();
+        
+        fetch('/save_map', { method: 'POST', body: JSON.stringify(mapData), headers: {'Content-Type':'application/json'} });
+      }
+      img.src = event.target.result;
+    }
+    reader.readAsDataURL(file);
+  }
+
+  function toggleCalibration() {
+    mapMode = mapMode === 0 ? 1 : 0;
+    const btn = document.getElementById('btnCalibrateMap');
+    const status = document.getElementById('mapStatus');
+    
+    if(mapMode === 1) {
+      btn.innerText = "FINISH CALIBRATION";
+      btn.style.background = "#e83e8c";
+      status.style.display = 'block';
+      activeMarker = 0; 
+      updateStatusText();
+      document.getElementById('mapArea').style.cursor = 'default';
+    } else {
+      btn.innerText = "CALIBRATE CORNERS";
+      btn.style.background = "#17a2b8";
+      status.style.display = 'none';
+      activeMarker = -1;
+      document.getElementById('mapArea').style.cursor = 'crosshair';
+      fetch('/save_map', { method: 'POST', body: JSON.stringify(mapData), headers: {'Content-Type':'application/json'} });
+    }
+    drawMarkers();
+  }
+
+  function updateStatusText() {
+    const names = ["Top-Left", "Top-Right", "Bottom-Right", "Bottom-Left"];
+    document.getElementById('mapStatus').innerHTML = `
+      <b>CALIBRATING: ${names[activeMarker]}</b><br>
+      <span style="color:#aaa; font-weight:normal;">1. Drag marker to corner on photo.<br>2. Move real light there using joystick.<br>3. Click 'SAVE POINT' below.</span><br>
+      <button style="background:#28a745; margin-top:10px; width:100%;" onclick="saveActivePoint()">SAVE POINT ${activeMarker+1}</button>
+    `;
+  }
+
+  function saveActivePoint() {
+    mapData.points[activeMarker].pan = currentPan16;
+    mapData.points[activeMarker].tilt = currentTilt16;
+    activeMarker++;
+    if(activeMarker > 3) activeMarker = 0;
+    updateStatusText();
+    drawMarkers();
+  }
+
+  function selectMarker(idx, e) {
+    if (mapMode !== 1) return;
+    e.stopPropagation();
+    activeMarker = idx;
+    updateStatusText();
+    drawMarkers();
+  }
+
+  function handleMapPointer(e) {
+    const container = document.getElementById('mapArea');
+    const rect = container.getBoundingClientRect();
+    
+    let clientX = e.clientX;
+    let clientY = e.clientY;
+    if(e.touches && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    }
+
+    let x = clientX - rect.left;
+    let y = clientY - rect.top;
+    
+    const normX = Math.max(0, Math.min(1, x / rect.width));
+    const normY = Math.max(0, Math.min(1, y / rect.height));
+
+    if (mapMode === 1 && draggingMarker !== null) {
+      e.preventDefault();
+      mapData.points[draggingMarker].x = normX;
+      mapData.points[draggingMarker].y = normY;
+      drawMarkers();
+    } else if (mapMode === 0) {
+      e.preventDefault();
+      const p = mapData.points;
+      const p1 = p[0]; const p2 = p[1]; const p3 = p[2]; const p4 = p[3]; 
+      
+      const topPan = p1.pan + (p2.pan - p1.pan) * normX;
+      const botPan = p4.pan + (p3.pan - p4.pan) * normX; 
+      const finalPan = topPan + (botPan - topPan) * normY;
+      
+      const topTilt = p1.tilt + (p2.tilt - p1.tilt) * normX;
+      const botTilt = p4.tilt + (p3.tilt - p4.tilt) * normX; 
+      const finalTilt = topTilt + (botTilt - topTilt) * normY;
+
+      currentPan16 = Math.max(0, Math.min(65535, Math.round(finalPan)));
+      currentTilt16 = Math.max(0, Math.min(65535, Math.round(finalTilt)));
+      
+      updateDMX(CH_PAN, currentPan16 >> 8); updateDMX(CH_PAN_FINE, currentPan16 & 0xFF);
+      updateDMX(CH_TILT, currentTilt16 >> 8); updateDMX(CH_TILT_FINE, currentTilt16 & 0xFF);
+    }
+  }
+
+  function initMapEvents() {
+    const map = document.getElementById('mapArea');
+    map.addEventListener('mousedown', (e) => { if(mapMode === 0) handleMapPointer(e); });
+    map.addEventListener('mousemove', (e) => { if((mapMode === 0 && e.buttons > 0) || draggingMarker !== null) handleMapPointer(e); });
+    window.addEventListener('mouseup', () => { draggingMarker = null; });
+    map.addEventListener('touchstart', (e) => { if(mapMode === 0) handleMapPointer(e); }, {passive: false});
+    map.addEventListener('touchmove', (e) => { if(mapMode === 0 || draggingMarker !== null) handleMapPointer(e); }, {passive: false});
+    window.addEventListener('touchend', () => { draggingMarker = null; });
+  }
+
+  function drawMarkers() {
+    document.querySelectorAll('.map-marker').forEach(e => e.remove());
+    if(!document.getElementById('mapArea')) return;
+    const rect = document.getElementById('stageCanvas').getBoundingClientRect();
+    if(rect.width === 0) return; 
+    
+    mapData.points.forEach((p, i) => {
+      const el = document.createElement('div');
+      el.className = 'map-marker';
+      if (i === activeMarker && mapMode === 1) el.classList.add('active');
+      el.innerText = i + 1;
+      el.style.left = (p.x * 100) + '%';
+      el.style.top = (p.y * 100) + '%';
+      
+      el.addEventListener('mousedown', (e) => { if(mapMode===1){ e.stopPropagation(); selectMarker(i, e); draggingMarker = i; }});
+      el.addEventListener('touchstart', (e) => { if(mapMode===1){ e.stopPropagation(); selectMarker(i, e); draggingMarker = i; }}, {passive:false});
+      
+      if(mapMode === 0) el.style.display = 'none';
+      document.getElementById('mapArea').appendChild(el);
+    });
+  }
+
+  window.addEventListener('resize', drawMarkers);
+
+  document.addEventListener("DOMContentLoaded",()=>{
+    initDropdowns();syncUI();initJoystick('joystickLive','stickLive','l');initJoystick('joystickProg','stickProg','p');initJoystick('joystickFoll','stickFoll','f');
+    document.querySelectorAll('.in3').forEach(el=>el.addEventListener('input',e=>{currentPan16=(parseInt(e.target.value)<<8)|(currentPan16&0xFF);}));
+    document.querySelectorAll('.in15').forEach(el=>el.addEventListener('input',e=>{currentPan16=(currentPan16&0xFF00)|parseInt(e.target.value);}));
+    document.querySelectorAll('.in4').forEach(el=>el.addEventListener('input',e=>{currentTilt16=(parseInt(e.target.value)<<8)|(currentTilt16&0xFF);}));
+    document.querySelectorAll('.in16').forEach(el=>el.addEventListener('input',e=>{currentTilt16=(currentTilt16&0xFF00)|parseInt(e.target.value);}));
+    
+    initMapEvents();
+    loadMap();
+    loadPatch(); 
+  });
+</script>
+</head>
+<body>
+  <div id="globalMutedWarning" class="muted-warning" onclick="unmuteOutput()">OUTPUT MUTED - CLICK TO UNMUTE</div>
+
+  <h2>PRO FIXTURE CONSOLE</h2>
+
+  <div class="tab-bar">
+    <button id="tabBtnLive" class="active" onclick="switchTab('live-tab', this)">LIVE</button>
+    <button id="tabBtnFoll" onclick="switchTab('foll-tab', this)">FOLLOWSPOT</button>
+    <button id="tabBtnProg" onclick="switchTab('prog-tab', this)">PROGRAMMER</button>
+    <button id="tabBtnPatch" onclick="switchTab('patch-tab', this)">PATCH</button>
+  </div>
+
+  <div id="live-tab" class="tab-content active">
+    <div style="display:flex; gap:8px; margin-bottom:15px;">
+      <button class="btn-danger bump-btn" style="flex:1;" onpointerdown="sendBump('blackout',1)" onpointerup="sendBump('blackout',0)" onpointercancel="sendBump('blackout',0)">BLACKOUT</button>
+      <button class="bump-btn" style="background:#fff; color:#000; flex:1;" onpointerdown="sendBump('strobeF',1)" onpointerup="sendBump('strobeF',0)" onpointercancel="sendBump('strobeF',0)">FAST STRB</button>
+      <button class="bump-btn" style="background:#ccc; color:#000; flex:1;" onpointerdown="sendBump('strobe50',1)" onpointerup="sendBump('strobe50',0)" onpointercancel="sendBump('strobe50',0)">50% STRB</button>
+      <button class="bump-btn" style="background:#ffc107; color:#000; flex:1;" onpointerdown="sendBump('blinder',1)" onpointerup="sendBump('blinder',0)" onpointercancel="sendBump('blinder',0)">BLINDER</button>
+    </div>
+
+    <button class="btn-danger bump-btn" style="width:100%; margin-bottom:15px; padding:15px 0; font-size:1.1em;" onclick="killAllFx()">KILL ALL FX / STOP SHOW</button>
+
+    <div style="display:flex; gap:8px; margin-bottom:20px;">
+      <button class="bump-btn" style="background:#007bff; flex:1; padding:15px 0;" onclick="tapTempo()">TAP: <span class="bpm-disp">120</span></button>
+      <button class="bump-btn" style="background:#17a2b8; flex:1; padding:15px 0;" onclick="hardSync()">SYNC PHASE</button>
+      <button class="bump-btn btn-mic" style="background:#28a745; flex:1; padding:15px 0;" onclick="toggleAudio()">MIC SYNC</button>
+    </div>
+
+    <h3 style="color:#aaa; border-bottom:1px solid #333; text-align:left; margin-bottom:10px;">PRESETS (EXECUTORS)</h3>
+    <div class="grid-5">
+      <button class="preset-btn" id="pre1" onclick="recallPreset(1)"><span class="p-num">1</span><span class="p-name" id="pn1"></span></button>
+      <button class="preset-btn" id="pre2" onclick="recallPreset(2)"><span class="p-num">2</span><span class="p-name" id="pn2"></span></button>
+      <button class="preset-btn" id="pre3" onclick="recallPreset(3)"><span class="p-num">3</span><span class="p-name" id="pn3"></span></button>
+      <button class="preset-btn" id="pre4" onclick="recallPreset(4)"><span class="p-num">4</span><span class="p-name" id="pn4"></span></button>
+      <button class="preset-btn" id="pre5" onclick="recallPreset(5)"><span class="p-num">5</span><span class="p-name" id="pn5"></span></button>
+      <button class="preset-btn" id="pre6" onclick="recallPreset(6)"><span class="p-num">6</span><span class="p-name" id="pn6"></span></button>
+      <button class="preset-btn" id="pre7" onclick="recallPreset(7)"><span class="p-num">7</span><span class="p-name" id="pn7"></span></button>
+      <button class="preset-btn" id="pre8" onclick="recallPreset(8)"><span class="p-num">8</span><span class="p-name" id="pn8"></span></button>
+      <button class="preset-btn" id="pre9" onclick="recallPreset(9)"><span class="p-num">9</span><span class="p-name" id="pn9"></span></button>
+      <button class="preset-btn" id="pre10" onclick="recallPreset(10)"><span class="p-num">10</span><span class="p-name" id="pn10"></span></button>
+    </div>
+
+    <div class="grid-wrapper">
+      <div class="section">
+        <h3 style="color: #ffc107; border-bottom-color: #ffc107;">AUTO-CHASER (SHOW)</h3>
+        
+        <div style="margin-bottom: 12px;">
+          <label style="color:#aaa; border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:5px;">STEP TRIGGER</label>
+          <select id="chaOrdL" onchange="updateChaserUIL()"><option value="0">Order: Sequential</option><option value="1">Order: Random</option></select>
+          <select id="chaTrL" onchange="updateChaserUIL()" style="margin-top:8px;"><option value="0">Trigger: Internal Timer</option><option value="1">Trigger: Global BPM Sync</option></select>
+          <div id="chaSyContainerL" style="display:none; margin-top:8px;"><select id="chaSyL" onchange="updateChaserUIL()" class="sync-list"></select></div>
+          <div class="slider-row" id="chaHoContainerL" style="margin-top:8px;"><label>Hold Time (Timer)<span id="vcHoldL" class="val">2000</span> ms</label><input type="range" id="cHoldL" min="0" max="10000" step="100" value="2000" oninput="updateChaserUIL()"></div>
+        </div>
+
+        <div style="margin-bottom: 12px;">
+          <label style="color:#aaa; border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:5px;">FADE TIME</label>
+          <select id="chaFTrL" onchange="updateChaserUIL()"><option value="0">Fade: Manual (ms)</option><option value="1">Fade: Global BPM Sync</option></select>
+          <div id="chaFSyContainerL" style="display:none; margin-top:8px;"><select id="chaFSyL" onchange="updateChaserUIL()" class="sync-list"></select></div>
+          <div class="slider-row" id="chaFSpContainerL" style="margin-top:8px;"><label>Fade Time <span id="vcFadeL" class="val">2000</span> ms</label><input type="range" id="cFadeL" min="0" max="10000" step="100" value="2000" oninput="updateChaserUIL()"></div>
+        </div>
+
+        <div style="display:flex; gap:10px; margin-bottom:12px;"><select id="cStSlotL" onchange="updateChaserUIL()"><option value="0">Slot 1</option><option value="1">Slot 2</option><option value="2">Slot 3</option><option value="3">Slot 4</option><option value="4">Slot 5</option><option value="5">Slot 6</option><option value="6">Slot 7</option><option value="7">Slot 8</option><option value="8">Slot 9</option><option value="9">Slot 10</option></select><span style="color:#aaa; align-self:center;">to</span><select id="cEnSlotL" onchange="updateChaserUIL()"><option value="0">Slot 1</option><option value="1">Slot 2</option><option value="2">Slot 3</option><option value="3" selected>Slot 4</option><option value="4">Slot 5</option><option value="5">Slot 6</option><option value="6">Slot 7</option><option value="7">Slot 8</option><option value="8">Slot 9</option><option value="9">Slot 10</option></select></div>
+        <button id="btnChaToggleL" class="btn-toggle" style="background:#28a745; font-size:1.3em; padding:20px;" onclick="toggleChaser()">START SHOW</button>
+      </div>
+
+      <div class="section">
+        <h3>LIVE JOYSTICK</h3>
+        <div class="joy-container" id="joystickLive"><div class="stick" id="stickLive"></div></div>
+        <div class="btn-group" style="margin-bottom: 15px;"><button class="btn-pan-rev" onclick="toggleJoyRev('pan')">Pan Rev</button><button onclick="resetCenter()" style="background:#17a2b8; color:#000;">CENTER</button><button class="btn-tilt-rev" onclick="toggleJoyRev('tilt')">Tilt Rev</button></div>
+        <details>
+          <summary>JOYSTICK SPEED & CURVE</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #333; border-top: none; border-radius: 0 0 6px 6px;">
+            <div class="slider-row"><label>Max Speed <span id="vlJoySpd" class="val">2000</span></label><input type="range" id="lJoySpd" min="100" max="5000" value="2000" oninput="syncJoySettings('l')"></div>
+            <div class="slider-row"><label>Curve (Lin to Expo) <span id="vlJoyCrv" class="val">1.5</span></label><input type="range" id="lJoyCrv" min="1" max="3" step="0.1" value="1.5" oninput="syncJoySettings('l')"></div>
+            <div class="slider-row"><label>Momentum (Glide) <span id="vlJoyMom" class="val">70</span>%</label><input type="range" id="lJoyMom" min="0" max="95" step="5" value="70" oninput="syncJoySettings('l')"></div>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <div id="foll-tab" class="tab-content">
+    <button class="btn-danger bump-btn" style="width:100%; margin-bottom:15px; padding:15px 0; font-size:1.1em; background:#fff; color:#000!important;" onclick="clearBeam()">OPEN WHITE (CLEAR BEAM)</button>
+    <div class="grid-wrapper">
+
+      <div class="section">
+        <h3 style="color:#00d2ff; border-bottom-color:#00d2ff;">2D STAGE MAPPING</h3>
+        <p style="font-size:0.85em; color:#aaa; margin-top:0;">Upload a photo of your stage. Tap to track.</p>
+        
+        <input type="file" id="imgUpload" accept="image/*" onchange="handleImageUpload(event)" style="margin-bottom:15px; width:100%;">
+        
+        <button id="btnCalibrateMap" class="btn-toggle" style="background:#17a2b8; display:none; margin-bottom: 10px;" onclick="toggleCalibration()">CALIBRATE CORNERS</button>
+        <div id="mapStatus" class="map-status"></div>
+        
+        <div id="mapArea" class="map-container" style="display:none;">
+          <img id="stageCanvas">
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>TRACKING JOYSTICK</h3>
+        <div class="joy-container" id="joystickFoll" style="width:250px; height:250px;"><div class="stick" id="stickFoll"></div></div>
+        <div class="btn-group" style="margin-bottom: 15px;"><button class="btn-pan-rev" onclick="toggleJoyRev('pan')">Pan Rev</button><button onclick="resetCenter()" style="background:#17a2b8; color:#000;">CENTER</button><button class="btn-tilt-rev" onclick="toggleJoyRev('tilt')">Tilt Rev</button></div>
+        <details>
+          <summary>JOYSTICK CONSTRAINTS & CURVE</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #333; border-top: none; border-radius: 0 0 6px 6px;">
+            <div class="slider-row"><label>Max Speed <span id="vfJoySpd" class="val">2000</span></label><input type="range" id="fJoySpd" min="100" max="5000" value="2000" oninput="syncJoySettings('f')"></div>
+            <div class="slider-row"><label>Curve (Lin to Expo) <span id="vfJoyCrv" class="val">1.5</span></label><input type="range" id="fJoyCrv" min="1" max="3" step="0.1" value="1.5" oninput="syncJoySettings('f')"></div>
+            <div class="slider-row"><label>Momentum (Glide) <span id="vfJoyMom" class="val">70</span>%</label><input type="range" id="fJoyMom" min="0" max="95" step="5" value="70" oninput="syncJoySettings('f')"></div>
+            <hr style="border-color:#333;">
+            <div class="slider-row"><label>Pan Min Limit</label><input type="range" id="fPanMin" min="0" max="255" value="0"></div><div class="slider-row"><label>Pan Max Limit</label><input type="range" id="fPanMax" min="0" max="255" value="255"></div>
+            <div class="slider-row"><label>Tilt Min Limit</label><input type="range" id="fTiltMin" min="0" max="255" value="0"></div><div class="slider-row"><label>Tilt Max Limit</label><input type="range" id="fTiltMax" min="0" max="255" value="255"></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="section">
+        <h3>BEAM CONTROLS</h3>
+        <div class="slider-row"><label>Dimmer <span class="val v1">0</span></label><input type="range" class="in1" min="0" max="255" value="0" oninput="updateDMX(1, this.value)"></div>
+        <div class="slider-row"><label>Focus <span class="val v13">0</span></label><input type="range" class="in13" min="0" max="255" value="0" oninput="updateDMX(13, this.value)"></div>
+        <div class="slider-row"><label>Zoom <span class="val v14">0</span></label><input type="range" class="in14" min="0" max="255" value="0" style="direction: rtl;" oninput="updateDMX(14, this.value)"></div>
+        <label>Color</label><select class="col-list" onchange="updateDMX(6, COLORS[this.value].v)" style="margin-bottom:12px;"></select>
+        <button class="btn-toggle btn-frost" style="background:#28a745;" onclick="toggleEffect(12, '.btn-frost')">TOGGLE FROST</button>
+        
+        <details open style="margin-top:20px;">
+          <summary style="border: 1px solid #e83e8c; background: #1e1e1e; border-radius: 6px; color: #e83e8c;">SMART DIMMER & AUTO FADE</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #e83e8c; border-top: none; border-radius: 0 0 6px 6px;">
+            <div class="slider-row"><label>Dimmer Smoothing (Damping) <span id="vDimSm" class="val">0</span>%</label><input type="range" id="dimSm" min="0" max="100" value="0" oninput="updateDimSmooth(this.value)"></div>
+            <hr style="border-color:#333; margin: 15px 0;">
+            <h3 style="color:#e83e8c; border-bottom-color:#e83e8c;">AUTO FADE (IN / OUT)</h3>
+            <select id="afCurve" style="margin-bottom: 12px;">
+              <option value="0">Curve: Linear</option>
+              <option value="3" selected>Curve: Sine (Soft)</option>
+              <option value="1">Curve: Quadratic (Fast End)</option>
+            </select>
+            <div class="slider-row"><label>Fade Time <span id="vAfTime" class="val">2000</span> ms</label><input type="range" id="afTime" min="100" max="10000" step="100" value="2000" oninput="document.getElementById('vAfTime').innerText=this.value"></div>
+            <button id="btnAutoFade" class="btn-toggle" style="background:#5a1010; font-size:1.3em; padding:20px;" onclick="triggerAutoFade()">FADE OUT (TO BLACK)</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <div id="prog-tab" class="tab-content">
+    
+    <div style="display:flex; gap:8px; margin-bottom:20px;">
+      <button class="bump-btn" style="background:#007bff; flex:1; padding:15px 0;" onclick="tapTempo()">TAP: <span class="bpm-disp">120</span> BPM</button>
+      <button class="bump-btn" style="background:#17a2b8; flex:1; padding:15px 0;" onclick="hardSync()">SYNC PHASE</button>
+      <button class="bump-btn btn-mic" style="background:#28a745; flex:1; padding:15px 0;" onclick="toggleAudio()">MIC SYNC</button>
+    </div>
+
+    <div class="grid-wrapper">
+      <div class="section">
+        <h3>Master & Color</h3>
+        <div class="slider-row"><label>Dimmer <span class="val v1">0</span></label><input type="range" class="in1" min="0" max="255" value="0" oninput="updateDMX(1, this.value)"></div>
+        <div class="slider-row"><label>Strobe <span class="val v2">0</span></label><input type="range" class="in2" min="0" max="255" value="0" oninput="updateDMX(2, this.value)"></div>
+        <label>Color <span class="val v6">0</span></label><div class="compound-row"><select id="base6" onchange="updateCompound(6, true, 'base6')"></select><input type="range" id="off6" min="0" max="0" value="0" oninput="updateCompound(6, false, 'base6')"></div>
+      </div>
+
+      <div class="section">
+        <h3>Joystick</h3>
+        <div class="joy-container" id="joystickProg"><div class="stick" id="stickProg"></div></div>
+        <div class="xy-labels" style="margin: 8px 0; font-weight: bold;">Pan: <span class="val v3">127</span> | Tilt: <span class="val v4">127</span></div>
+        <div class="btn-group" style="margin-bottom:15px;"><button class="btn-pan-rev" onclick="toggleJoyRev('pan')">Pan Rev</button><button onclick="resetCenter()" style="background:#17a2b8; color:#000;">CENTER</button><button class="btn-tilt-rev" onclick="toggleJoyRev('tilt')">Tilt Rev</button></div>
+        <details>
+          <summary>JOYSTICK SPEED & CURVE</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #333; border-top: none; border-radius: 0 0 6px 6px;">
+            <div class="slider-row"><label>Max Speed <span id="vpJoySpd" class="val">2000</span></label><input type="range" id="pJoySpd" min="100" max="5000" value="2000" oninput="syncJoySettings('p')"></div>
+            <div class="slider-row"><label>Curve (Lin to Expo) <span id="vpJoyCrv" class="val">1.5</span></label><input type="range" id="pJoyCrv" min="1" max="3" step="0.1" value="1.5" oninput="syncJoySettings('p')"></div>
+            <div class="slider-row"><label>Momentum (Glide) <span id="vpJoyMom" class="val">70</span>%</label><input type="range" id="pJoyMom" min="0" max="95" step="5" value="70" oninput="syncJoySettings('p')"></div>
+          </div>
+        </details>
+        <details>
+          <summary>ADVANCED MOTORS</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #333; border-top: none; border-radius: 0 0 6px 6px;">
+            <div class="slider-row"><label>Speed (CH5) <span class="val v5">0</span></label><input type="range" class="in5" min="0" max="255" value="0" oninput="updateDMX(5, this.value)"></div>
+            <div class="slider-row"><label>Pan Fine <span class="val v15">127</span></label><input type="range" class="in15" min="0" max="255" value="127" oninput="updateDMX(15, this.value)"></div>
+            <div class="slider-row"><label>Tilt Fine <span class="val v16">127</span></label><input type="range" class="in16" min="0" max="255" value="127" oninput="updateDMX(16, this.value)"></div>
+          </div>
+        </details>
+        <div style="display:none;"><input type="range" class="in3" min="0" max="255" value="127"><input type="range" class="in4" min="0" max="255" value="127"></div>
+      </div>
+
+      <div class="section">
+        <h3>Gobos</h3>
+        <label>Static Gobo (CH7) <span class="val v7">0</span></label><div class="compound-row"><select id="base7" onchange="updateCompound(7, true, 'base7')"></select><input type="range" id="off7" min="0" max="0" value="0" oninput="updateCompound(7, false, 'base7')"></div>
+        <label>Rotating Gobo (CH8) <span class="val v8">0</span></label><div class="compound-row"><select id="base8" onchange="updateCompound(8, true, 'base8')"></select><input type="range" id="off8" min="0" max="0" value="0" oninput="updateCompound(8, false, 'base8')"></div>
+        <label>Gobo Index/Rot (CH9) <span class="val v9">0</span></label>
+        <div class="compound-row">
+          <select id="base9" onchange="updateCompound(9, true, 'base9')">
+            <option value="0,63">Index 0-63 DEG</option>
+            <option value="135,120">Rotation (Rev - Stop - Fwd)</option>
+          </select>
+          <input type="range" id="off9" min="0" max="0" value="0" oninput="updateCompound(9, false, 'base9')">
+        </div>
+      </div>
+
+      <div class="section">
+        <h3>Optics & Prism</h3>
+        <div class="btn-group"><button class="btn-prism" onclick="toggleEffect(10, '.btn-prism')">Prism</button><button class="btn-frost" onclick="toggleEffect(12, '.btn-frost')">Frost</button></div>
+        <label>Prism Rotation <span class="val v11">0</span></label>
+        <div class="compound-row">
+          <select id="base11" onchange="updateCompound(11, true, 'base11')">
+            <option value="0,127">Index (Base 0)</option>
+            <option value="135,120">Rotation (Rev - Stop - Fwd)</option>
+          </select>
+          <input type="range" id="off11" min="0" max="0" value="0" oninput="updateCompound(11, false, 'base11')">
+        </div>
+        <div class="slider-row"><label>Focus <span class="val v13">0</span></label><input type="range" class="in13" min="0" max="255" value="0" oninput="updateDMX(13, this.value)"></div>
+        <div class="slider-row"><label>Zoom <span class="val v14">0</span></label><input type="range" class="in14" min="0" max="255" value="0" style="direction: rtl;" oninput="updateDMX(14, this.value)"></div>
+        <label>Auto Macros</label><select class="in17" onchange="updateDMX(17, this.value)"><option value="0">None</option><option value="50">Slow Auto</option><option value="200">Sound Auto</option></select>
+      </div>
+    </div>
+
+    <div class="grid-wrapper">
+      <div class="section" style="background: transparent; border: none; padding: 0;">
+        <details>
+          <summary style="border: 1px solid #444; background: #1e1e1e; border-radius: 6px;">SAVE TO PRESET</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #333; border-top: none; border-radius: 0 0 6px 6px;">
+            <div style="display:flex; gap:10px; margin-bottom:15px;">
+              <select id="slotSel" onchange="updateSlotInput()" style="flex:1; margin-bottom:0;"><option value="1">Slot 1</option><option value="2">Slot 2</option><option value="3">Slot 3</option><option value="4">Slot 4</option><option value="5">Slot 5</option><option value="6">Slot 6</option><option value="7">Slot 7</option><option value="8">Slot 8</option><option value="9">Slot 9</option><option value="10">Slot 10</option></select>
+              <input type="text" id="slotName" maxlength="20" placeholder="Name (max 20)" style="flex:2; margin-bottom:0;">
+            </div>
+            <div class="btn-group">
+              <button style="background:#28a745; padding:15px; font-size:1.1em;" onclick="sceneAction('save')">SAVE</button>
+              <button style="background:#007bff; padding:15px; font-size:1.1em;" onclick="sceneAction('recall')">RECALL</button>
+            </div>
+          </div>
+        </details>
+        
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #17a2b8; background: #1e1e1e; border-radius: 6px; color: #17a2b8;">MOVEMENT FX</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #17a2b8; border-top: none; border-radius: 0 0 6px 6px;">
+            <select id="fxType" onchange="updateFxUI()" style="margin-bottom: 12px;">
+              <option value="1">Circle</option><option value="2">Figure 8</option><option value="3">Clover</option>
+              <option value="4">Square</option><option value="5">Star</option><option value="6">Waterwave</option>
+              <option value="7">Lissajous (Chaos)</option>
+              <option value="8">Pan Sweep (Line X)</option>
+              <option value="9">Tilt Sweep (Line Y)</option>
+              <option value="10">Spiral In/Out</option>
+              <option value="11">Ballyhoo (Rock'n'Roll!)</option>
+              <option value="12">Infinity Loop (Liegende 8)</option>
+            </select>
+            <div class="slider-row"><label>Rotation <span id="vFxRot" class="val">0</span> DEG</label><input type="range" id="fxRot" min="0" max="360" value="0" oninput="updateFxUI()"></div>
+            <h3 style="color:#17a2b8; border-bottom-color:#17a2b8; margin-top:15px;">SIZE & SPEED MODULATOR</h3>
+            <select id="fxTr" onchange="updateFxUI()" style="margin-bottom: 8px;"><option value="0">Speed: Manual Modulator</option><option value="1">Speed: Global BPM Sync</option></select>
+            <div id="fxSyContainer" style="display:none; margin-bottom: 12px;"><select id="fxSy" onchange="updateFxUI()" class="sync-list"></select></div>
+            <select id="fxMM" onchange="updateFxUI()" style="margin-bottom: 8px;"><option value="1">Mode: Up / Down (Ping-Pong)</option><option value="0">Mode: Forward (Sawtooth)</option></select>
+            <select id="fxMC" onchange="updateFxUI()" style="margin-bottom: 12px;"><option value="3">Curve: Sine (Soft)</option><option value="0">Curve: Linear</option><option value="1">Curve: Quadratic</option><option value="2">Curve: Cubic</option><option value="4">Curve: Gauss (Flash)</option><option value="5">Curve: Random</option></select>
+            <div id="fxSpdContainer"><div class="slider-row"><label>Speed Start <span id="vFxSS" class="val">50</span>%</label><input type="range" id="fxSS" min="1" max="100" value="50" oninput="updateFxUI()"></div><div class="slider-row"><label>Speed End <span id="vFxSE" class="val">50</span>%</label><input type="range" id="fxSE" min="1" max="100" value="50" oninput="updateFxUI()"></div></div>
+            <div class="slider-row"><label>Size Start <span id="vFxZS" class="val">30</span>%</label><input type="range" id="fxZS" min="1" max="100" value="30" oninput="updateFxUI()"></div><div class="slider-row"><label>Size End <span id="vFxZE" class="val">30</span>%</label><input type="range" id="fxZE" min="1" max="100" value="30" oninput="updateFxUI()"></div>
+            <div class="slider-row"><label>Modulation Speed <span id="vFxMS" class="val">10</span>%</label><input type="range" id="fxMS" min="1" max="100" value="10" oninput="updateFxUI()"></div>
+            <button id="btnFxToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleFx()">START MOVEMENT FX</button>
+          </div>
+        </details>
+
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #e83e8c; background: #1e1e1e; border-radius: 6px; color: #e83e8c;">DIMMER FX</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #e83e8c; border-top: none; border-radius: 0 0 6px 6px;">
+            <select id="dimMo" onchange="updateModUI('dim')" style="margin-bottom: 8px;"><option value="1">Mode: Up / Down (Ping-Pong)</option><option value="0">Mode: Forward (Sawtooth)</option></select>
+            <select id="dimCu" onchange="updateModUI('dim')" style="margin-bottom: 12px;"><option value="3">Curve: Sine (Theater Soft)</option><option value="0">Curve: Linear (Even)</option><option value="1">Curve: Quadratic (Fast End)</option><option value="2">Curve: Cubic (Very Fast)</option><option value="4">Curve: Gauss (Flash)</option><option value="5">Curve: Random</option></select>
+            <select id="dimTr" onchange="updateModUI('dim')" style="margin-bottom: 8px;"><option value="0">Speed: Manual Slider</option><option value="1">Speed: Global BPM Sync</option></select>
+            <div id="dimSyContainer" style="display:none; margin-bottom: 12px;"><select id="dimSy" onchange="updateModUI('dim')" class="sync-list"></select></div>
+            <div class="slider-row"><label>Start Value <span id="vdimSt" class="val">0</span></label><input type="range" id="dimSt" min="0" max="255" value="0" oninput="updateModUI('dim')"></div>
+            <div class="slider-row"><label>End Value <span id="vdimEn" class="val">255</span></label><input type="range" id="dimEn" min="0" max="255" value="255" oninput="updateModUI('dim')"></div>
+            <div class="slider-row" id="dimSpContainer"><label>Manual Speed <span id="vdimSp" class="val">30</span>%</label><input type="range" id="dimSp" min="1" max="100" value="30" oninput="updateModUI('dim')"></div>
+            <button id="btnDimToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleModFx('dim')">START DIMMER FX</button>
+          </div>
+        </details>
+
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #6f42c1; background: #1e1e1e; border-radius: 6px; color: #6f42c1;">ROTATION FX (GOBO & PRISM)</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #6f42c1; border-top: none; border-radius: 0 0 6px 6px;">
+            <h3 style="color:#6f42c1; border-bottom-color:#6f42c1;">GOBO ROTATION (CH9)</h3>
+            <select id="grMo" onchange="updateModUI('gr')" style="margin-bottom: 8px;"><option value="1">Mode: Up / Down (Ping-Pong)</option><option value="0">Mode: Forward (Sawtooth)</option></select>
+            <select id="grCu" onchange="updateModUI('gr')" style="margin-bottom: 12px;"><option value="3">Curve: Sine (Smooth Sweep)</option><option value="0">Curve: Linear</option><option value="1">Curve: Quadratic</option><option value="2">Curve: Cubic</option><option value="4">Curve: Gauss</option><option value="5">Curve: Random</option></select>
+            <select id="grTr" onchange="updateModUI('gr')" style="margin-bottom: 8px;"><option value="0">Speed: Manual Slider</option><option value="1">Speed: Global BPM Sync</option></select>
+            <div id="grSyContainer" style="display:none; margin-bottom: 12px;"><select id="grSy" onchange="updateModUI('gr')" class="sync-list"></select></div>
+            <div class="slider-row"><label>Start DMX <span id="vgrSt" class="val">135</span></label><input type="range" id="grSt" min="135" max="255" value="135" oninput="updateModUI('gr')"></div>
+            <div class="slider-row"><label>End DMX <span id="vgrEn" class="val">190</span></label><input type="range" id="grEn" min="135" max="255" value="190" oninput="updateModUI('gr')"></div>
+            <div class="slider-row" id="grSpContainer"><label>Manual Speed <span id="vgrSp" class="val">30</span>%</label><input type="range" id="grSp" min="1" max="100" value="30" oninput="updateModUI('gr')"></div>
+            <button id="btnGRotToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleModFx('gr')">START GOBO ROT FX</button>
+
+            <h3 style="color:#6f42c1; border-bottom-color:#6f42c1; margin-top:20px;">PRISM ROTATION (CH11)</h3>
+            <select id="prMo" onchange="updateModUI('pr')" style="margin-bottom: 8px;"><option value="1">Mode: Up / Down</option><option value="0">Mode: Forward</option></select>
+            <select id="prCu" onchange="updateModUI('pr')" style="margin-bottom: 12px;"><option value="3">Curve: Sine</option><option value="0">Curve: Linear</option><option value="1">Curve: Quadratic</option><option value="2">Curve: Cubic</option><option value="4">Curve: Gauss</option><option value="5">Curve: Random</option></select>
+            <select id="prTr" onchange="updateModUI('pr')" style="margin-bottom: 8px;"><option value="0">Speed: Manual Slider</option><option value="1">Speed: Global BPM Sync</option></select>
+            <div id="prSyContainer" style="display:none; margin-bottom: 12px;"><select id="prSy" onchange="updateModUI('pr')" class="sync-list"></select></div>
+            <div class="slider-row"><label>Start DMX <span id="vprSt" class="val">193</span></label><input type="range" id="prSt" min="135" max="255" value="193" oninput="updateModUI('pr')"></div>
+            <div class="slider-row"><label>End DMX <span id="vprEn" class="val">255</span></label><input type="range" id="prEn" min="135" max="255" value="255" oninput="updateModUI('pr')"></div>
+            <div class="slider-row" id="prSpContainer"><label>Manual Speed <span id="vprSp" class="val">30</span>%</label><input type="range" id="prSp" min="1" max="100" value="30" oninput="updateModUI('pr')"></div>
+            <button id="btnPRotToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleModFx('pr')">START PRISM ROT FX</button>
+          </div>
+        </details>
+      </div>
+
+      <div class="section" style="background: transparent; border: none; padding: 0;">
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #fd7e14; background: #1e1e1e; border-radius: 6px; color: #fd7e14;">COLOR CHASER FX</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #fd7e14; border-top: none; border-radius: 0 0 6px 6px;">
+            <select id="colTr" onchange="updateColFxUI()" style="margin-bottom: 12px;"><option value="0">Trigger: Internal Timer</option><option value="1">Trigger: Global BPM Sync</option></select>
+            <div id="colSyContainer" style="display:none; margin-bottom: 12px;"><select id="colSy" onchange="updateColFxUI()" class="sync-list"></select></div>
+            <div style="display:flex; gap:10px; margin-bottom:12px;"><select id="colSt" onchange="updateColFxUI()" class="col-list"></select><span style="color:#aaa; align-self:center;">to</span><select id="colEn" onchange="updateColFxUI()" class="col-list"></select></div>
+            <div class="slider-row" id="colHoContainer"><label>Hold Time (Timer) <span id="vColHo" class="val">1000</span> ms</label><input type="range" id="colHo" min="0" max="10000" step="100" value="1000" oninput="updateColFxUI()"></div>
+            <button id="btnColToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleColFx()">START COLOR CHASER</button>
+          </div>
+        </details>
+
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #20c997; background: #1e1e1e; border-radius: 6px; color: #20c997;">STATIC GOBO CHASER</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #20c997; border-top: none; border-radius: 0 0 6px 6px;">
+            <select id="sgobTr" onchange="updateSGobFxUI()" style="margin-bottom: 12px;"><option value="0">Trigger: Internal Timer</option><option value="1">Trigger: Global BPM Sync</option></select>
+            <div id="sgobSyContainer" style="display:none; margin-bottom: 12px;"><select id="sgobSy" onchange="updateSGobFxUI()" class="sync-list"></select></div>
+            <select id="sgobSc" onchange="updateSGobFxUI()" style="margin-bottom: 12px;"><option value="0">Effect: Snap</option><option value="1">Effect: Shake (Wobble)</option></select>
+            <div style="display:flex; gap:10px; margin-bottom:12px;"><select id="sgobSt" onchange="updateSGobFxUI()" class="sgob-list"></select><span style="color:#aaa; align-self:center;">to</span><select id="sgobEn" onchange="updateSGobFxUI()" class="sgob-list"></select></div>
+            <div class="slider-row" id="sgobHoContainer"><label>Hold Time (Timer) <span id="vSGobHo" class="val">1000</span> ms</label><input type="range" id="sgobHo" min="0" max="10000" step="100" value="1000" oninput="updateSGobFxUI()"></div>
+            <button id="btnSGobToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleSGobFx()">START STATIC GOBO</button>
+          </div>
+        </details>
+
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #20c997; background: #1e1e1e; border-radius: 6px; color: #20c997;">ROTATING GOBO CHASER</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #20c997; border-top: none; border-radius: 0 0 6px 6px;">
+            <select id="rgobTr" onchange="updateRGobFxUI()" style="margin-bottom: 12px;"><option value="0">Trigger: Internal Timer</option><option value="1">Trigger: Global BPM Sync</option></select>
+            <div id="rgobSyContainer" style="display:none; margin-bottom: 12px;"><select id="rgobSy" onchange="updateRGobFxUI()" class="sync-list"></select></div>
+            <select id="rgobSc" onchange="updateRGobFxUI()" style="margin-bottom: 12px;"><option value="0">Effect: Snap</option><option value="1">Effect: Shake (Wobble)</option></select>
+            <div style="display:flex; gap:10px; margin-bottom:12px;"><select id="rgobSt" onchange="updateRGobFxUI()" class="rgob-list"></select><span style="color:#aaa; align-self:center;">to</span><select id="rgobEn" onchange="updateRGobFxUI()" class="rgob-list"></select></div>
+            <div class="slider-row" id="rgobHoContainer"><label>Hold Time (Timer) <span id="vRGobHo" class="val">1000</span> ms</label><input type="range" id="rgobHo" min="0" max="10000" step="100" value="1000" oninput="updateRGobFxUI()"></div>
+            <button id="btnRGobToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleRGobFx()">START ROT GOBO</button>
+          </div>
+        </details>
+
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #ffc107; background: #1e1e1e; border-radius: 6px; color: #ffc107;">AUTO-CHASER (SHOW)</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #ffc107; border-top: none; border-radius: 0 0 6px 6px;">
+            
+            <div style="margin-bottom: 12px;">
+              <label style="color:#aaa; border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:5px;">STEP TRIGGER</label>
+              <select id="chaOrd" onchange="updateChaserUI()"><option value="0">Order: Sequential</option><option value="1">Order: Random</option></select>
+              <select id="chaTr" onchange="updateChaserUI()" style="margin-top:8px;"><option value="0">Trigger: Internal Timer</option><option value="1">Trigger: Global BPM Sync</option></select>
+              <div id="chaSyContainer" style="display:none; margin-top:8px;"><select id="chaSy" onchange="updateChaserUI()" class="sync-list"></select></div>
+              <div class="slider-row" id="chaHoContainer" style="margin-top:8px;"><label>Hold Time (Timer)<span id="vcHold" class="val">2000</span> ms</label><input type="range" id="cHold" min="0" max="10000" step="100" value="2000" oninput="updateChaserUI()"></div>
+            </div>
+
+            <div style="margin-bottom: 12px;">
+              <label style="color:#aaa; border-bottom:1px solid #333; margin-bottom:5px; padding-bottom:5px;">FADE TIME</label>
+              <select id="chaFTr" onchange="updateChaserUI()"><option value="0">Fade: Manual (ms)</option><option value="1">Fade: Global BPM Sync</option></select>
+              <div id="chaFSyContainer" style="display:none; margin-top:8px;"><select id="chaFSy" onchange="updateChaserUI()" class="sync-list"></select></div>
+              <div class="slider-row" id="chaFSpContainer" style="margin-top:8px;"><label>Fade Time <span id="vcFade" class="val">2000</span> ms</label><input type="range" id="cFade" min="0" max="10000" step="100" value="2000" oninput="updateChaserUI()"></div>
+            </div>
+
+            <div style="display:flex; gap:10px; margin-bottom:12px;">
+              <select id="cStSlot" onchange="updateChaserUI()"><option value="0">Slot 1</option><option value="1">Slot 2</option><option value="2">Slot 3</option><option value="3">Slot 4</option><option value="4">Slot 5</option><option value="5">Slot 6</option><option value="6">Slot 7</option><option value="7">Slot 8</option><option value="8">Slot 9</option><option value="9">Slot 10</option></select>
+              <span style="color:#aaa; align-self:center;">to</span>
+              <select id="cEnSlot" onchange="updateChaserUI()"><option value="0">Slot 1</option><option value="1">Slot 2</option><option value="2">Slot 3</option><option value="3" selected>Slot 4</option><option value="4">Slot 5</option><option value="5">Slot 6</option><option value="6">Slot 7</option><option value="7">Slot 8</option><option value="8">Slot 9</option><option value="9">Slot 10</option></select>
+            </div>
+            
+            <button id="btnChaToggle" class="btn-toggle" style="background:#28a745;" onclick="toggleChaser()">START SHOW</button>
+          </div>
+        </details>
+        
+        <details style="margin-top: 10px;">
+          <summary style="border: 1px solid #444; background: #1e1e1e; border-radius: 6px; color: #fff;">WIFI SETTINGS & UPDATE</summary>
+          <div style="padding:15px; background: #1e1e1e; border: 1px solid #333; border-top: none; border-radius: 0 0 6px 6px;">
+            <input type="text" id="w_ssid" placeholder="WiFi Name (SSID)">
+            <input type="password" id="w_pass" placeholder="WiFi Password">
+            <button style="background:#007bff; width:100%; padding:15px; font-weight:bold; border-radius:6px; border:none; color:#fff; margin-bottom: 20px;" onclick="saveWiFi()">SAVE & RESTART</button>
+            <form method='POST' action='/update' enctype='multipart/form-data' onsubmit='document.getElementById("updateBtn").style.display="none"; document.getElementById("updateSpinner").style.display="block";'>
+              <input type='file' name='update' accept='.bin' required style='margin-bottom:15px; width:100%; color:#fff; font-size: 0.9em;'>
+              <input type='submit' id='updateBtn' value='FLASH FIRMWARE' style='background:#17a2b8; width:100%; padding:10px; border:none; border-radius:6px; font-weight:bold; color:white; cursor:pointer;'>
+            </form>
+            <div id='updateSpinner' style='display:none; text-align:center; color:#00d2ff; font-weight:bold; padding:10px; border: 1px dashed #00d2ff; border-radius:6px;'>
+              UPDATE RUNNING...<br><span style='font-size:0.8em; font-weight:normal; color:#aaa;'>Do not disconnect power!</span>
+            </div>
+            <button class="btn-danger" style="width:100%; margin-top:20px; padding:15px; border-radius:6px; font-weight:bold;" onclick="if(confirm('Warning: Send reset command?')) updateDMX(18,255)">SYSTEM RESET (CH18)</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <div id="patch-tab" class="tab-content">
+    <div class="grid-wrapper">
+        <div class="section">
+            <h3 style="color:#00d2ff; border-bottom-color:#00d2ff;">FIXTURE MATRIX</h3>
+            <p style="font-size:0.85em; color:#aaa; margin-top:0;">Patch multiple lights here. Presets and FX will apply to all of them.</p>
+            
+            <div id="patchList"></div>
+            
+            <button id="btnAddFix" style="background:#17a2b8; margin-bottom:20px; padding:10px;" onclick="addFixture()">+ ADD FIXTURE</button>
+            
+            <h3 style="color:#e83e8c; border-bottom-color:#e83e8c;">FANNING GENERATOR</h3>
+            <p style="font-size:0.85em; color:#aaa; margin-top:0;">Distribute phase offset evenly across all fixtures for wave effects.</p>
+            <div style="display:flex; gap:10px; margin-bottom:15px;">
+                <input type="number" id="fanStart" value="0" placeholder="Start">
+                <span style="color:#aaa; align-self:center;">to</span>
+                <input type="number" id="fanEnd" value="360" placeholder="End">
+                <button style="background:#e83e8c; padding:10px;" onclick="applyFan()">APPLY FAN</button>
+            </div>
+            
+            <button class="btn-toggle" style="background:#28a745;" onclick="savePatchToESP()">SAVE PATCH TO ESP</button>
+        </div>
+    </div>
+  </div>
+
+</body>
+</html>
