@@ -16,8 +16,79 @@ A highly advanced, standalone, web-based lighting console and Art-Net node built
 * Datewink 200W LED Moving Head
 * U'King 200W LED Moving Head 
 
+## V2 Update Notes (Multi-Fixture & Performance Optimization)
 
-## 🚀 Key Features
+Building on the foundation of V1 (which introduced the core web UI, basic modulators, and Art-Net support), V2 restructures the math engine and introduces a dynamic patching system to support multiple fixtures and precise synchronization.
+
+### Technical Changes & New Features
+
+* **Fixture Patching & Fanning:** Transitioned from a single-fixture hardcode to a dynamic matrix supporting up to 8 fixtures. A new *Patch Tab* allows configuration of DMX start addresses, Pan/Tilt inversion, and phase offsets per fixture. A fanning tool calculates and applies equidistant phase offsets across the configured fixtures.
+* **2D Stage Calibration:** Added a visual mapping interface in the Followspot tab. It utilizes bilinear interpolation based on four calibration points to translate 2D image coordinates into precise Pan/Tilt angles.
+* **Phase-Locked FX Engine:** Modulators and movement shapes no longer run freely. They are now tied to an absolute global beat clock (`masterSyncTime`). This ensures consistent phase-locking across all fixtures and prevents temporal drift over time.
+* **ESP32-C3 Math Optimization:** Since the ESP32-C3 lacks a hardware FPU for double-precision math, the C++ backend was refactored to reduce floating-point operations. Implemented a 1024-step Look-Up Table (LUT) for sine/cosine, branchless modulo arithmetic, and algebraic approximations for Gaussian curves to decrease frame calculation latency.
+* **Expanded Movement Library:** Added Pan Sweep (Linear X), Tilt Sweep (Linear Y), Spiral, Ballyhoo, and Infinity Loop (Lemniscate).
+* **BPM-Synced Fades:** Auto-Chaser transition times can now be parameterized using BPM divisions instead of static millisecond values.
+* **UI Controls & Microstepping:** * Decoupled slider target values from live DMX output during auto-fades to enable blind programming.
+  * Added keyboard modifier support for the joystick interface (`SHIFT` for fine steps, `SHIFT+ALT` for 1-bit microstepping) and disabled momentum physics during fine adjustment.
+* **Codebase Refactoring:** Extracted REST API routing into a separate `WebAPI.h` file to isolate frontend communication from the core FreeRTOS DMX loop.
+
+---
+
+### System Architecture & Data Flow
+
+The following diagram illustrates how the web frontend, the virtual master fixture, and the dynamic patch matrix interact:
+
+```mermaid
+graph TD
+    subgraph Web_Frontend [Web Frontend / Browser]
+        UI[Web UI - HTML/JS/CSS]
+        T1[LIVE Tab<br>Executors, Bumps, BPM Tap]
+        T2[FOLLOWSPOT Tab<br>2D Stage Map, Smart Dimmer]
+        T3[PROGRAMMER Tab<br>Precision Joystick, FX, Macros]
+        T4[PATCH Tab<br>Fixture Matrix, Fanning Generator]
+        
+        UI --> T1 & T2 & T3 & T4
+    end
+
+    subgraph Core_Architecture [ESP32 C++ Core Architecture]
+        API(WebAPI.h<br>REST Endpoints & State Sync)
+        
+        subgraph Master_Fixture [Master Virtual Fixture]
+            SYNC((Global Sync Clock<br>BPM & Absolute Phase))
+            DMX[DMX Base State Buffer<br>Channels 1-18]
+            
+            subgraph FX_Engine [FX_Engine.h]
+                MATH[LUT Math Functions<br>Branchless Trigonometry]
+                LFO[Parameter Modulators<br>Dimmer, Gobo, Prism]
+                MOVE[Movement Engine<br>Shapes, Size, Speed]
+                MATH --> LFO & MOVE
+            end
+        end
+
+        subgraph Patch_Matrix [Dynamic Patch Matrix]
+            P1[Fixture 1<br>Addr: 1, Phase 0°]
+            P2[Fixture 2<br>Addr: 19, Phase 90°]
+            PN[Fixture N<br>Addr: X, Invert P/T]
+        end
+        
+        DMXOUT((UART DMX Out<br>FreeRTOS Task @ 40Hz))
+    end
+
+    T1 & T2 & T3 & T4 -->|Fetch / POST| API
+    API --> DMX
+    API --> SYNC
+    API --> FX_Engine
+    
+    SYNC --> LFO & MOVE
+    LFO -->|Mutates Base Value| DMX
+    
+    DMX -->|Passes Base Channels| Patch_Matrix
+    MOVE -->|Calculates per Fixture<br>Applies Phase Offset & Invert| Patch_Matrix
+    
+    Patch_Matrix --> DMXOUT
+```
+
+## 🚀 Key Features since V1
 
 * **Zero-Install Web Interface:** The entire UI is served directly from the ESP32's LittleFS flash memory. Accessible via any modern web browser (iOS, Android, Windows, Mac) with a highly responsive CSS-grid layout.
 * **Dual Operation Modes:** Acts as a seamless Art-Net node (Universe 0) that automatically yields to internal standalone effects when activated.
