@@ -14,7 +14,9 @@ A highly advanced, standalone, web-based lighting console and Art-Net node built
 * Rudderstar 200W 3in1 LED Moving Head
 * Fieryzeal 200W LED Moving Head
 * Datewink 200W LED Moving Head
-* U'King 200W LED Moving Head 
+* U'King 200W LED Moving Head
+
+* One click installer: https://doctormord.github.io/Standalone-WIFI-ESP32-Moving-Head-Controller/install.html
 
 ## V2 Update Notes (Multi-Fixture & Performance Optimization)
 
