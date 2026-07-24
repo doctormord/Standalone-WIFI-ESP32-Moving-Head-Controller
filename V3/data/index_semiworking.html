@@ -107,7 +107,7 @@
       gap: 6px;
     }
 
-    /* Audio visualizer CSS */
+    /* Audio visualizer CSS to match original exactly */
     .audio-visualizer { display: flex; justify-content: space-around; background: rgba(0,0,0,0.35); padding: 5px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.04); gap: 4px; }
     .beat-led { flex: 1; padding: 6px 8px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.8px; border-radius: 5px; color: rgba(255,255,255,0.28); transition: background 0.4s ease-out, color 0.4s, box-shadow 0.4s; text-align: center; }
     .beat-led.active-bass { background: linear-gradient(180deg, #ff0055cc, #ff005522); color: #fff; box-shadow: inset 0 0 8px #ff0055; transition: 0s; }
@@ -121,7 +121,7 @@
   </style>
   <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -132,11 +132,9 @@ const { useState, useRef, useEffect, useCallback, useMemo } = React;
 function useKeyboardJoystick(onMove) {
   const keys    = useRef({ u:0, d:0, l:0, r:0, shift:false, alt:false, ctrl:false, meta:false });
   const posRef  = useRef({ x:0, y:0 });
-  const lastSent = useRef({ x: 0, y: 0 }); // NEU: Verhindert Netzwerk-Spam & Maus-Konflikte
   const precStart = useRef(0);
   const onMoveRef = useRef(onMove);
   const intervalRef = useRef(null);
-  
   useEffect(() => { onMoveRef.current = onMove; });
 
   useEffect(() => {
@@ -146,6 +144,7 @@ function useKeyboardJoystick(onMove) {
       const dist = Math.hypot(x, y);
       if (dist > 0) { x /= dist; y /= dist; }
 
+      // 3-Stage modifier (Shift + Alt/Cmd/Ctrl)
       const isPrecision = keys.current.shift && (keys.current.alt || keys.current.meta || keys.current.ctrl);
       
       if (isPrecision && (x !== 0 || y !== 0)) {
@@ -160,12 +159,8 @@ function useKeyboardJoystick(onMove) {
         }
       }
 
-      // WICHTIG: Nur senden, wenn sich der Wert geändert hat
-      if (Math.abs(x - lastSent.current.x) > 0.001 || Math.abs(y - lastSent.current.y) > 0.001) {
-        lastSent.current = { x, y };
-        posRef.current = { x, y };
-        onMoveRef.current?.({ x, y });
-      }
+      posRef.current = { x, y };
+      onMoveRef.current?.({ x, y });
     };
 
     const startLoop = () => {
@@ -175,13 +170,8 @@ function useKeyboardJoystick(onMove) {
     };
     const stopLoop = () => {
       if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-      precStart.current = 0;
-      // Sicherstellen, dass beim Loslassen ein sauberes 0,0 gesendet wird
-      if (Math.abs(lastSent.current.x) > 0.001 || Math.abs(lastSent.current.y) > 0.001) {
-        lastSent.current = { x: 0, y: 0 };
-        posRef.current = { x: 0, y: 0 };
-        onMoveRef.current?.({ x: 0, y: 0 });
-      }
+      posRef.current = { x:0, y:0 };
+      onMoveRef.current?.({ x:0, y:0 });
     };
 
     const onDown = (e) => {
@@ -189,22 +179,20 @@ function useKeyboardJoystick(onMove) {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       
       const k = keys.current;
-      k.shift = e.shiftKey; k.alt = e.altKey; k.ctrl = e.ctrlKey; k.meta = e.metaKey;
-      
       let hit = false;
       if (e.code === 'ArrowUp'    || e.code === 'KeyW') { k.u = 1; hit = true; }
       if (e.code === 'ArrowDown'  || e.code === 'KeyS') { k.d = 1; hit = true; }
       if (e.code === 'ArrowLeft'  || e.code === 'KeyA') { k.l = 1; hit = true; }
       if (e.code === 'ArrowRight' || e.code === 'KeyD') { k.r = 1; hit = true; }
       
-      if (e.code.startsWith('Alt') || e.code.startsWith('Shift')) hit = true;
-
+      k.shift = e.shiftKey; k.alt = e.altKey; k.ctrl = e.ctrlKey; k.meta = e.metaKey;
+      
       if (hit) { 
         e.preventDefault(); 
         if (document.activeElement !== document.body) document.activeElement.blur(); 
         startLoop(); 
       } else if (k.u || k.d || k.l || k.r) {
-        apply(); 
+        apply(); // Update instantly if modifiers change while holding
       }
     };
     
@@ -220,27 +208,24 @@ function useKeyboardJoystick(onMove) {
       
       k.shift = e.shiftKey; k.alt = e.altKey; k.ctrl = e.ctrlKey; k.meta = e.metaKey;
       
-      if (e.code.startsWith('Alt') || e.code.startsWith('Shift')) e.preventDefault();
-
       const anyHeld = k.u || k.d || k.l || k.r;
       if (!anyHeld) stopLoop();
       else apply();
     };
-
-    const onBlur = () => {
+	const onBlur = () => {
       const k = keys.current;
       k.u = 0; k.d = 0; k.l = 0; k.r = 0;
       k.shift = false; k.alt = false; k.ctrl = false; k.meta = false;
       stopLoop();
-    };
+    };					  
     
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup',   onUp);
-    window.addEventListener('blur',    onBlur);
+	window.addEventListener('blur',    onBlur);										   
     return () => {
       window.removeEventListener('keydown', onDown);
       window.removeEventListener('keyup',   onUp);
-      window.removeEventListener('blur',    onBlur);
+      window.removeEventListener('blur',    onBlur);													
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, []);
@@ -256,73 +241,33 @@ function StickyJoystick({
 }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const visualPosRef = useRef({ x: 0, y: 0 });
-  const activeRef = useRef(false);
+  const [active, setActive] = useState(false);
   const springRef = useRef(null);
-  
-  const mods = useRef({ shift: false, alt: false, ctrl: false, meta: false });
-  const precStart = useRef(0);
-  const fireRef = useRef(onChange);
-
   const thumbPx = Math.round(size * thumbRatio);
   const maxR = size / 2 - thumbPx / 2 - 6;
 
-  useEffect(() => { fireRef.current = onChange; }, [onChange]);
+  // Track active state purely for the rAF loop
+  const activeRef = useRef(false);
+  useEffect(() => { activeRef.current = active; }, [active]);
 
-  // Listener für globale Modifikator-Tasten, damit die Maus sie live mitbekommt
   useEffect(() => {
-    const handleMod = (e) => {
-      mods.current.shift = e.shiftKey; mods.current.alt = e.altKey;
-      mods.current.ctrl = e.ctrlKey; mods.current.meta = e.metaKey;
-    };
-    window.addEventListener('keydown', handleMod);
-    window.addEventListener('keyup', handleMod);
-    return () => { window.removeEventListener('keydown', handleMod); window.removeEventListener('keyup', handleMod); };
-  }, []);
-
-  // Die Super-Schleife: Verarbeitet Tastatur-Sync UND dynamisches Maus-Ramping
-  useEffect(() => {
+    if (!keyboardPosRef) return;
     let raf;
-    let lastSent = { x: 0, y: 0 };
     const tick = () => {
+      // ONLY sync from keyboard if the mouse isn't currently dragging the stick
       if (!activeRef.current) {
-        if (keyboardPosRef) {
-          const kp = keyboardPosRef.current;
-          if (visualPosRef.current.x !== kp.x || visualPosRef.current.y !== kp.y) {
-            visualPosRef.current = { x: kp.x, y: kp.y };
-            setPos({ x: kp.x, y: kp.y });
-          }
-        }
-      } else {
-        let vx = visualPosRef.current.x;
-        let vy = visualPosRef.current.y;
-        let nx = vx, ny = vy;
-
-        const m = mods.current;
-        const isPrecision = m.shift && (m.alt || m.meta || m.ctrl);
-
-        if (isPrecision) {
-          if (!precStart.current) precStart.current = Date.now();
-          const hold = Date.now() - precStart.current;
-          const factor = hold < 2000 ? 0.02 : hold < 4000 ? 0.1 : 0.3;
-          nx *= factor; ny *= factor;
-        } else {
-          precStart.current = 0;
-          if (m.shift || m.alt || m.meta || m.ctrl) {
-            nx *= 0.2; ny *= 0.2;
-          }
-        }
-
-        if (Math.abs(nx - lastSent.x) > 0.001 || Math.abs(ny - lastSent.y) > 0.001) {
-          lastSent = { x: nx, y: ny };
-          fireRef.current?.({ x: nx, y: ny, pan: Math.round((nx + 1) * 127.5), tilt: Math.round((ny + 1) * 127.5) });
-        }
+        const kp = keyboardPosRef.current;
+        setPos(prev => (prev.x === kp.x && prev.y === kp.y) ? prev : { x: kp.x, y: kp.y });
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [keyboardPosRef]);
+
+  const fire = useCallback((nx, ny) => {
+    onChange?.({ x: nx, y: ny, pan: Math.round((nx + 1) * 127.5), tilt: Math.round((ny + 1) * 127.5) });
+  }, [onChange]);
 
   const updateFromEvent = useCallback((e) => {
     const el = ref.current;
@@ -334,42 +279,38 @@ function StickyJoystick({
     let dy = e.clientY - cy;
     const dist = Math.hypot(dx, dy);
     if (dist > maxR) { dx = dx * maxR / dist; dy = dy * maxR / dist; }
-    
-    const vx = dx / maxR, vy = dy / maxR;
-    visualPosRef.current = { x: vx, y: vy };
-    setPos({ x: vx, y: vy });
-  }, [maxR]);
+    const nx = dx / maxR, ny = dy / maxR;
+    setPos({ x: nx, y: ny });
+    fire(nx, ny);
+  }, [fire, maxR]);
 
   const release = useCallback(() => {
-    activeRef.current = false;
-    precStart.current = 0;
+    setActive(false);
     cancelAnimationFrame(springRef.current);
     const start = performance.now();
-    const from = visualPosRef.current;
+    const from = pos;
     const dur = 180;
     const tick = (t) => {
-      if (activeRef.current) return;
       const k = Math.min(1, (t - start) / dur);
       const e = 1 - Math.pow(1 - k, 3);
       const nx = from.x * (1 - e);
       const ny = from.y * (1 - e);
-      visualPosRef.current = { x: nx, y: ny };
       setPos({ x: nx, y: ny });
-      fireRef.current?.({ x: nx, y: ny, pan: Math.round((nx + 1) * 127.5), tilt: Math.round((ny + 1) * 127.5) });
+      fire(nx, ny);
       if (k < 1) springRef.current = requestAnimationFrame(tick);
     };
     springRef.current = requestAnimationFrame(tick);
-  }, []);
+  }, [pos, fire]);
 
   useEffect(() => () => cancelAnimationFrame(springRef.current), []);
 
   const handlePointerDown = (e) => {
     cancelAnimationFrame(springRef.current);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
-    activeRef.current = true;
+    setActive(true);
     updateFromEvent(e);
   };
-  const handlePointerMove = (e) => { if (activeRef.current) updateFromEvent(e); };
+  const handlePointerMove = (e) => { if (active) updateFromEvent(e); };
   const handlePointerUp = (e) => {
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
     release();
@@ -400,7 +341,7 @@ function StickyJoystick({
       onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp}
       style={{
         width: size, height: size, position: 'relative',
-        touchAction: 'none', userSelect: 'none', cursor: activeRef.current ? 'grabbing' : 'grab',
+        touchAction: 'none', userSelect: 'none', cursor: active ? 'grabbing' : 'grab',
       }}
     >
       <svg width={size} height={size} style={{ position: 'absolute', inset: 0, display: 'block' }}>
@@ -421,7 +362,7 @@ function StickyJoystick({
             strokeDasharray="3 3"
           />
         )}
-        {activeRef.current && (
+        {active && (
           <circle cx={size/2} cy={size/2} r={maxR}
                   fill="none" stroke={thumbColor} strokeWidth={1} opacity={0.5} strokeDasharray="3 5" />
         )}
@@ -511,6 +452,7 @@ function LED({ color = '#22c55e', pulse = false, size = 8 }) {
   );
 }
 
+// Fixed Telemetry hook: Restored zero-latency DOM flashes from vanilla JS
 function useTelemetry() {
   const [t, setT] = useState({ ping: null, quality: '…' });
 
@@ -525,13 +467,14 @@ function useTelemetry() {
         if (!active) return;
         setT({ ping: ms, quality: ms < 30 ? 'EXC' : ms < 80 ? 'GOOD' : ms < 200 ? 'FAIR' : 'SLOW', raw: d });
 
+        // Zero-latency DOM flashes directly reflecting firmware flags
         const flash = (id, trigger) => {
           if (trigger) {
             const el = document.getElementById(id);
             if (el) {
               const cn = 'active-' + id.split('-')[1];
               el.classList.remove(cn);
-              void el.offsetWidth;
+              void el.offsetWidth; // force reflow
               el.classList.add(cn);
               setTimeout(() => el.classList.remove(cn), 100);
             }
@@ -648,7 +591,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
           boxShadow: pressing ? `0 0 0 2px ${color}, 0 0 32px ${color}66` : 'inset 0 -2px 0 rgba(0,0,0,0.22)',
           touchAction: 'manipulation', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, ...style,
         }}>
-        {glyph && <span style={{ fontSize: 18, opacity: 0.85 }}></span>}
+        {glyph && <span style={{ fontSize: 18, opacity: 0.85 }}>{glyph}</span>}
         <span>{label}</span>
       </button>
     );
@@ -876,7 +819,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
           </Panel>
           <Panel title="Live joystick · pan · tilt" padding={12}>
             <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-              <div style={{ flex: '0 0 auto' }}><StickyJoystick size={joystickSize} thumbColor={accent} keyboardPosRef={keyJoyRef} onChange={(v) => { onJoystick(v); }} /></div>
+                            <div style={{ flex: '0 0 auto' }}><StickyJoystick size={joystickSize} thumbColor={accent} keyboardPosRef={keyJoyRef} onChange={(v) => { onJoystick(v); }} /></div>
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, background: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 9 }}>
                   <div><div style={{ fontSize: 9, color: 'rgba(255,255,255,0.42)', letterSpacing: 1, fontWeight: 700 }}>PAN</div><div style={{ fontSize: 22, fontWeight: 700, color: accent, fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1 }}>{state.pan}</div></div>
@@ -884,7 +827,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1fr', gap: 5 }}>
                   <Pill onClick={() => setState((s) => ({ ...s, panRev: !s.panRev }))} active={state.panRev}>Pan Rev</Pill>
-                  <Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill>
+                  <Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill>                  <Pill accent={accent} active onClick={() => { setState((s) => ({ ...s, pan: 127, tilt: 127 })); fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill>
                   <Pill onClick={() => setState((s) => ({ ...s, tiltRev: !s.tiltRev }))} active={state.tiltRev}>Tilt Rev</Pill>
                 </div>
                 <button onClick={() => setJoyAdvOpen(!joyAdvOpen)} style={{ width: '100%', padding: '6px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 600, letterSpacing: 1, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>SPEED · CURVE · MOMENTUM</span><span style={{ transform: joyAdvOpen ? 'rotate(180deg)' : '', transition: 'transform .15s' }}>⌄</span></button>
@@ -1072,7 +1015,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
             if(!confirm('Reset programmer to default clear state?')) return;
             fetch('/kill_fx');
             fetch('/set_all?c1=0&c2=0&c3=127&c4=127&c15=255&c16=255&c5=0&c6=0&c7=0&c8=0&c9=0&c10=0&c11=0&c12=0&c13=0&c14=0&c17=0');
-            setState(s => ({ ...s, dimmer: 0, strobe: 0, colorBase: 0, colorOff: 0, color: 0, sgoboBase: 0, sgoboOff: 0, rgoboBase: 0, rgoboOff: 0, goboRot: 0, prism: false, frost: false, prismRot: 0, focus: 0, zoom: 0, macro: 0, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, presetActive: null }));
+            setState(s => ({ ...s, dimmer: 0, strobe: 0, pan: 127, tilt: 127, panFine: 255, tiltFine: 255, colorBase: 0, colorOff: 0, color: 0, sgoboBase: 0, sgoboOff: 0, rgoboBase: 0, rgoboOff: 0, goboRot: 0, prism: false, frost: false, prismRot: 0, focus: 0, zoom: 0, macro: 0, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, presetActive: null }));
           }}
           style={{ padding: '14px 0', background: '#f8fafc', color: '#0a0a0c', borderRadius: 12, border: 'none', fontSize: 13, fontWeight: 800, letterSpacing: 1.2, cursor: 'pointer', boxShadow: '0 0 36px rgba(248,250,252,0.18)' }}>
             ☀ CLEAR PROGRAMMER (DEFAULT)
@@ -1126,8 +1069,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
               <input value={state.presetSaveName !== undefined ? state.presetSaveName : (state.presetNames[state.presetSaveSlot - 1] || '')} onChange={(e) => setState((s) => ({ ...s, presetSaveName: e.target.value }))} placeholder="Preset name (max 20)" maxLength={20} style={{ flex: 1, padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, fontFamily: 'inherit' }} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-              <button onClick={() => { fetch(`/save?slot=${state.presetSaveSlot}&n=${encodeURIComponent(state.presetSaveName || '')}`).then(() => { setState(s => { const pn = [...s.presetNames]; pn[state.presetSaveSlot - 1] = state.presetSaveName || `Preset ${state.presetSaveSlot}`; return { ...s, presetNames: pn }; }); showToast(`✓ Preset ${state.presetSaveSlot} saved`, 'ok'); }); }} style={{ padding: '11px 0', background: '#16a34a', border: 'none', borderRadius: 9, color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>SAVE</button>
-              <button onClick={() => { fetch('/recall?slot=' + state.presetSaveSlot); setState((s) => ({ ...s, presetActive: state.presetSaveSlot })); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.18)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>RECALL</button>
+              <button onClick={() => { fetch(`/save?slot=${state.presetSaveSlot}&n=${encodeURIComponent(state.presetSaveName || '')}`).then(() => { setState(s => { const pn = [...s.presetNames]; pn[s.presetSaveSlot - 1] = s.presetSaveName || `Preset ${s.presetSaveSlot}`; return { ...s, presetNames: pn }; }); showToast(`✓ Preset ${state.presetSaveSlot} saved`, 'ok'); }); }} style={{ padding: '11px 0', background: '#16a34a', border: 'none', borderRadius: 9, color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>SAVE</button>
+              <button onClick={() => { fetch('/recall?slot=' + state.presetSaveSlot); setState((s) => ({ ...s, presetActive: s.presetSaveSlot })); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.18)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>RECALL</button>
             </div>
           </Accordion>
         </div>
@@ -1369,13 +1312,15 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   const CH = { DIMMER:1, STROBE:2, PAN:3, TILT:4, SPEED:5, COLOR:6, GOBO:7, GOBO_ROT:8, GOBO_IDX:9, PRISM:10, PRISM_ROT:11, FROST:12, FOCUS:13, ZOOM:14, PAN_FINE:15, TILT_FINE:16, MACRO:17 };
   const COLORS = [{n:'White',v:0},{n:'W/R',v:50},{n:'Red',v:5},{n:'R/Y',v:55},{n:'Yellow',v:10},{n:'Y/B',v:60},{n:'Blue',v:15},{n:'B/G',v:65},{n:'Green',v:20},{n:'G/P',v:70},{n:'Purple',v:25},{n:'P/A',v:75},{n:'Amber',v:30},{n:'A/C',v:80},{n:'Cyan',v:35},{n:'C/E',v:85},{n:'Emerald',v:40},{n:'E/O',v:90},{n:'Orange',v:45},{n:'O/W',v:95}];
 
- function App() {
+  function App() {
     const [tab, setTab] = useState('LIVE');
     const [night, setNight] = useState(() => localStorage.getItem('hz_night') === '1');
-    
-    // HIER IST DIE KORREKTE, UMBENANNTE VARIABLE
-    const [accent, setAccent] = useState(() => localStorage.getItem('hz_accent') || ACCENT_DEFAULT);
+    const [accentHex, setAccentHex] = useState(() => localStorage.getItem('hz_accent') || ACCENT_DEFAULT);
 
+    const keyJoyRef = useKeyboardJoystick(useCallback((v) => {
+      tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40);
+      setState(s => ({ ...s, pan: Math.round((v.x + 1) * 127.5), tilt: Math.round((v.y + 1) * 127.5) }));
+    }, []));
     const [muted, setMuted] = useState(false);
     const [micOn, setMicOn] = useState(false);
     const [hwSens, setHwSens] = useState(() => { const saved = parseInt(localStorage.getItem('hz_hwsens')); return isNaN(saved) ? 50 : saved; });
@@ -1400,19 +1345,12 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
       mapCalibrating: false, mapActiveMarker: 0, mapImage: '', mapHasImage: false, openWhite: false,
     });
 
-    const keyJoyRef = useKeyboardJoystick(useCallback((v) => {
-      tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40);
-    }, []));
-
     const [bpm, tap, setBpm] = useTapTempo();
     const beat = useBeatPulse(bpm);
     const tele = useTelemetry();
 
-    // HIER IST DIE KORREKTE, EINZIGE DEKLARATION
-    const handleAccentChange = useCallback((hex) => { setAccent(hex); try { localStorage.setItem('hz_accent', hex); } catch(e) {} }, []);
-
-const isReceiving = useRef(false);
-    const prevRef = useRef({});
+    const accent = night ? '#ef4444' : accentHex;
+    const handleAccentChange = useCallback((hex) => { setAccentHex(hex); try { localStorage.setItem('hz_accent', hex); } catch(e) {} }, []);
 
     useEffect(() => {
       const sync = async () => {
@@ -1420,9 +1358,6 @@ const isReceiving = useRef(false);
           const r = await fetch('/api/get_dmx'); const d = await r.json();
           if (d.bpm) setBpm(d.bpm);
           if (d.pn && Array.isArray(d.pn)) setFixtureCount(1);
-          
-          isReceiving.current = true; // FLAG SETZEN: Wir empfangen gerade Daten!
-
           setState(prev => {
             const next = { ...prev };
             const color = d[CH.COLOR]; const colorEntry = COLORS.find(c => c.v === color);
@@ -1445,52 +1380,37 @@ const isReceiving = useRef(false);
             if (d.hwA !== undefined) setMicOn(d.hwA === 1);
             return next;
           });
-
-          // LÄNGERES TIMEOUT (300ms) für langsame Browser-Engines, damit das UI sicher durch-gerendert hat
-          setTimeout(() => { isReceiving.current = false; }, 300);
         } catch(e) {}
       };
       sync(); const id = setInterval(sync, 2000); return () => clearInterval(id);
     }, []);
 
+    const prevRef = useRef({});
+
     useEffect(() => {
       const s = state; const p = prevRef.current;
       const batch = {};
-      
-      const track = (ch, val) => { 
-        if (p['ch'+ch] !== val) { 
-          if (!isReceiving.current) batch[ch] = val; 
-          p['ch'+ch] = val; 
-        } 
-      };
-      
+      const track = (ch, val) => { if (p['ch'+ch] !== val) { batch[ch] = val; p['ch'+ch] = val; } };
       track(CH.DIMMER, s.dimmer); track(CH.STROBE, s.strobe); track(CH.SPEED, s.motorSpeed);
       track(CH.COLOR, s.colorBase + s.colorOff); track(CH.GOBO, s.sgoboBase + s.sgoboOff); track(CH.GOBO_ROT, s.rgoboBase + s.rgoboOff); track(CH.GOBO_IDX, s.goboRot);
       track(CH.PRISM, s.prism ? 200 : 0); track(CH.PRISM_ROT, s.prismRot); track(CH.FROST, s.frost ? 200 : 0); track(CH.FOCUS, s.focus); track(CH.ZOOM, s.zoom); track(CH.PAN_FINE, s.panFine); track(CH.TILT_FINE, s.tiltFine); track(CH.MACRO, s.macro);
-      
       if (Object.keys(batch).length > 0) { const params = new URLSearchParams(); Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v)); fetch('/set_all?' + params.toString()).catch(() => {}); }
       
-      if (p.fxState !== JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy])) { p.fxState = JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy]); if(!isReceiving.current) tFetch(`/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}`, 'fx'); }
-      if (p.dimFxState !== JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy])) { p.dimFxState = JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy]); if(!isReceiving.current) tFetch(`/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}`, 'mfx_dim'); }
-      if (p.grFxState !== JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy])) { p.grFxState = JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy]); if(!isReceiving.current) tFetch(`/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}`, 'mfx_gr'); }
-      if (p.prFxState !== JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy])) { p.prFxState = JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy]); if(!isReceiving.current) tFetch(`/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}`, 'mfx_pr'); }
-      if (p.colFxState !== JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy])) { p.colFxState = JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy]); if(!isReceiving.current) tFetch(`/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}`, 'cfx'); }
-      if (p.sgFxState !== JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc])) { p.sgFxState = JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc]); if(!isReceiving.current) tFetch(`/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}`, 'sgfx'); }
-      if (p.rgFxState !== JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc])) { p.rgFxState = JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc]); if(!isReceiving.current) tFetch(`/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}`, 'rgfx'); }
-      if (p.chaserState !== JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync])) { p.chaserState = JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync]); if(!isReceiving.current) tFetch(`/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog'); }
+      if (p.fxState !== JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy])) { p.fxState = JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy]); tFetch(`/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}`, 'fx'); }
+      if (p.dimFxState !== JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy])) { p.dimFxState = JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy]); tFetch(`/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}`, 'mfx_dim'); }
+      if (p.grFxState !== JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy])) { p.grFxState = JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy]); tFetch(`/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}`, 'mfx_gr'); }
+      if (p.prFxState !== JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy])) { p.prFxState = JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy]); tFetch(`/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}`, 'mfx_pr'); }
+      if (p.colFxState !== JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy])) { p.colFxState = JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy]); tFetch(`/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}`, 'cfx'); }
+      if (p.sgFxState !== JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc])) { p.sgFxState = JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc]); tFetch(`/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}`, 'sgfx'); }
+      if (p.rgFxState !== JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc])) { p.rgFxState = JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc]); tFetch(`/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}`, 'rgfx'); }
+      if (p.chaserState !== JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync])) { p.chaserState = JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync]); tFetch(`/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog'); }
       
-      if (p.transMode !== s.transMode) { p.transMode = s.transMode; if(!isReceiving.current) tFetch('/trans?dip=' + s.transMode, 'trans'); }
-      if (p.master !== s.master) { p.master = s.master; if(!isReceiving.current) tFetch(`/masterdim?v=${s.master}`, 'master'); }
-      if (p.damping !== s.damping) { p.damping = s.damping; if(!isReceiving.current) tFetch('/smooth?v=' + s.damping, 'smth'); }
+      if (p.transMode !== s.transMode) { p.transMode = s.transMode; tFetch('/trans?dip=' + s.transMode, 'trans'); }
+      if (p.master !== s.master) { p.master = s.master; tFetch(`/masterdim?v=${s.master}`, 'master'); }
+      if (p.damping !== s.damping) { p.damping = s.damping; tFetch('/smooth?v=' + s.damping, 'smth'); }
       
-      // KORREKTUR: joyCurve durch 10 teilen, bevor es an den ESP32 geht!
-      const crvFixed = (s.joyCurve / 10).toFixed(1);
-      const joyKey = `${s.joySpeed}|${crvFixed}|${s.joyMomentum}|${s.panRev?1:0}|${s.tiltRev?1:0}|${s.panMin}|${s.panMax}|${s.tiltMin}|${s.tiltMax}`;
-      
-      if (p.joyKey !== joyKey) { 
-        p.joyKey = joyKey; 
-        if(!isReceiving.current) tFetch(`/joy_cfg?spd=${s.joySpeed}&crv=${crvFixed}&mom=${s.joyMomentum}&pr=${s.panRev?1:0}&tr=${s.tiltRev?1:0}&pmin=${s.panMin}&pmax=${s.panMax}&tmin=${s.tiltMin}&tmax=${s.tiltMax}`, 'joy_cfg'); 
-      }
+      const joyKey = `${s.joySpeed}|${s.joyCurve}|${s.joyMomentum}|${s.panRev?1:0}|${s.tiltRev?1:0}|${s.panMin}|${s.panMax}|${s.tiltMin}|${s.tiltMax}`;
+      if (p.joyKey !== joyKey) { p.joyKey = joyKey; tFetch(`/joy_cfg?spd=${s.joySpeed}&crv=${s.joyCurve}&mom=${s.joyMomentum}&pr=${s.panRev?1:0}&tr=${s.tiltRev?1:0}&pmin=${s.panMin}&pmax=${s.panMax}&tmin=${s.tiltMin}&tmax=${s.tiltMax}`, 'joy_cfg'); }
     }, [state]);
 
     const recallPreset = useCallback((slot) => { fetch('/recall?slot=' + slot).then(() => {}); setState(s => ({ ...s, presetActive: slot })); }, []);
@@ -1498,6 +1418,8 @@ const isReceiving = useRef(false);
     const killAllFx = useCallback(() => { fetch('/kill_fx'); setState(s => ({ ...s, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, showRunning: false, presetActive: null })); }, []);
     
     const handleMute = useCallback(() => {
+      // FIX: Entkoppelt von dem Auto-Sync, das beim Reload feuert. 
+      // Feuert den echten Toggle erst, wenn der Button geklickt wird.
       fetch(`/autofade?t=${state.fadeTime}&c=${state.fadeCurve}`);
       setMuted(m => !m);
     }, [state.fadeTime, state.fadeCurve]);
@@ -1509,10 +1431,7 @@ const isReceiving = useRef(false);
     const handleJog = useCallback((v) => { tFetch('/jog?v=' + v, 'jog'); }, []);
     const releaseJog = useCallback(() => { tFetch('/jog?v=0', 'jog'); }, []);
     
-    // MOUSE JOYSTICK HANDLER
-    const joystickHandler = useCallback((v) => { 
-      tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40); 
-    }, []);
+    const joystickHandler = useCallback((v) => { tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40); }, []);
 
     const handleMapTap = useCallback((nx, ny) => { const p = state.mapPoints; const topPan = p[0].pan + (p[1].pan - p[0].pan) * nx; const botPan = p[3].pan + (p[2].pan - p[3].pan) * nx; const finalPan = topPan + (botPan - topPan) * ny; const topTilt = p[0].tilt + (p[1].tilt - p[0].tilt) * nx; const botTilt = p[3].tilt + (p[2].tilt - p[3].tilt) * nx; const finalTilt = topTilt + (botTilt - topTilt) * ny; tFetch(`/map_go?p=${Math.max(0, Math.min(65535, Math.round(finalPan)))}&t=${Math.max(0, Math.min(65535, Math.round(finalTilt)))}`, 'map', 40); }, [state.mapPoints]);
 
