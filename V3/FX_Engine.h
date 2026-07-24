@@ -1,0 +1,180 @@
+#pragma once
+#include <Arduino.h>
+#include <math.h>
+
+// =========================================================
+// --- STEP FX (Farbräder & Statische Gobos) ---
+// =========================================================
+struct StepFX {
+    bool active = false;
+    int startVal = 0;
+    int endVal = 0;
+    int step = 1;
+    int trigger = 0;
+    int sync = 3;
+    unsigned long holdTime = 1000;
+    unsigned long lastStepTime = 0;
+    int currentIdx = 0;
+    bool scratch = false;
+};
+
+// =========================================================
+// --- LFO MODULATOR (Dimmer, Prisma & Gobo Rot) ---
+// =========================================================
+class Modulator {
+public:
+    bool active = false;
+    int startVal = 0;
+    int endVal = 255;
+    int mode = 0;
+    int curve = 0;
+    float speed = 30.0f;
+    int trigger = 0;
+    int sync = 3;
+    float phase = 0.0f;
+    
+    unsigned long lastUpdate = 0; // FIX: Echter Instanz-Member statt static!
+
+    Modulator(int minV, int maxV) { startVal = minV; endVal = maxV; }
+    void start() { active = true; lastUpdate = millis(); }
+    void stop() { active = false; }
+
+    float getLFO(float p, int m, int c) {
+        float val = 0.0f;
+        // Mode: 0=Forward (Saw), 1=PingPong (Triangle), 2=Reverse (Decay)
+        if (m == 0) val = p;
+        else if (m == 1) val = p < 0.5f ? p * 2.0f : 2.0f - (p * 2.0f);
+        else if (m == 2) val = 1.0f - p;
+
+        // Curve: 0=Linear, 1=Quad, 2=Cubic, 3=Sine, 4=Gauss, 5=Random
+        if (c == 0) return val;
+        if (c == 1) return val * val;
+        if (c == 2) return val * val * val;
+        if (c == 3) return 0.5f - 0.5f * cosf(val * PI);
+        if (c == 4) { float x = (val - 0.5f)*2.0f; return expf(-(x*x)*5.0f); }
+        if (c == 5) return random(0, 1000) / 1000.0f; 
+        return val;
+    }
+
+    void process(unsigned long now, unsigned long masterSyncTime, int globalBPM, const float* syncBeats, float &outVal) {
+        if (lastUpdate == 0) lastUpdate = now;
+        float dt = (now - lastUpdate) / 1000.0f;
+        lastUpdate = now;
+        if(dt <= 0 || dt > 1.0f) dt = 0.02f; // Safety clamp
+
+        // FIX: Bei Audio-Triggern (>=2) muss die Phase trotzdem weiterlaufen (für den Decay/Release)
+        if (trigger == 0 || trigger >= 2) { 
+            phase += (speed / 100.0f) * dt * 2.0f; 
+        } else if (trigger == 1) { // Global BPM Sync
+            unsigned long interval = (60000.0f / globalBPM) * syncBeats[sync];
+            phase = (float)((now - masterSyncTime) % interval) / interval;
+        } 
+
+        if (phase > 1.0f) phase -= 1.0f;
+        if (phase < 0.0f) phase += 1.0f;
+
+        float lfo = getLFO(phase, mode, curve);
+        outVal = startVal + (endVal - startVal) * lfo;
+    }
+};
+
+// =========================================================
+// --- KINEMATICS ENGINE (Pan & Tilt Bewegungen) ---
+// =========================================================
+class MovementEngine {
+public:
+    bool active = false;
+    int type = 1;
+    float rot = 0.0f;
+    int spdSt = 50;
+    int spdEn = 50;
+    int szSt = 30;
+    int szEn = 30;
+    int modMo = 0;
+    int modCu = 0;
+    float modSp = 10.0f;
+    int trigger = 0;
+    int sync = 3;
+    float modPhase = 0.0f;
+
+    float currentSize = 1.0f;
+    float currentSpeed = 1.0f;
+    float enginePhase = 0.0f;
+    
+    unsigned long lastUpdate = 0; // FIX: Echter Instanz-Member
+
+    void start() { active = true; lastUpdate = millis(); }
+    void stop() { active = false; }
+
+    void process(unsigned long now, unsigned long masterSyncTime, int globalBPM, const float* syncBeats) {
+        if (lastUpdate == 0) lastUpdate = now;
+        float dt = (now - lastUpdate) / 1000.0f;
+        lastUpdate = now;
+        if(dt <= 0 || dt > 1.0f) dt = 0.02f;
+
+        // 1. Modulator für Size & Speed berechnen (inkl. Fix für Audio Trigger)
+        if (trigger == 0 || trigger >= 2) {
+            modPhase += (modSp / 100.0f) * dt * 2.0f;
+        } else if (trigger == 1) {
+            unsigned long interval = (60000.0f / globalBPM) * syncBeats[sync];
+            modPhase = (float)((now - masterSyncTime) % interval) / interval;
+        }
+        if (modPhase > 1.0f) modPhase -= 1.0f;
+        if (modPhase < 0.0f) modPhase += 1.0f;
+        
+        float mVal = modPhase;
+        if (modMo == 1) mVal = modPhase < 0.5f ? modPhase * 2.0f : 2.0f - (modPhase * 2.0f);
+        else if (modMo == 2) mVal = 1.0f - modPhase;
+
+        if (modCu == 1) mVal = mVal * mVal;
+        else if (modCu == 3) mVal = 0.5f - 0.5f * cosf(mVal * PI);
+
+        currentSize = (szSt + (szEn - szSt) * mVal) / 100.0f;
+        currentSpeed = (spdSt + (spdEn - spdSt) * mVal) / 100.0f;
+
+        // 2. Base Phase des Shapes vorantreiben
+        enginePhase += currentSpeed * dt * 5.0f; 
+        if (enginePhase > PI * 2.0f) enginePhase -= PI * 2.0f;
+    }
+
+    void getValues(int centerP, int centerT, int fixturePhase, bool invP, bool invT, int &outP, int &outT) {
+        // Fanning Offset pro Fixture anwenden (Wave-Effekte)
+        float pOffset = (fixturePhase / 360.0f) * PI * 2.0f;
+        float p = enginePhase + pOffset;
+        float x = 0, y = 0;
+
+        // Shape Generierung (-1.0 bis 1.0)
+        switch(type) {
+            case 1: x = sinf(p); y = cosf(p); break; // Circle
+            case 2: x = sinf(p); y = sinf(p*2.0f); break; // Fig 8
+            case 3: x = sinf(p*2.0f)*cosf(p); y = sinf(p*2.0f)*sinf(p); break; // Clover
+            case 4: x = (sinf(p) > 0 ? 1 : -1); y = (cosf(p) > 0 ? 1 : -1); break; // Square
+            case 5: x = sinf(p) * cosf(p*2.0f); y = cosf(p) * cosf(p*2.0f); break; // Star
+            case 6: x = sinf(p) * 0.5f + sinf(p*2.5f) * 0.5f; y = cosf(p); break; // Waterwave
+            case 7: x = sinf(p*3.0f); y = cosf(p*4.0f); break; // Lissajous
+            case 8: x = sinf(p); y = 0; break; // Pan Sweep Line
+            case 9: x = 0; y = sinf(p); break; // Tilt Sweep Line
+            case 10: x = sinf(p) * (0.5f + 0.5f*cosf(p*0.5f)); y = cosf(p) * (0.5f + 0.5f*cosf(p*0.5f)); break; // Spiral
+            case 11: x = sinf(p*1.3f); y = cosf(p*1.7f); break; // Ballyhoo
+            case 12: x = sinf(p); y = sinf(p) * cosf(p); break; // Infinity Loop
+            default: x = sinf(p); y = cosf(p); break;
+        }
+
+        // Size Skalierung (auf 16-Bit DMX Bereich mappen)
+        x *= currentSize * 32767.0f;
+        y *= currentSize * 32767.0f;
+
+        // Rotation der X/Y Matrix
+        float rRad = rot * (PI / 180.0f);
+        float rx = x * cosf(rRad) - y * sinf(rRad);
+        float ry = x * sinf(rRad) + y * cosf(rRad);
+
+        // Pan/Tilt Invertierung der Lampe
+        if (invP) rx = -rx;
+        if (invT) ry = -ry;
+
+        // Offset addieren und in den sicheren DMX Bereich zwingen
+        outP = constrain(centerP + (int)rx, 0, 65535);
+        outT = constrain(centerT + (int)ry, 0, 65535);
+    }
+};

@@ -1,0 +1,398 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include <ArduinoOTA.h>
+#include <ArtnetWifi.h> 
+#include <ESPmDNS.h> 
+#include <math.h> 
+#include <Update.h> 
+#include <LittleFS.h>
+#include "driver/uart.h"
+#include "FX_Engine.h" 
+#include "Audio_Engine.h"
+
+// =========================================================
+// --- 1. HARDWARE CONFIGURATION ---
+// =========================================================
+#define NUM_CHANNELS  18
+#define CH_DIMMER     1
+#define CH_STROBE     2
+#define CH_PAN        3
+#define CH_TILT       4
+#define CH_COLOR      6
+#define CH_GOBO       7
+#define CH_GOBO_ROT   8
+#define CH_PAN_FINE   15
+#define CH_TILT_FINE  16
+
+const byte wheelMap[20] = {0, 50, 5, 55, 10, 60, 15, 65, 20, 70, 25, 75, 30, 80, 35, 85, 40, 90, 45, 95};
+const byte sGoboMap[10] = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90}; 
+const byte rGoboMap[7]  = {0, 10, 20, 30, 40, 50, 60};
+
+const char* ap_ssid = "Moving_Head_Ctrl";   
+const char* ap_password = "12345678";  
+const int transmitPin = 7; 
+const uart_port_t DMX_UART = UART_NUM_1;
+volatile uint8_t dmxBuffer[513]; 
+
+// =========================================================
+// --- 2. GLOBAL SYSTEM STATE ---
+// =========================================================
+WebServer server(80);
+ArtnetWifi artnet;
+Preferences prefs;
+
+byte dmxData[513]; 
+String presetNames[10];
+
+int globalBPM = 120;
+unsigned long lastBeatTime = 0;
+unsigned long masterSyncTime = 0; 
+bool beatTriggered = false; 
+bool manualTap = false; 
+const float syncBeats[7] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125};
+
+bool bumpBlackout = false; bool bumpStrobeF = false; bool bumpStrobe50 = false; bool bumpBlinder = false;
+int activePresetSlot = 0;
+int centerPan16 = 32767; int centerTilt16 = 32767;
+
+float joyInputX = 0.0f, joyInputY = 0.0f;
+float joySmoothX = 0.0f, joySmoothY = 0.0f;
+int joyMaxSpeed = 2000;
+float joyCurve = 1.5f;
+float joyMomentum = 0.7f;
+bool joyPanRev = false, joyTiltRev = false;
+int panMinLimit = 0, panMaxLimit = 65535;
+int tiltMinLimit = 0, tiltMaxLimit = 65535;
+bool mapIsMoving = false;
+float mapTargetPan = 32767.0f, mapTargetTilt = 32767.0f;
+
+struct Fixture { int addr; bool invP; bool invT; int phase; };
+Fixture fixtures[8];
+int numFixtures = 1;
+int maxDmxChannel = 512; 
+
+int dimSmoothVal = 0; 
+float dimSmoothTarget = 0.0;
+float dimSmoothCurrent = 0.0;
+bool autoFading = false;
+bool fadeStateOut = false; 
+unsigned long fadeStartTime = 0;
+unsigned long fadeDuration = 2000;
+int fadeCurve = 3;
+float fadeMultiplier = 1.0;
+float masterBrightness = 1.0f;
+
+MovementEngine moveFX;
+Modulator dimFX(0, 255);
+Modulator gRotFX(135, 255);
+Modulator pRotFX(135, 255);
+
+// struct StepFX { bool active = false; int startVal = 0; int endVal = 0; int step = 1; int trigger = 0; int sync = 3; unsigned long holdTime = 1000; unsigned long lastStepTime = 0; int currentIdx = 0; bool scratch = false; };
+StepFX colFX, sgobFX, rgobFX;
+
+struct SceneData { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc; };
+static SceneData chaserScenes[10]; 
+
+bool chaserActive = false;
+int chaserStartSlot = 0, chaserEndSlot = 3, chaserTrigger = 0, chaserSync = 3, chaserOrder = 0;
+int chaserFadeTrigger = 0, chaserFadeSync = 3; 
+unsigned long fadeTime = 2000, holdTime = 2000, stepStartTime = 0;
+int currentSlot = 0, nextSlot = 1;
+bool inFade = false;
+
+bool dipToBlack = false;
+bool isDipping = false;
+int pendingLoadType = 0; 
+int pendingLoadParam = 0;
+unsigned long dipStartTime = 0;
+int jogBend = 0; 
+
+// =========================================================
+// --- SCENE EXECUTION HELPERS ---
+// =========================================================
+
+void loadAllChaserScenes() {
+  for (int i = 0; i < 10; i++) {
+    prefs.begin(("sc" + String(i + 1)).c_str(), true);
+    presetNames[i] = prefs.getString("n", "");
+    
+    // FIX: Auch hier das Struct strikt nullen!
+    SceneData sd;
+    memset(&sd, 0, sizeof(SceneData));
+
+    if (prefs.getBytes("data", &sd, sizeof(SceneData)) == sizeof(SceneData)) {
+        chaserScenes[i] = sd;
+    } else {
+        // FALLBACK für alte Presets
+        for (int c = 1; c <= 18; c++) chaserScenes[i].dmx[c] = prefs.getUChar(String(c).c_str(), 0);
+        chaserScenes[i].fA = prefs.getBool("fA", false); chaserScenes[i].fT = prefs.getInt("fT", 1); chaserScenes[i].fR = prefs.getFloat("fR", 0.0);
+        chaserScenes[i].fTr = prefs.getInt("fTr", 0); chaserScenes[i].fSy = prefs.getInt("fSy", 3);
+        chaserScenes[i].fSS = prefs.getInt("fSS", 50); chaserScenes[i].fSE = prefs.getInt("fSE", 50);
+        chaserScenes[i].fZS = prefs.getInt("fZS", 30); chaserScenes[i].fZE = prefs.getInt("fZE", 30);
+        chaserScenes[i].fMM = prefs.getInt("fMM", 0); chaserScenes[i].fMC = prefs.getInt("fMC", 0); chaserScenes[i].fMS = prefs.getFloat("fMS", 10.0);
+        chaserScenes[i].dA = prefs.getBool("dA", false); chaserScenes[i].dSt = prefs.getInt("dSt", 0); chaserScenes[i].dEn = prefs.getInt("dEn", 255);
+        chaserScenes[i].dMo = prefs.getInt("dMo", 0); chaserScenes[i].dCu = prefs.getInt("dCu", 0); chaserScenes[i].dSp = prefs.getFloat("dSp", 30.0);
+        chaserScenes[i].dTr = prefs.getInt("dTr", 0); chaserScenes[i].dSy = prefs.getInt("dSy", 3);
+        chaserScenes[i].grA = prefs.getBool("grA", false); chaserScenes[i].grSt = prefs.getInt("grSt", 135); chaserScenes[i].grEn = prefs.getInt("grEn", 190);
+        chaserScenes[i].grMo = prefs.getInt("grMo", 0); chaserScenes[i].grCu = prefs.getInt("grCu", 0); chaserScenes[i].grSp = prefs.getFloat("grSp", 30.0);
+        chaserScenes[i].grTr = prefs.getInt("grTr", 0); chaserScenes[i].grSy = prefs.getInt("grSy", 3);
+        chaserScenes[i].prA = prefs.getBool("prA", false); chaserScenes[i].prSt = prefs.getInt("prSt", 193); chaserScenes[i].prEn = prefs.getInt("prEn", 255);
+        chaserScenes[i].prMo = prefs.getInt("prMo", 0); chaserScenes[i].prCu = prefs.getInt("prCu", 0); chaserScenes[i].prSp = prefs.getFloat("prSp", 30.0);
+        chaserScenes[i].prTr = prefs.getInt("prTr", 0); chaserScenes[i].prSy = prefs.getInt("prSy", 3);
+        chaserScenes[i].cA = prefs.getBool("cA", false); chaserScenes[i].cSt = prefs.getInt("cSt", 0); chaserScenes[i].cEn = prefs.getInt("cEn", 0);
+        chaserScenes[i].cHo = prefs.getInt("cHo", 1000); chaserScenes[i].cTr = prefs.getInt("cTr", 0); chaserScenes[i].cSy = prefs.getInt("cSy", 3);
+        chaserScenes[i].sgA = prefs.getBool("sgA", false); chaserScenes[i].sgSt = prefs.getInt("sgSt", 0); chaserScenes[i].sgEn = prefs.getInt("sgEn", 0);
+        chaserScenes[i].sgHo = prefs.getInt("sgHo", 1000); chaserScenes[i].sgTr = prefs.getInt("sgTr", 0); chaserScenes[i].sgSy = prefs.getInt("sgSy", 3);
+        chaserScenes[i].sgSc = prefs.getBool("sgSc", false);
+        chaserScenes[i].rgA = prefs.getBool("rgA", false); chaserScenes[i].rgSt = prefs.getInt("rgSt", 0); chaserScenes[i].rgEn = prefs.getInt("rgEn", 0);
+        chaserScenes[i].rgHo = prefs.getInt("rgHo", 1000); chaserScenes[i].rgTr = prefs.getInt("rgTr", 0); chaserScenes[i].rgSy = prefs.getInt("rgSy", 3);
+        chaserScenes[i].rgSc = prefs.getBool("rgSc", false);
+    }
+    prefs.end();
+  }
+}
+
+void triggerSceneFX(int slot) {
+  moveFX.active = chaserScenes[slot].fA; moveFX.type = chaserScenes[slot].fT; moveFX.rot = chaserScenes[slot].fR;
+  moveFX.trigger = chaserScenes[slot].fTr; moveFX.sync = chaserScenes[slot].fSy;
+  moveFX.spdSt = chaserScenes[slot].fSS; moveFX.spdEn = chaserScenes[slot].fSE; moveFX.szSt = chaserScenes[slot].fZS; moveFX.szEn = chaserScenes[slot].fZE;
+  moveFX.modMo = chaserScenes[slot].fMM; moveFX.modCu = chaserScenes[slot].fMC; moveFX.modSp = chaserScenes[slot].fMS;
+  if(moveFX.active) moveFX.start(); else moveFX.stop();
+
+  dimFX.active = chaserScenes[slot].dA; dimFX.startVal = chaserScenes[slot].dSt; dimFX.endVal = chaserScenes[slot].dEn;
+  dimFX.mode = chaserScenes[slot].dMo; dimFX.curve = chaserScenes[slot].dCu; dimFX.speed = chaserScenes[slot].dSp;
+  dimFX.trigger = chaserScenes[slot].dTr; dimFX.sync = chaserScenes[slot].dSy;
+  if(dimFX.active) dimFX.start(); else dimFX.stop();
+
+  gRotFX.active = chaserScenes[slot].grA; gRotFX.startVal = chaserScenes[slot].grSt; gRotFX.endVal = chaserScenes[slot].grEn;
+  gRotFX.mode = chaserScenes[slot].grMo; gRotFX.curve = chaserScenes[slot].grCu; gRotFX.speed = chaserScenes[slot].grSp;
+  gRotFX.trigger = chaserScenes[slot].grTr; gRotFX.sync = chaserScenes[slot].grSy;
+  if(gRotFX.active) gRotFX.start(); else gRotFX.stop();
+
+  pRotFX.active = chaserScenes[slot].prA; pRotFX.startVal = chaserScenes[slot].prSt; pRotFX.endVal = chaserScenes[slot].prEn;
+  pRotFX.mode = chaserScenes[slot].prMo; pRotFX.curve = chaserScenes[slot].prCu; pRotFX.speed = chaserScenes[slot].prSp;
+  pRotFX.trigger = chaserScenes[slot].prTr; pRotFX.sync = chaserScenes[slot].prSy;
+  if(pRotFX.active) pRotFX.start(); else pRotFX.stop();
+
+  colFX.active = chaserScenes[slot].cA; colFX.startVal = chaserScenes[slot].cSt; colFX.endVal = chaserScenes[slot].cEn;
+  colFX.holdTime = chaserScenes[slot].cHo; colFX.trigger = chaserScenes[slot].cTr; colFX.sync = chaserScenes[slot].cSy;
+  if ((colFX.startVal % 2 == 0 && colFX.endVal % 2 == 0) || (colFX.startVal % 2 != 0 && colFX.endVal % 2 != 0)) colFX.step = 2; else colFX.step = 1;
+  if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
+
+  sgobFX.active = chaserScenes[slot].sgA; sgobFX.startVal = chaserScenes[slot].sgSt; sgobFX.endVal = chaserScenes[slot].sgEn;
+  sgobFX.holdTime = chaserScenes[slot].sgHo; sgobFX.trigger = chaserScenes[slot].sgTr; sgobFX.sync = chaserScenes[slot].sgSy; sgobFX.scratch = chaserScenes[slot].sgSc;
+  if(sgobFX.active) { sgobFX.currentIdx = sgobFX.startVal; sgobFX.lastStepTime = millis(); }
+
+  rgobFX.active = chaserScenes[slot].rgA; rgobFX.startVal = chaserScenes[slot].rgSt; rgobFX.endVal = chaserScenes[slot].rgEn;
+  rgobFX.holdTime = chaserScenes[slot].rgHo; rgobFX.trigger = chaserScenes[slot].rgTr; rgobFX.sync = chaserScenes[slot].rgSy; rgobFX.scratch = chaserScenes[slot].rgSc;
+  if(rgobFX.active) { rgobFX.currentIdx = rgobFX.startVal; rgobFX.lastStepTime = millis(); }
+}
+
+void executePreset(int slot) {
+    chaserActive = false; activePresetSlot = slot;
+    
+    // Wir lesen extrem schnell direkt aus dem RAM! (Kein Flash-Readout nötig)
+    SceneData sd = chaserScenes[slot - 1];
+
+    for (int i = 1; i <= 18; i++) dmxData[i] = sd.dmx[i];
+    
+    dimSmoothTarget = dmxData[1]; 
+    centerPan16 = (dmxData[3] << 8) | dmxData[15];
+    centerTilt16 = (dmxData[4] << 8) | dmxData[16];
+
+    moveFX.active = sd.fA; moveFX.type = sd.fT; moveFX.rot = sd.fR; moveFX.trigger = sd.fTr; moveFX.sync = sd.fSy; moveFX.spdSt = sd.fSS; moveFX.spdEn = sd.fSE; moveFX.szSt = sd.fZS; moveFX.szEn = sd.fZE; moveFX.modMo = sd.fMM; moveFX.modCu = sd.fMC; moveFX.modSp = sd.fMS;
+    dimFX.active = sd.dA; dimFX.startVal = sd.dSt; dimFX.endVal = sd.dEn; dimFX.mode = sd.dMo; dimFX.curve = sd.dCu; dimFX.speed = sd.dSp; dimFX.trigger = sd.dTr; dimFX.sync = sd.dSy;
+    gRotFX.active = sd.grA; gRotFX.startVal = sd.grSt; gRotFX.endVal = sd.grEn; gRotFX.mode = sd.grMo; gRotFX.curve = sd.grCu; gRotFX.speed = sd.grSp; gRotFX.trigger = sd.grTr; gRotFX.sync = sd.grSy;
+    pRotFX.active = sd.prA; pRotFX.startVal = sd.prSt; pRotFX.endVal = sd.prEn; pRotFX.mode = sd.prMo; pRotFX.curve = sd.prCu; pRotFX.speed = sd.prSp; pRotFX.trigger = sd.prTr; pRotFX.sync = sd.prSy;
+    colFX.active = sd.cA; colFX.startVal = sd.cSt; colFX.endVal = sd.cEn; colFX.holdTime = sd.cHo; colFX.trigger = sd.cTr; colFX.sync = sd.cSy;
+    sgobFX.active = sd.sgA; sgobFX.startVal = sd.sgSt; sgobFX.endVal = sd.sgEn; sgobFX.holdTime = sd.sgHo; sgobFX.trigger = sd.sgTr; sgobFX.sync = sd.sgSy; sgobFX.scratch = sd.sgSc;
+    rgobFX.active = sd.rgA; rgobFX.startVal = sd.rgSt; rgobFX.endVal = sd.rgEn; rgobFX.holdTime = sd.rgHo; rgobFX.trigger = sd.rgTr; rgobFX.sync = sd.rgSy; rgobFX.scratch = sd.rgSc;
+    
+    joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false;
+    
+    if(moveFX.active) moveFX.start(); else moveFX.stop();
+    if(dimFX.active) dimFX.start(); else dimFX.stop();
+    if(gRotFX.active) gRotFX.start(); else gRotFX.stop();
+    if(pRotFX.active) pRotFX.start(); else pRotFX.stop();
+    
+    if ((colFX.startVal % 2 == 0 && colFX.endVal % 2 == 0) || (colFX.startVal % 2 != 0 && colFX.endVal % 2 != 0)) colFX.step = 2; else colFX.step = 1;
+    colFX.currentIdx = colFX.startVal; sgobFX.currentIdx = sgobFX.startVal; rgobFX.currentIdx = rgobFX.startVal;
+}
+
+void executeChaserSlot(int slot) {
+    for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[slot].dmx[i]; else dmxData[i] = chaserScenes[slot].dmx[i]; }
+    centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE];
+    joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false;
+    triggerSceneFX(slot);
+}
+
+void triggerLoad(int type, int param) {
+    if (dipToBlack) {
+        pendingLoadType = type; pendingLoadParam = param; isDipping = true; dipStartTime = millis(); autoFading = true; fadeStateOut = true; fadeStartTime = millis();
+        unsigned long currentFadeTime = fadeTime; if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, 6); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
+        fadeDuration = currentFadeTime / 2; 
+    } else {
+        if (type == 1) executePreset(param); else if (type == 2) executeChaserSlot(param);
+    }
+}
+
+void setupDMX() {
+  uart_config_t config = { .baud_rate = 250000, .data_bits = UART_DATA_8_BITS, .parity = UART_PARITY_DISABLE, .stop_bits = UART_STOP_BITS_2, .flow_ctrl = UART_HW_FLOWCTRL_DISABLE };
+  uart_param_config(DMX_UART, &config); uart_set_pin(DMX_UART, transmitPin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  uart_driver_install(DMX_UART, 1024, 0, 0, NULL, 0); memset((void*)dmxBuffer, 0, 513);
+}
+
+void onArtDmx(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* data) {
+  if (universe == 0) {
+    chaserActive = false; moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); activePresetSlot = 0;
+    for (int i = 0; i < length && i < NUM_CHANNELS; i++) dmxData[i + 1] = data[i];
+  }
+}
+
+void updateEngines(unsigned long now) {
+  static unsigned long lastEngUpdate = 0; float dt = (now - lastEngUpdate) / 1000.0f; if (dt <= 0) return; lastEngUpdate = now;
+
+  // --- DER FLOATING-POINT ACCUMULATOR FIX ---
+  // Sammelt die Kommazahlen exakt auf, bevor sie für DMX abgeschnitten werden
+  static float exactPan = centerPan16;
+  static float exactTilt = centerTilt16;
+  // Synchronisieren, falls ein Preset geladen wurde
+  if (abs(centerPan16 - (int)exactPan) > 1) exactPan = centerPan16;
+  if (abs(centerTilt16 - (int)exactTilt) > 1) exactTilt = centerTilt16;
+
+  if (joyInputX != 0.0f || joyInputY != 0.0f || fabsf(joySmoothX) > 0.001f || fabsf(joySmoothY) > 0.001f) {
+      mapIsMoving = false;
+      float curveX = powf(fabsf(joyInputX), joyCurve) * (joyInputX < 0 ? -1.0f : 1.0f); float curveY = powf(fabsf(joyInputY), joyCurve) * (joyInputY < 0 ? -1.0f : 1.0f);
+      float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 30.0f);
+      joySmoothX += (curveX - joySmoothX) * blend; joySmoothY += (curveY - joySmoothY) * blend;
+      if (fabsf(joySmoothX) < 0.001f && joyInputX == 0.0f) joySmoothX = 0.0f; if (fabsf(joySmoothY) < 0.001f && joyInputY == 0.0f) joySmoothY = 0.0f;
+      float pD = joySmoothX * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * (joyMaxSpeed * 25.0f) * dt;
+      
+      // Werte exakt als Kommazahl aufsummieren
+      exactPan += (joyPanRev ? pD : -pD); exactTilt += (joyTiltRev ? -tD : tD);
+      exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
+      
+      // Erst beim Schreiben auf die Lampen die Ganzzahl nutzen
+      centerPan16 = (int)exactPan; centerTilt16 = (int)exactTilt;
+      if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; }
+  } 
+  else if (mapIsMoving) {
+      float diffP = mapTargetPan - exactPan; float diffT = mapTargetTilt - exactTilt;
+      float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 10.0f);
+      float stepP = diffP * blend; float stepT = diffT * blend;
+      float maxStep = (joyMaxSpeed * 25.0f) * dt; if (fabsf(stepP) > maxStep) stepP = (stepP > 0 ? maxStep : -maxStep); if (fabsf(stepT) > maxStep) stepT = (stepT > 0 ? maxStep : -maxStep);
+      
+      exactPan += stepP; exactTilt += stepT; 
+      exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
+      centerPan16 = (int)exactPan; centerTilt16 = (int)exactTilt;
+      
+      if (fabsf(diffP) < 5.0f && fabsf(diffT) < 5.0f) { exactPan = mapTargetPan; exactTilt = mapTargetTilt; centerPan16 = mapTargetPan; centerTilt16 = mapTargetTilt; mapIsMoving = false; }
+      if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; }
+  }
+
+  unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; }
+  if (manualTap) { if (dimFX.trigger == 1) dimFX.phase = 0.0; if (gRotFX.trigger == 1) gRotFX.phase = 0.0; if (pRotFX.trigger == 1) pRotFX.phase = 0.0; if (moveFX.trigger == 1) moveFX.modPhase = 0.0; masterSyncTime = now; manualTap = false; }
+  auto checkAudioTrg = [&](int trg) { return (trg == 2 && triggerBass) || (trg == 3 && triggerMid) || (trg == 4 && triggerHigh); };
+  if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
+
+  if (moveFX.active) moveFX.process(now, masterSyncTime, globalBPM, syncBeats);
+  if (gRotFX.active) { float t; gRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[9] = (byte)t; }
+  if (pRotFX.active) { float t; pRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[11] = (byte)t; }
+
+  if (dimFX.active) { dimFX.process(now, masterSyncTime, globalBPM, syncBeats, dimSmoothTarget); dimSmoothCurrent = dimSmoothTarget; } 
+  else { if (dimSmoothVal > 0) { float sensitivity = (100.0f - dimSmoothVal) * 0.1f; dimSmoothCurrent += (dimSmoothTarget - dimSmoothCurrent) * sensitivity * dt * 10.0f; } else { dimSmoothCurrent = dimSmoothTarget; } }
+
+  if (autoFading) {
+    float progress = (float)(now - fadeStartTime) / (float)fadeDuration; if (progress >= 1.0f) { progress = 1.0f; autoFading = false; }
+    float v = progress; if (fadeCurve == 1) v = progress * progress; else if (fadeCurve == 3) v = 0.5f - 0.5f * cosf(progress * PI); 
+    fadeMultiplier = fadeStateOut ? (1.0f - v) : v; 
+  } else { fadeMultiplier = fadeStateOut ? 0.0f : 1.0f; }
+  
+  float finalDimmer = dimSmoothCurrent * fadeMultiplier * masterBrightness;
+  dmxData[CH_DIMMER] = (byte)constrain(finalDimmer, 0.0f, 255.0f);
+
+  if (isDipping) {
+      if (fadeMultiplier <= 0.02f || (now - dipStartTime) > (fadeDuration + 200)) {
+          if (pendingLoadType == 1) executePreset(pendingLoadParam); else if (pendingLoadType == 2) executeChaserSlot(pendingLoadParam);
+          autoFading = true; fadeStateOut = false; fadeStartTime = millis(); isDipping = false; pendingLoadType = 0;
+      }
+  }
+
+  auto runStep = [&](StepFX &fx, int channel, const byte* map) {
+    if (fx.active) {
+      bool doStep = false;
+      if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; } 
+      else if (fx.trigger == 1) { unsigned long interval = (60000.0 / globalBPM) * syncBeats[fx.sync]; if (now - fx.lastStepTime >= interval) doStep = true; } 
+      else if (checkAudioTrg(fx.trigger)) doStep = true;
+      if (doStep) { fx.lastStepTime = now; fx.currentIdx += fx.step; if (fx.currentIdx > fx.endVal) fx.currentIdx = fx.startVal; byte val = map[fx.currentIdx]; if (fx.scratch) val = constrain(val + 183, 0, 255); dmxData[channel] = val; }
+    }
+  };
+  runStep(colFX, CH_COLOR, wheelMap); runStep(sgobFX, CH_GOBO, sGoboMap); runStep(rgobFX, CH_GOBO_ROT, rGoboMap);
+
+  if (chaserActive && !isDipping) { 
+    if (stepStartTime == 0) stepStartTime = now;
+    unsigned long elapsed = now - stepStartTime; unsigned long currentFadeTime = fadeTime;
+    if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, 6); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
+    if (inFade) {
+      if (elapsed >= currentFadeTime) { inFade = false; stepStartTime = now; for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[nextSlot].dmx[i]; else dmxData[i] = chaserScenes[nextSlot].dmx[i]; } centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE]; joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false; triggerSceneFX(nextSlot); } 
+      else { float progress = currentFadeTime > 0 ? (float)elapsed / currentFadeTime : 1.0f; for (int i = 1; i <= 18; i++) { if (i==1) dimSmoothTarget = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; else if (i==13 || i==14) dmxData[i] = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; } long startP = (chaserScenes[currentSlot].dmx[CH_PAN] << 8) | chaserScenes[currentSlot].dmx[CH_PAN_FINE]; long endP = (chaserScenes[nextSlot].dmx[CH_PAN] << 8) | chaserScenes[nextSlot].dmx[CH_PAN_FINE]; centerPan16 = startP + (endP - startP) * progress; long startT = (chaserScenes[currentSlot].dmx[CH_TILT] << 8) | chaserScenes[currentSlot].dmx[CH_TILT_FINE]; long endT = (chaserScenes[nextSlot].dmx[CH_TILT] << 8) | chaserScenes[nextSlot].dmx[CH_TILT_FINE]; centerTilt16 = startT + (endT - startT) * progress; if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; } }
+    } else { 
+      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { unsigned long interval = (60000.0 / globalBPM) * syncBeats[chaserSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
+      if (trg) { stepStartTime = now; currentSlot = nextSlot; if (chaserOrder == 1) nextSlot = random(chaserStartSlot, chaserEndSlot + 1); else { nextSlot++; if (nextSlot > chaserEndSlot) nextSlot = chaserStartSlot; } activePresetSlot = currentSlot + 1; if (dipToBlack) triggerLoad(2, nextSlot); else { inFade = true; for (int i = 1; i <= 18; i++) { if (!(i==1 || i==3 || i==4 || i==13 || i==14 || i==15 || i==16)) dmxData[i] = chaserScenes[nextSlot].dmx[i]; } } }
+    }
+  }
+
+  byte outDmx[513]; memset(outDmx, 0, 513); 
+  for(int f=0; f<numFixtures; f++) {
+      int base = fixtures[f].addr - 1; if (base < 0 || base + 18 > 512) continue; 
+      for(int c=1; c<=18; c++) outDmx[base + c] = dmxData[c]; 
+      int pOut = centerPan16, tOut = centerTilt16;
+      if (moveFX.active) moveFX.getValues(centerPan16, centerTilt16, fixtures[f].phase, fixtures[f].invP, fixtures[f].invT, pOut, tOut); else { if (fixtures[f].invP) pOut = 65535 - pOut; if (fixtures[f].invT) tOut = 65535 - tOut; }
+      outDmx[base + CH_PAN] = pOut >> 8; outDmx[base + CH_PAN_FINE] = pOut & 0xFF; outDmx[base + CH_TILT] = tOut >> 8; outDmx[base + CH_TILT_FINE] = tOut & 0xFF;
+      if (bumpBlackout) outDmx[base + CH_DIMMER] = 0; else if (bumpBlinder) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 255; outDmx[base + CH_COLOR] = 0; } else if (bumpStrobeF) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 247; } else if (bumpStrobe50) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 120; }
+  }
+  memcpy((void*)dmxBuffer, outDmx, 513);
+
+  static unsigned long lastDmxOut = 0;
+  if (now - lastDmxOut >= 30) {
+      lastDmxOut = now; uart_set_line_inverse(DMX_UART, UART_SIGNAL_TXD_INV); delayMicroseconds(120); uart_set_line_inverse(DMX_UART, UART_SIGNAL_INV_DISABLE); delayMicroseconds(12); uart_write_bytes(DMX_UART, (const char*)dmxBuffer, maxDmxChannel + 1);
+  }
+}
+#include "WebAPI.h"
+
+void setup() {
+  Serial.begin(115200); if(!LittleFS.begin(true)) Serial.println("FS Error");
+  prefs.begin("sys", true); String sta_ssid = prefs.getString("ssid", ""), sta_pass = prefs.getString("pass", ""); 
+  dimSmoothVal = prefs.getInt("ds", 0); masterBrightness = prefs.getFloat("mdim", 1.0f); dipToBlack = prefs.getBool("dip", false);
+  joyMaxSpeed = prefs.getInt("j_msp", 2000); joyCurve = prefs.getFloat("j_crv", 1.5f); joyMomentum = prefs.getFloat("j_mom", 0.7f); joyPanRev = prefs.getBool("j_prv", false); joyTiltRev = prefs.getBool("j_trv", false); panMinLimit = prefs.getInt("j_pmi", 0); panMaxLimit = prefs.getInt("j_pma", 65535); tiltMinLimit = prefs.getInt("j_tmi", 0); tiltMaxLimit = prefs.getInt("j_tma", 65535);
+  chaserStartSlot = prefs.getInt("c_st", 0); chaserEndSlot = prefs.getInt("c_en", 3); fadeTime = prefs.getInt("c_fd", 2000); holdTime = prefs.getInt("c_hd", 2000); chaserTrigger = prefs.getInt("c_tr", 0); chaserSync = prefs.getInt("c_sy", 3); chaserOrder = prefs.getInt("c_or", 0); chaserFadeTrigger = prefs.getInt("c_ftr", 0); chaserFadeSync = prefs.getInt("c_fsy", 3); prefs.end();
+  for(int i=0; i<10; i++) { prefs.begin(("sc" + String(i+1)).c_str(), true); presetNames[i] = prefs.getString("n", ""); prefs.end(); }
+  prefs.begin("patch", true); numFixtures = prefs.getInt("n", 1); if (numFixtures < 1 || numFixtures > 8) numFixtures = 1;
+  maxDmxChannel = 0; for(int i=0; i<numFixtures; i++) { fixtures[i].addr = prefs.getInt(("a"+String(i)).c_str(), 1 + (i*18)); fixtures[i].invP = prefs.getBool(("ip"+String(i)).c_str(), false); fixtures[i].invT = prefs.getBool(("it"+String(i)).c_str(), false); fixtures[i].phase = prefs.getInt(("ph"+String(i)).c_str(), 0); int endChan = fixtures[i].addr + 17; if (endChan > maxDmxChannel) maxDmxChannel = endChan; }
+  if (maxDmxChannel > 512) maxDmxChannel = 512; if (maxDmxChannel < 18) maxDmxChannel = 18; prefs.end();
+  if (sta_ssid != "") { 
+    WiFi.mode(WIFI_STA); 
+    
+    // --- WLAN-UPGRADES FÜR STABILITÄT ---
+    WiFi.setTxPower(WIFI_POWER_19_5dBm); // Sendeleistung auf absolutes Maximum
+    WiFi.setAutoReconnect(true);         // Automatisch neu verbinden bei Verbindungsabbruch
+    
+    WiFi.begin(sta_ssid.c_str(), sta_pass.c_str()); 
+    int tries = 0; 
+    // Timeout auf 20 Sekunden erhöht (40 * 500ms), falls der Router langsam ist
+    while (WiFi.status() != WL_CONNECTED && tries < 40) { delay(500); tries++; } 
+  }
+  
+  if (WiFi.status() != WL_CONNECTED) { 
+    WiFi.mode(WIFI_AP); 
+    WiFi.softAP(ap_ssid, ap_password); 
+  }
+  
+  WiFi.setSleep(false); // Verhindert, dass das WLAN-Modul zum Stromsparen abschaltet
+  
+  MDNS.begin("movinghead"); artnet.begin(); artnet.setArtDmxCallback(onArtDmx);
+  setupAPI(); server.begin(); setupDMX(); loadAllChaserScenes(); initAudioEngine();
+}
+
+void loop() { server.handleClient(); ArduinoOTA.handle(); artnet.read(); pollAudioEngine(); updateEngines(millis()); }
