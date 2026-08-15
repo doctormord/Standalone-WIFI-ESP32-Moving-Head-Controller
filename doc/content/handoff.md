@@ -1,54 +1,71 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-15)
-> `Moving_Head_Horizon` (Merge vom 2026-08-14) **kompiliert jetzt wieder**
-> (Build-Blocker gefixt, siehe unten) — aber noch **nicht auf Hardware
-> geflasht/verifiziert** in diesem Zustand. Zielhardware: **ESP32-C3
-> Supermini**.
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-16)
+> Der Code lebt jetzt auch auf GitHub:
+> `github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller`,
+> Branch **`future`**. Dieses lokale Verzeichnis (`/Users/christian/
+> Documents/Arduino/Moving_Head_Horizon`) ist selbst ein Git-Repo, das
+> diesen Branch trackt (`origin`, SSH). `V1`/`V2`/`V3`/`firmware` wurden
+> dort entfernt, `images`/`install.html`/`LICENSE` bleiben. `README.md`
+> (Repo-Root, Großschreibung — das bestehende, reichhaltige Readme, nicht
+> ersetzt) ist die kanonische Projektbeschreibung; das alte `Readme.md`
+> gibt es nicht mehr.
 >
-> **Nächste Schritte (empfohlene Reihenfolge):**
-> 1. **Einmal in der Arduino IDE gegenkompilieren und flashen**, um den
->    Fix aus dieser Session zu verifizieren (hier nicht kompilierbar
->    getestet, siehe `handover.md` → Setup & Flashen für Board-Settings).
-> 2. **Regressionen aus der Juni-Session nachziehen:** `syncBeats[]`-Clamping
->    und Slot-Bounds-Guards waren bereits gefixt (siehe `history.md`,
->    2026-06-14), sind im gemergten Stand aber wieder offen. Siehe
->    `backlog.md` → Tech Debt.
-> 3. Danach frei: Preset-Engine-Split oder ADS1115-Hardware-Joystick
->    angehen (siehe `handover.md` → Geplante Erweiterungen), oder die
->    kleineren Tech-Debt-Punkte (jogBend, fadeDuration-Kopplung,
->    Output-Build-Kadenz).
+> **Kompilier-Stand:** `pio run` und `pio run -t buildfs` liefen zuletzt
+> beide `[SUCCESS]`. **Noch nicht auf echter Hardware getestet** — das ist
+> nach wie vor der größte offene Punkt.
 >
-> Reihenfolge ab Schritt 3 offen — vom User abklären.
+> **Bekannter offener Punkt aus dem Push:** Der One-Click-Web-Installer
+> (`install.html` → `firmware/manifest.json`) ist kaputt, seit `firmware/`
+> gelöscht wurde. Braucht einen frisch gebauten `firmware/`-Ordner (echter
+> Hardware-Build + Upload), bevor er wieder funktioniert — bewusst nicht
+> in dieser Session erledigt (Quellcode-Push war der Auftrag, keine
+> Binary-Artefakte).
+>
+> **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
+> 1. Auf echter Hardware flashen und die Fixes dieser Session verifizieren
+>    — insbesondere der Blackout-Panic-Button-Fix (`/bump?t=blackout`) und
+>    die neu eingeführte Chaser-Konfig-Persistierung (`/chaser` speichert
+>    jetzt selbst in NVS, vorher tat das nur der tote `/chaser_cfg`).
+> 2. `firmware/`-Ordner neu aufbauen (Build + Upload der Binaries), damit
+>    der One-Click-Installer wieder funktioniert.
+> 3. `/ultrareview` (Cloud-Multi-Agent-Review) — war für diese Session
+>    angefragt, lief aber noch nicht, siehe unten.
+> 4. Danach frei: Preset-Engine-Split, ADS1115-Hardware-Joystick, oder die
+>    restlichen Tech-Debt-Punkte in `backlog.md` (Index-Konvention,
+>    `fadeDuration`-Kopplung, Output-Build-Kadenz, `jogBend`).
 
 ## Aktueller Status
 
-Frisch gemergtes Repository, Build-Blocker behoben, **noch nicht auf
-Hardware geflasht/verifiziert** in diesem Zustand. Zielhardware:
-**ESP32-C3 Supermini**. Vorgänger-Backend lief stabil mit 2 Fixtures
-(18-Channel Pro Beam 280) — dieser Stand hat zusätzlich das neuere
-"V3"-Frontend.
+Alle bislang bekannten Bugs aus zwei vollständigen `/code-review`-Runden
+(insgesamt 15 + 9 = 24 Findings) sind gefixt und kompilier-/größen-
+verifiziert. Zielhardware: **ESP32-C3 Supermini**. Repository ist jetzt
+sowohl lokal als auch auf GitHub (`future`-Branch) git-versioniert.
+**Einziger großer Blocker vor Live-Einsatz: kein Test auf echter
+Hardware bisher.**
 
-## Was in dieser Session gemacht wurde
+## Was in dieser Session (Fortsetzung, 2026-08-15/16) gemacht wurde
 
-1. `CLAUDE.md` für zukünftige Claude-Code-Sessions erstellt (Architektur,
-   Build-Hinweise, bekannte Lücken).
-2. Alten Chat-Export (`claude-exports-ESP32_ArtnetDMX.zip`, Session vom
-   2026-06-14 zum Vorgänger-Projekt `horizon_light_controller`) ausgewertet
-   und dessen `backlog.md`/`handover.md`/`handoff.md`-Artefakte als
-   Ausgangsbasis für die neue Doku-Struktur unter `doc/content/` übernommen
-   und aktualisiert.
-3. `Moving_Head_redesign.zip` (älterer Projektstand + Frontend-Redesign
-   `index_claude.html`) ausgewertet und mit diesem Repo verglichen:
-   - Build-Blocker-Ursache bestätigt und **gefixt**: `StepFX colFX, sgobFX,
-     rgobFX;` in `Moving_Head_Horizon.ino` ergänzt.
-   - `index_claude.html` (Frontend-Redesign-Prototyp) geprüft — keine
-     verlorene Funktionalität gegenüber dem aktuellen `data/index.html`
-     gefunden, kein Merge nötig.
-   - Details in `history.md` (zwei Einträge vom 2026-08-15).
-4. `Readme.md` (Englisch, Projekt-Root) aktualisiert/aktuell gehalten.
-5. `doc/content/functions.md` (Englisch) als vollständige Funktions-/
-   API-Referenz mit allen Parametern angelegt.
+1. Exploratorische Frage zu React-Code-Splitting/Vite beantwortet —
+   dabei den konkreten Fund gemacht, dass React/Babel bisher per CDN
+   geladen wurden (bricht im AP-Only-Offline-Betrieb). Auf Wunsch gefixt:
+   lokal gehostet, gzip-komprimiert (`data/vendor/`), neue `/vendor/*`-
+   Routen in `WebAPI.h`.
+2. Stage-Map-Bild-Speichern/Laden (Follower-Modus) geprüft, drei kleine
+   Robustheits-/UX-Punkte gefunden und auf Wunsch gefixt (Fehler-Feedback,
+   Schreib-Verifikation, Kalibrierpunkte-Reset bei neuem Foto).
+3. `/code-review` (Vollcodebase, kein Git zu dem Zeitpunkt) ergab 9
+   weitere Findings — alle gefixt, inkl. eines wichtigen Zusatzfunds
+   unterwegs: `/chaser_cfg` war nicht nur toter Code, sondern der einzige
+   Pfad, der Chaser-Konfiguration in NVS persistierte.
+4. Projekt auf GitHub gepusht (`future`-Branch): `V1`/`V2`/`V3`/`firmware`
+   entfernt, `images` behalten, aktueller Code + `doc/content/` + `CLAUDE.md`
+   + `platformio.ini` hinzugefügt, bestehendes `README.md` gezielt
+   aktualisiert statt ersetzt.
+5. `/ultrareview` angefragt — **steht noch aus**, war der letzte Schritt
+   vor Ende dieser Session.
+
+Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15).
 
 ## Doku-Hinweis
 

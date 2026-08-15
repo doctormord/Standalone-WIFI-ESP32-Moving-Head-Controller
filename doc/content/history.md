@@ -617,3 +617,65 @@ von `chaser_cfg` oder `blackoutPrevDimmer` im Code. Wie immer: Kompilier-/
 Größen-Check, kein Hardware-/Browser-Test — insbesondere der Blackout-Fix
 und die Chaser-Persistierung sollten auf echter Hardware verifiziert
 werden, sobald möglich.
+
+---
+
+## 2026-08-15 (Fortsetzung 9) — Projekt nach GitHub gepusht (`future`-Branch), Repo aufgeräumt
+
+User bat darum, das Projekt auf GitHub zu bringen
+(`github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller`,
+Branch `future`) — vorher dort `V1`/`V2`/`V3`/`firmware` löschen,
+`images` behalten, dann den aktuellen Code pushen.
+
+**Vor dem Löschen erst den bestehenden Stand angesehen** (Klon in
+Scratch-Verzeichnis, nicht blind gelöscht): `V1`/`V2`/`V3` enthalten genau
+die historischen Vorläufer-Codestände dieses Projekts — `V3` insbesondere
+ist nahezu identisch mit dem, was hier als „horizon_light_controller"-
+Backend bzw. Frontend-Quelle bekannt war (`V3/Moving_Head.ino`,
+`V3/WebAPI.h`, `V3/FX_Engine.h`, `V3/Readme.md`, `V3/data/index.html` —
+dieselbe Codebasis, ein Stück früher in der Kette). `firmware/` enthielt
+vorkompilierte Binaries (`firmware.bin`, `bootloader.bin`, `littlefs.bin`,
+`partitions.bin`, `manifest.json`) für den One-Click-Web-Installer, den
+`install.html` referenziert.
+
+**Wichtiger Fund dabei:** Das bestehende `README.md` (Großschreibung!) war
+kein Wegwerf-Dokument, sondern ein reichhaltiges, größtenteils weiterhin
+zutreffendes Projekt-Readme (UI-Tab-Beschreibungen, Mermaid-Architektur-
+Diagramm, vollständige Channel-Map) — inhaltlich fast deckungsgleich mit
+dem aktuellen Code (LiveTab/FollowspotTab/ProgrammerTab, CH1–CH18-Mapping
+stimmen exakt). Wurde **nicht** durch das eigene, schlankere `Readme.md`
+ersetzt, sondern gezielt aktualisiert: die veraltete Behauptung „Vanilla
+JS, keine Frameworks" korrigiert (ist jetzt React), die Bewegungsformen-
+Zahl 7→12 korrigiert (die restlichen 5 waren in den V2-Notes bereits
+erwähnt, nur der Summary-Bullet war nicht nachgezogen worden), ein Hinweis
+auf die jetzt kaputte One-Click-Installer-Verknüpfung ergänzt (da
+`firmware/manifest.json` mitgelöscht wurde), sowie neue Abschnitte „Building
+From Source", „Known Issues" und „Documentation" (Verweis auf
+`doc/content/` und `CLAUDE.md`) angehängt. Das eigene `Readme.md` wurde
+gelöscht (Namenskollision mit `README.md` auf dem case-insensitiven
+macOS-Dateisystem) — seine eigenständigen Inhalte sind jetzt im
+bestehenden `README.md` aufgegangen.
+
+**Mechanik:** `Moving_Head_Horizon`-Verzeichnis selbst zum Git-Repo gemacht
+(`git init`, `origin` via SSH — ein extra für diese Session eingerichteter
+Deploy-Key, authentifiziert als `doctormord`, war bereits vorhanden),
+`future`-Branch gefetcht und ausgecheckt (lief konfliktfrei, da keine
+Dateiname-Überschneidung mit den eigenen, noch ungetrackten Projektdateien
+— bis auf das vorher entfernte `Readme.md`/`README.md`-Paar). `git rm -r
+V1 V2 V3 firmware`, `.gitignore` für `.pio/`/`.DS_Store` ergänzt, eigene
+Dateien gezielt (keine `-A`) gestaged. Git erkannte mehrere Datei-
+Umbenennungen automatisch (z. B. `V3/Moving_Head.ino` →
+`Moving_Head_Horizon.ino`), was in der Historie sauber als Rename statt
+Delete+Add erscheint. Ein Commit, normaler (nicht erzwungener) Push —
+lief als Fast-Forward durch, da lokaler und Remote-Stand vorher identisch
+waren. `images/`, `install.html`, `LICENSE` komplett unangetastet gelassen.
+
+**Nicht behoben, nur dokumentiert:** Der One-Click-Installer
+(`install.html` → `firmware/manifest.json`) ist jetzt kaputt, da
+`firmware/` gelöscht wurde. Kein neuer `firmware/`-Ordner mit frisch
+gebauten Binaries wurde erzeugt — das ginge über die Anfrage hinaus
+(Quellcode pushen, keine Binary-Artefakte), im README aber transparent
+vermerkt.
+
+Push verifiziert: `git ls-remote` gegen den Remote-Branch zeigt denselben
+Commit-Hash wie der lokale `HEAD`.
