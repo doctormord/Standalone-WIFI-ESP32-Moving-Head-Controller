@@ -3,7 +3,7 @@
 #include <math.h>
 
 // =========================================================
-// --- STEP FX (Farbräder & Statische Gobos) ---
+// --- STEP FX (Color Wheels & Static Gobos) ---
 // =========================================================
 struct StepFX {
     bool active = false;
@@ -19,7 +19,7 @@ struct StepFX {
 };
 
 // =========================================================
-// --- LFO MODULATOR (Dimmer, Prisma & Gobo Rot) ---
+// --- LFO MODULATOR (Dimmer, Prism & Gobo Rotation) ---
 // =========================================================
 class Modulator {
 public:
@@ -33,7 +33,7 @@ public:
     int sync = 3;
     float phase = 0.0f;
     
-    unsigned long lastUpdate = 0; // FIX: Echter Instanz-Member statt static!
+    unsigned long lastUpdate = 0; 
 
     Modulator(int minV, int maxV) { startVal = minV; endVal = maxV; }
     void start() { active = true; lastUpdate = millis(); }
@@ -60,15 +60,15 @@ public:
         if (lastUpdate == 0) lastUpdate = now;
         float dt = (now - lastUpdate) / 1000.0f;
         lastUpdate = now;
-        if(dt <= 0 || dt > 1.0f) dt = 0.02f; // Safety clamp
+        if(dt <= 0 || dt > 1.0f) dt = 0.02f; 
 
-        // FIX: Bei Audio-Triggern (>=2) muss die Phase trotzdem weiterlaufen (für den Decay/Release)
         if (trigger == 0 || trigger >= 2) { 
             phase += (speed / 100.0f) * dt * 2.0f; 
-        } else if (trigger == 1) { // Global BPM Sync
-            unsigned long interval = (60000.0f / globalBPM) * syncBeats[sync];
+        } else if (trigger == 1) {
+            int safeSync = constrain(sync, 0, 6);
+            unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];
             phase = (float)((now - masterSyncTime) % interval) / interval;
-        } 
+        }
 
         if (phase > 1.0f) phase -= 1.0f;
         if (phase < 0.0f) phase += 1.0f;
@@ -79,7 +79,7 @@ public:
 };
 
 // =========================================================
-// --- KINEMATICS ENGINE (Pan & Tilt Bewegungen) ---
+// --- KINEMATICS ENGINE (Pan & Tilt Movements) ---
 // =========================================================
 class MovementEngine {
 public:
@@ -101,7 +101,7 @@ public:
     float currentSpeed = 1.0f;
     float enginePhase = 0.0f;
     
-    unsigned long lastUpdate = 0; // FIX: Echter Instanz-Member
+    unsigned long lastUpdate = 0;
 
     void start() { active = true; lastUpdate = millis(); }
     void stop() { active = false; }
@@ -112,11 +112,11 @@ public:
         lastUpdate = now;
         if(dt <= 0 || dt > 1.0f) dt = 0.02f;
 
-        // 1. Modulator für Size & Speed berechnen (inkl. Fix für Audio Trigger)
         if (trigger == 0 || trigger >= 2) {
             modPhase += (modSp / 100.0f) * dt * 2.0f;
         } else if (trigger == 1) {
-            unsigned long interval = (60000.0f / globalBPM) * syncBeats[sync];
+            int safeSync = constrain(sync, 0, 6);
+            unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];
             modPhase = (float)((now - masterSyncTime) % interval) / interval;
         }
         if (modPhase > 1.0f) modPhase -= 1.0f;
@@ -132,48 +132,41 @@ public:
         currentSize = (szSt + (szEn - szSt) * mVal) / 100.0f;
         currentSpeed = (spdSt + (spdEn - spdSt) * mVal) / 100.0f;
 
-        // 2. Base Phase des Shapes vorantreiben
         enginePhase += currentSpeed * dt * 5.0f; 
         if (enginePhase > PI * 2.0f) enginePhase -= PI * 2.0f;
     }
 
     void getValues(int centerP, int centerT, int fixturePhase, bool invP, bool invT, int &outP, int &outT) {
-        // Fanning Offset pro Fixture anwenden (Wave-Effekte)
         float pOffset = (fixturePhase / 360.0f) * PI * 2.0f;
         float p = enginePhase + pOffset;
         float x = 0, y = 0;
 
-        // Shape Generierung (-1.0 bis 1.0)
         switch(type) {
-            case 1: x = sinf(p); y = cosf(p); break; // Circle
-            case 2: x = sinf(p); y = sinf(p*2.0f); break; // Fig 8
-            case 3: x = sinf(p*2.0f)*cosf(p); y = sinf(p*2.0f)*sinf(p); break; // Clover
-            case 4: x = (sinf(p) > 0 ? 1 : -1); y = (cosf(p) > 0 ? 1 : -1); break; // Square
-            case 5: x = sinf(p) * cosf(p*2.0f); y = cosf(p) * cosf(p*2.0f); break; // Star
-            case 6: x = sinf(p) * 0.5f + sinf(p*2.5f) * 0.5f; y = cosf(p); break; // Waterwave
-            case 7: x = sinf(p*3.0f); y = cosf(p*4.0f); break; // Lissajous
-            case 8: x = sinf(p); y = 0; break; // Pan Sweep Line
-            case 9: x = 0; y = sinf(p); break; // Tilt Sweep Line
-            case 10: x = sinf(p) * (0.5f + 0.5f*cosf(p*0.5f)); y = cosf(p) * (0.5f + 0.5f*cosf(p*0.5f)); break; // Spiral
-            case 11: x = sinf(p*1.3f); y = cosf(p*1.7f); break; // Ballyhoo
-            case 12: x = sinf(p); y = sinf(p) * cosf(p); break; // Infinity Loop
+            case 1: x = sinf(p); y = cosf(p); break; 
+            case 2: x = sinf(p); y = sinf(p*2.0f); break; 
+            case 3: x = sinf(p*2.0f)*cosf(p); y = sinf(p*2.0f)*sinf(p); break; 
+            case 4: x = (sinf(p) > 0 ? 1 : -1); y = (cosf(p) > 0 ? 1 : -1); break; 
+            case 5: x = sinf(p) * cosf(p*2.0f); y = cosf(p) * cosf(p*2.0f); break; 
+            case 6: x = sinf(p) * 0.5f + sinf(p*2.5f) * 0.5f; y = cosf(p); break; 
+            case 7: x = sinf(p*3.0f); y = cosf(p*4.0f); break; 
+            case 8: x = sinf(p); y = 0; break; 
+            case 9: x = 0; y = sinf(p); break; 
+            case 10: x = sinf(p) * (0.5f + 0.5f*cosf(p*0.5f)); y = cosf(p) * (0.5f + 0.5f*cosf(p*0.5f)); break; 
+            case 11: x = sinf(p*1.3f); y = cosf(p*1.7f); break; 
+            case 12: x = sinf(p); y = sinf(p) * cosf(p); break; 
             default: x = sinf(p); y = cosf(p); break;
         }
 
-        // Size Skalierung (auf 16-Bit DMX Bereich mappen)
         x *= currentSize * 32767.0f;
         y *= currentSize * 32767.0f;
 
-        // Rotation der X/Y Matrix
         float rRad = rot * (PI / 180.0f);
         float rx = x * cosf(rRad) - y * sinf(rRad);
         float ry = x * sinf(rRad) + y * cosf(rRad);
 
-        // Pan/Tilt Invertierung der Lampe
         if (invP) rx = -rx;
         if (invT) ry = -ry;
 
-        // Offset addieren und in den sicheren DMX Bereich zwingen
         outP = constrain(centerP + (int)rx, 0, 65535);
         outT = constrain(centerT + (int)ry, 0, 65535);
     }

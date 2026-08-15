@@ -17,6 +17,7 @@ A highly advanced, standalone, web-based lighting console and Art-Net node built
 * U'King 200W LED Moving Head
 
 * One click installer: https://doctormord.github.io/Standalone-WIFI-ESP32-Moving-Head-Controller/install.html
+  ⚠️ Temporarily broken as of this restructuring — `install.html` points at `firmware/manifest.json`, and the `firmware/` folder (pre-built binaries for the old V1–V3 codebases) was removed as part of consolidating onto the current codebase below. Needs a fresh `firmware/` folder built from the current source before the installer works again.
 
 ## V2 Update Notes (Multi-Fixture & Performance Optimization)
 
@@ -107,6 +108,7 @@ graph TD
 * **Global BPM Synchronization:** Unified timing engine with Tap Tempo (moving average) and real-time Audio/Mic Sync via Web Audio API (FFT analysis).
 * **Non-Volatile Scene Memory:** Save up to 10 complete fixture states—including all active FX, modulators, and custom labels—directly to the ESP32's NVRAM.
 * **Over-The-Air (OTA) Updates:** Flash new firmware directly via the web interface without USB cables.
+* **Fully Offline-Capable:** The React/Babel frontend is bundled gzip-compressed on-device rather than loaded from a CDN, so the console works even when the ESP32's own WiFi AP has no internet uplink (a common venue scenario).
 
 ---
 
@@ -149,7 +151,7 @@ The deep-dive configuration layer for building scenes and tweaking modulators.
 The core of the console relies on an object-oriented C++ backend calculating DMX values in real-time based on sine, quadratic, cubic, and gaussian algorithms.
 
 ### Movement FX
-* **7 Algorithmic Shapes:** Circle, Figure 8, Clover, Square, Star, Waterwave, Lissajous (Chaos).
+* **12 Algorithmic Shapes:** Circle, Figure 8, Clover, Square, Star, Waterwave, Lissajous (Chaos), Pan Sweep, Tilt Sweep, Spiral, Ballyhoo, Infinity Loop.
 * **Phase Rotation:** 0–360° continuous rotation of the geometric shape.
 * **Dynamic Modulators:** LFO-driven scaling of both shape *Size* and *Speed* in real-time (e.g., to create pulsing or accelerating movement paths).
 
@@ -181,7 +183,7 @@ The core of the console relies on an object-oriented C++ backend calculating DMX
 * **Storage:** * UI Assets: LittleFS (Flash memory).
     * Scene Data: ESP32 Non-Volatile Storage (Preferences API).
 * **Network:** mDNS support (`http://movinghead.local`), dynamic AP fallback (SSID: `Moving_Head_Ctrl`).
-* **Frontend Stack:** Vanilla HTML5, CSS3 (CSS Grid/Flexbox), Vanilla ES6 JavaScript (No external frameworks/CDNs required).
+* **Frontend Stack:** React 18 with in-browser Babel JSX transpilation (`data/index.html`, no build step — edit and reload). React/ReactDOM/Babel are bundled gzip-compressed on-device (`data/vendor/`) rather than loaded from a CDN, so the UI works fully offline, including over the WiFi AP fallback with no internet uplink.
 
 ---
 
@@ -199,5 +201,41 @@ The core of the console relies on an object-oriented C++ backend calculating DMX
 | **CH 7** | Static Gobo | **CH 16** | Tilt Fine |
 | **CH 8** | Rotating Gobo | **CH 17** | Auto Macros |
 | **CH 9** | Gobo Index/Rot | **CH 18** | System Reset |
+
+---
+
+## 🛠️ Building From Source
+
+No build system is required beyond the Arduino toolchain:
+
+1. Arduino IDE or `arduino-cli`, board **"ESP32C3 Dev Module"**.
+2. Set **`USB CDC On Boot` to Disabled** — otherwise the hardware reset after flashing won't work.
+3. Set upload speed to **115200** to avoid timeouts.
+4. Install the **`ArtnetWifi`** library (the only dependency beyond the ESP32 core; `WiFi`, `WebServer`, `Preferences`, `ArduinoOTA`, `ESPmDNS`, `Update`, and `LittleFS` all ship with the ESP32 board package).
+5. Flash the sketch, then upload the **entire `data/` folder** (including `data/vendor/`) to the device's LittleFS with a LittleFS data-upload tool (or `pio run -t uploadfs` if using PlatformIO). **The `/upload_gui` fallback page on the device is not enough on its own** — it only replaces `index.html` itself, not `data/vendor/`, so a UI installed that way would 404 on `/vendor/react.js` and fail to load. It's meant purely as a first-boot/recovery path for the main HTML file.
+
+Once on WiFi, the device is reachable at `http://movinghead.local` (mDNS) or via its AP fallback (SSID `Moving_Head_Ctrl`) if no station credentials are stored yet.
+
+A `platformio.ini` is also included for command-line compile checks without the Arduino IDE:
+- `pio run` — compiles the firmware.
+- `pio run -t buildfs` — builds the LittleFS filesystem image from `data/` and verifies it actually fits the ~1.4MB LittleFS partition (fails loudly instead of silently truncating).
+
+Both are compile/size checks only, not a substitute for testing on real hardware.
+
+## 📋 Known Issues
+
+See `doc/content/backlog.md` for the current, full list. Headline item: the jog wheel (`/jog` endpoint, `jogBend`) is wired up in the UI but never read by the DMX/FX engines, so it currently has no visible effect on the fixture.
+
+## 📚 Documentation
+
+In-depth project documentation lives under `doc/content/` (in German — see `CLAUDE.md` for the project's language/documentation policy):
+
+- `backlog.md` — open features, known issues, tech debt.
+- `handover.md` — architecture deep-dive, performance notes, hardware rationale, planned extensions.
+- `handoff.md` — current session snapshot for picking up work.
+- `history.md` — append-only chronological development log.
+- `functions.md` — full function/HTTP-API reference (English).
+
+`CLAUDE.md` at the repo root has build/architecture guidance for AI coding assistants (Claude Code) working in this repository.
 
 ---

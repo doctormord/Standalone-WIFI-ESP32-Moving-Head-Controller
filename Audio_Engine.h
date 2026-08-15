@@ -26,7 +26,7 @@
 #define SAMPLE_DOWNSCALE_SHIFT 14
 #define NOISE_FLOOR 100
 
-// Attack/Decay Speeds (Bit-Shifts für Division: 1= /2, 2= /4, 3= /8, 4= /16)
+// Attack/Decay Speeds (bit-shifts for division: 1= /2, 2= /4, 3= /8, 4= /16)
 #define ENV_FAST_ATTACK_SHIFT 1
 #define ENV_FAST_DECAY_SHIFT 2
 #define ENV_MID_ATTACK_SHIFT 2

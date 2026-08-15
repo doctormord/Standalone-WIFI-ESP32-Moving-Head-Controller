@@ -26,6 +26,30 @@ void setupAPI() {
     server.serveStatic("/", LittleFS, "/index.html");
   }
 
+  // React/ReactDOM/Babel, stored gzip-compressed on LittleFS and served locally so the
+  // UI works with no internet uplink (e.g. the WiFi AP fallback at a venue with no WLAN).
+  server.on("/vendor/react.js", []() {
+    File f = LittleFS.open("/vendor/react.production.min.js.gz", "r");
+    if (!f) { server.send(404, "text/plain", "not found"); return; }
+    server.sendHeader("Content-Encoding", "gzip");
+    server.streamFile(f, "application/javascript");
+    f.close();
+  });
+  server.on("/vendor/react-dom.js", []() {
+    File f = LittleFS.open("/vendor/react-dom.production.min.js.gz", "r");
+    if (!f) { server.send(404, "text/plain", "not found"); return; }
+    server.sendHeader("Content-Encoding", "gzip");
+    server.streamFile(f, "application/javascript");
+    f.close();
+  });
+  server.on("/vendor/babel.js", []() {
+    File f = LittleFS.open("/vendor/babel.min.js.gz", "r");
+    if (!f) { server.send(404, "text/plain", "not found"); return; }
+    server.sendHeader("Content-Encoding", "gzip");
+    server.streamFile(f, "application/javascript");
+    f.close();
+  });
+
   server.on("/api/get_dmx", []() {
     String json; json.reserve(4000);
     json += "{";
@@ -58,20 +82,20 @@ void setupAPI() {
     guiBass = false; guiMid = false; guiHigh = false;
   });
 
-server.on("/save", []() {
-    int s = server.arg("slot").toInt(); 
-    String n = server.arg("n"); 
+  server.on("/save", []() {
+    int s = server.arg("slot").toInt();
+    if (s < 1 || s > 10) { server.send(400, "text/plain", "invalid slot"); return; }
+    String n = server.arg("n");
     presetNames[s-1] = n;
     
     dmxData[1] = (byte)dimSmoothTarget;
     dmxData[3] = (byte)(centerPan16 >> 8); dmxData[15] = (byte)(centerPan16 & 0xFF);
     dmxData[4] = (byte)(centerTilt16 >> 8); dmxData[16] = (byte)(centerTilt16 & 0xFF);
 
-    if(colFX.active) dmxData[CH_COLOR] = wheelMap[colFX.currentIdx];
-    if(sgobFX.active) dmxData[CH_GOBO] = sGoboMap[sgobFX.currentIdx];
-    if(rgobFX.active) dmxData[CH_GOBO_ROT] = rGoboMap[rgobFX.currentIdx];
+    if(colFX.active) dmxData[CH_COLOR] = wheelMap[constrain(colFX.currentIdx, 0, 19)];
+    if(sgobFX.active) dmxData[CH_GOBO] = sGoboMap[constrain(sgobFX.currentIdx, 0, 9)];
+    if(rgobFX.active) dmxData[CH_GOBO_ROT] = rGoboMap[constrain(rgobFX.currentIdx, 0, 6)];
 
-    // FIX: Das Struct mit 0 initialisieren, um Müll in Padding-Bytes zu vernichten!
     SceneData sd;
     memset(&sd, 0, sizeof(SceneData));
 
@@ -113,22 +137,18 @@ server.on("/save", []() {
     server.send(200, "OK");
   });
 
-  server.on("/chaser_cfg", []() {
-    if (server.hasArg("st")) chaserStartSlot = server.arg("st").toInt();
-    if (server.hasArg("en")) chaserEndSlot = server.arg("en").toInt();
-    if (server.hasArg("fade")) fadeTime = server.arg("fade").toInt();
-    if (server.hasArg("hold")) holdTime = server.arg("hold").toInt();
-    if (server.hasArg("tr")) chaserTrigger = server.arg("tr").toInt();
-    if (server.hasArg("sy")) chaserSync = server.arg("sy").toInt();
-    if (server.hasArg("o")) chaserOrder = server.arg("o").toInt();
-    if (server.hasArg("ftr")) chaserFadeTrigger = server.arg("ftr").toInt();
-    if (server.hasArg("fsy")) chaserFadeSync = server.arg("fsy").toInt();
+  server.on("/joy_cfg", []() {
+    joyMaxSpeed = server.arg("spd").toInt(); joyCurve = server.arg("crv").toFloat(); joyMomentum = server.arg("mom").toFloat() / 100.0f;
+    joyPanRev = server.arg("pr") == "1"; joyTiltRev = server.arg("tr") == "1";
+    panMinLimit = constrain(server.arg("pmin").toInt(), 0, 255) << 8; panMaxLimit = (constrain(server.arg("pmax").toInt(), 0, 255) << 8) | 0xFF;
+    if (panMinLimit > panMaxLimit) { int t = panMinLimit; panMinLimit = panMaxLimit; panMaxLimit = t; }
+    tiltMinLimit = constrain(server.arg("tmin").toInt(), 0, 255) << 8; tiltMaxLimit = (constrain(server.arg("tmax").toInt(), 0, 255) << 8) | 0xFF;
+    if (tiltMinLimit > tiltMaxLimit) { int t = tiltMinLimit; tiltMinLimit = tiltMaxLimit; tiltMaxLimit = t; }
     prefs.begin("sys", false);
-    prefs.putInt("c_st", chaserStartSlot); prefs.putInt("c_en", chaserEndSlot);
-    prefs.putInt("c_fd", fadeTime); prefs.putInt("c_hd", holdTime);
-    prefs.putInt("c_tr", chaserTrigger); prefs.putInt("c_sy", chaserSync);
-    prefs.putInt("c_or", chaserOrder); prefs.putInt("c_ftr", chaserFadeTrigger);
-    prefs.putInt("c_fsy", chaserFadeSync);
+    prefs.putInt("j_msp", joyMaxSpeed); prefs.putFloat("j_crv", joyCurve); prefs.putFloat("j_mom", joyMomentum);
+    prefs.putBool("j_prv", joyPanRev); prefs.putBool("j_trv", joyTiltRev);
+    prefs.putInt("j_pmi", panMinLimit); prefs.putInt("j_pma", panMaxLimit);
+    prefs.putInt("j_tmi", tiltMinLimit); prefs.putInt("j_tma", tiltMaxLimit);
     prefs.end();
     server.send(200, "OK");
   });
@@ -136,20 +156,6 @@ server.on("/save", []() {
   server.on("/joy_in", []() {
     joyInputX = server.arg("x").toFloat(); 
     joyInputY = server.arg("y").toFloat();
-    server.send(200, "OK");
-  });
-
-  server.on("/joy_cfg", []() {
-    joyMaxSpeed = server.arg("spd").toInt(); joyCurve = server.arg("crv").toFloat(); joyMomentum = server.arg("mom").toFloat() / 100.0f;
-    joyPanRev = server.arg("pr") == "1"; joyTiltRev = server.arg("tr") == "1";
-    panMinLimit = server.arg("pmin").toInt() << 8; panMaxLimit = (server.arg("pmax").toInt() << 8) | 0xFF;
-    tiltMinLimit = server.arg("tmin").toInt() << 8; tiltMaxLimit = (server.arg("tmax").toInt() << 8) | 0xFF;
-    prefs.begin("sys", false);
-    prefs.putInt("j_msp", joyMaxSpeed); prefs.putFloat("j_crv", joyCurve); prefs.putFloat("j_mom", joyMomentum);
-    prefs.putBool("j_prv", joyPanRev); prefs.putBool("j_trv", joyTiltRev);
-    prefs.putInt("j_pmi", panMinLimit); prefs.putInt("j_pma", panMaxLimit);
-    prefs.putInt("j_tmi", tiltMinLimit); prefs.putInt("j_tma", tiltMaxLimit);
-    prefs.end();
     server.send(200, "OK");
   });
 
@@ -178,63 +184,95 @@ server.on("/save", []() {
       moveFX.szSt = server.arg("zs").toInt(); moveFX.szEn = server.arg("ze").toInt();
       moveFX.modMo = server.arg("mm").toInt(); moveFX.modCu = server.arg("mc").toInt();
       moveFX.modSp = server.arg("ms").toFloat(); moveFX.trigger = server.arg("tr").toInt();
-      moveFX.sync = server.arg("sy").toInt();
+      moveFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
       if(startFresh) moveFX.start(); else if (!moveFX.active) moveFX.stop();
       server.send(200, "OK");
   });
 
   server.on("/modfx", []() {
-      String pfx = server.arg("pfx"); Modulator* m = (pfx=="dim"?&dimFX:(pfx=="gr"?&gRotFX:&pRotFX));
+      String pfx = server.arg("pfx");
+      Modulator* m = nullptr;
+      if (pfx == "dim") m = &dimFX; else if (pfx == "gr") m = &gRotFX; else if (pfx == "pr") m = &pRotFX;
       if(m) {
         bool startFresh = !m->active && (server.arg("a") == "1");
         m->active = (server.arg("a") == "1");
         m->startVal = server.arg("st").toInt(); m->endVal = server.arg("en").toInt();
         m->speed = server.arg("sp").toFloat(); m->mode = server.arg("mo").toInt();
         m->curve = server.arg("cu").toInt(); m->trigger = server.arg("tr").toInt();
-        m->sync = server.arg("sy").toInt();
+        m->sync = constrain(server.arg("sy").toInt(), 0, 6);
         if(startFresh) m->start(); else if (!m->active) m->stop();
       }
       server.send(200, "OK");
+  });
+
+  server.on("/chaser", []() {
+    chaserActive = (server.arg("act") == "1");
+    if (server.hasArg("start")) chaserStartSlot = constrain(server.arg("start").toInt(), 0, 9);
+    if (server.hasArg("end")) chaserEndSlot = constrain(server.arg("end").toInt(), 0, 9);
+    if (chaserStartSlot > chaserEndSlot) { int t = chaserStartSlot; chaserStartSlot = chaserEndSlot; chaserEndSlot = t; }
+    if (server.hasArg("fade")) fadeTime = server.arg("fade").toInt();
+    if (server.hasArg("hold")) holdTime = server.arg("hold").toInt();
+    if (server.hasArg("trg")) chaserTrigger = server.arg("trg").toInt();
+    if (server.hasArg("sync")) chaserSync = constrain(server.arg("sync").toInt(), 0, 6);
+    if (server.hasArg("ord")) chaserOrder = server.arg("ord").toInt();
+    if (server.hasArg("f_trg")) chaserFadeTrigger = server.arg("f_trg").toInt();
+    if (server.hasArg("f_sync")) chaserFadeSync = constrain(server.arg("f_sync").toInt(), 0, 6);
+
+    // Persist here — /chaser_cfg used to own this but was dead code (never
+    // called from the frontend), so chaser config never actually survived
+    // a reboot until this was moved to the endpoint that's really in use.
+    prefs.begin("sys", false);
+    prefs.putInt("c_st", chaserStartSlot); prefs.putInt("c_en", chaserEndSlot);
+    prefs.putInt("c_fd", fadeTime); prefs.putInt("c_hd", holdTime);
+    prefs.putInt("c_tr", chaserTrigger); prefs.putInt("c_sy", chaserSync);
+    prefs.putInt("c_or", chaserOrder); prefs.putInt("c_ftr", chaserFadeTrigger);
+    prefs.putInt("c_fsy", chaserFadeSync);
+    prefs.end();
+
+    if (chaserActive) { currentSlot = chaserStartSlot; nextSlot = chaserStartSlot; stepStartTime = millis(); inFade = false; executeChaserSlot(currentSlot); }
+    else { activePresetSlot = 0; }
+    server.send(200, "OK");
   });
 
   server.on("/recall", []() { triggerLoad(1, server.arg("slot").toInt()); server.send(200, "OK"); });
   server.on("/kill_fx", []() { moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); chaserActive = false; activePresetSlot = 0; server.send(200, "OK"); });
   server.on("/bump", []() { String t = server.arg("t"); bool s = (server.arg("s") == "1"); if(t=="blinder") bumpBlinder=s; if(t=="strobeF") bumpStrobeF=s; if(t=="strobe50") bumpStrobe50=s; if(t=="blackout") bumpBlackout=s; server.send(200, "OK"); });
   server.on("/masterdim", []() { masterBrightness = server.arg("v").toFloat() / 100.0f; prefs.begin("sys", false); prefs.putFloat("mdim", masterBrightness); prefs.end(); server.send(200, "OK"); });
-  server.on("/smooth", []() { dimSmoothVal = server.arg("v").toInt(); prefs.begin("sys", false); prefs.putInt("ds", dimSmoothVal); prefs.end(); server.send(200, "OK"); });
+  server.on("/smooth", []() { dimSmoothVal = constrain(server.arg("v").toInt(), 0, 100); prefs.begin("sys", false); prefs.putInt("ds", dimSmoothVal); prefs.end(); server.send(200, "OK"); });
   server.on("/autofade", []() { fadeDuration = server.arg("t").toInt(); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "OK"); });
   server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "OK"); });
   server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "OK"); });
-  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = server.arg("sens").toInt(); server.send(200, "OK"); });
+  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); server.send(200, "OK"); });
   
   server.on("/colfx", []() {
-      colFX.active = (server.arg("a") == "1"); colFX.startVal = server.arg("st").toInt(); colFX.endVal = server.arg("en").toInt();
-      colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = server.arg("sy").toInt();
-      colFX.step = ((colFX.startVal % 2 == 0 && colFX.endVal % 2 == 0) || (colFX.startVal % 2 != 0 && colFX.endVal % 2 != 0)) ? 2 : 1;
+      colFX.active = (server.arg("a") == "1"); colFX.startVal = constrain(server.arg("st").toInt(), 0, 19); colFX.endVal = constrain(server.arg("en").toInt(), 0, 19);
+      colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
+      updateColFXStep();
       if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
       server.send(200, "OK");
   });
 
   server.on("/sgobfx", []() {
-      sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = server.arg("st").toInt(); sgobFX.endVal = server.arg("en").toInt();
-      sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = server.arg("sy").toInt(); sgobFX.scratch = (server.arg("sc") == "1");
+      sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = constrain(server.arg("st").toInt(), 0, 9); sgobFX.endVal = constrain(server.arg("en").toInt(), 0, 9);
+      sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); sgobFX.scratch = (server.arg("sc") == "1");
       if(sgobFX.active) { sgobFX.lastStepTime = millis(); sgobFX.currentIdx = sgobFX.startVal; }
       server.send(200, "OK");
   });
 
   server.on("/rgobfx", []() {
-      rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = server.arg("st").toInt(); rgobFX.endVal = server.arg("en").toInt();
-      rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = server.arg("sy").toInt(); rgobFX.scratch = (server.arg("sc") == "1");
+      rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = constrain(server.arg("st").toInt(), 0, 6); rgobFX.endVal = constrain(server.arg("en").toInt(), 0, 6);
+      rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); rgobFX.scratch = (server.arg("sc") == "1");
       if(rgobFX.active) { rgobFX.lastStepTime = millis(); rgobFX.currentIdx = rgobFX.startVal; }
       server.send(200, "OK");
   });
 
   server.on("/save_patch", HTTP_POST, []() {
-      int n = server.arg("n").toInt(); prefs.begin("patch", false); prefs.putInt("n", n);
+      int n = constrain(server.arg("n").toInt(), 1, 8); prefs.begin("patch", false); prefs.putInt("n", n);
       for(int i=0; i<n; i++) {
-        prefs.putInt(("a"+String(i)).c_str(), server.arg("a"+String(i)).toInt()); prefs.putBool(("ip"+String(i)).c_str(), server.arg("ip"+String(i)) == "1");
+        int addr = constrain(server.arg("a"+String(i)).toInt(), 1, 495); // leaves room for the fixture's 18 channels within the 512-channel universe
+        prefs.putInt(("a"+String(i)).c_str(), addr); prefs.putBool(("ip"+String(i)).c_str(), server.arg("ip"+String(i)) == "1");
         prefs.putBool(("it"+String(i)).c_str(), server.arg("it"+String(i)) == "1"); prefs.putInt(("ph"+String(i)).c_str(), server.arg("ph"+String(i)).toInt());
-        fixtures[i].addr = server.arg("a"+String(i)).toInt(); fixtures[i].invP = server.arg("ip"+String(i)) == "1"; fixtures[i].invT = server.arg("it"+String(i)) == "1"; fixtures[i].phase = server.arg("ph"+String(i)).toInt();
+        fixtures[i].addr = addr; fixtures[i].invP = server.arg("ip"+String(i)) == "1"; fixtures[i].invT = server.arg("it"+String(i)) == "1"; fixtures[i].phase = server.arg("ph"+String(i)).toInt();
       }
       numFixtures = n; maxDmxChannel = 0; for(int i=0; i<numFixtures; i++) { int endChan = fixtures[i].addr + 17; if(endChan > maxDmxChannel) maxDmxChannel = endChan; }
       if(maxDmxChannel > 512) maxDmxChannel = 512; prefs.end(); server.send(200, "OK");
@@ -246,7 +284,39 @@ server.on("/save", []() {
   });
 
   server.on("/map_go", []() { mapTargetPan = server.arg("p").toFloat(); mapTargetTilt = server.arg("t").toFloat(); mapIsMoving = true; server.send(200, "OK"); });
-  server.on("/save_map", HTTP_POST, []() { if(server.hasArg("plain")) { File f = LittleFS.open("/map.json", "w"); if(f) { f.print(server.arg("plain")); f.close(); } } server.send(200, "OK"); });
-  server.on("/load_map", []() { if(LittleFS.exists("/map.json")) { File f = LittleFS.open("/map.json", "r"); if(f) { server.streamFile(f, "application/json"); f.close(); return; } } server.send(200, "json", "{}"); });
+  server.on("/save_map", HTTP_POST, []() {
+    if (!server.hasArg("plain")) { server.send(400, "text/plain", "missing body"); return; }
+    String body = server.arg("plain");
+    File f = LittleFS.open("/map.json", "w");
+    if (!f) { server.send(500, "text/plain", "storage error"); return; }
+    size_t written = f.print(body);
+    f.close();
+    if (written != body.length()) { LittleFS.remove("/map.json"); server.send(500, "text/plain", "incomplete write"); return; }
+    server.send(200, "OK");
+  });
+  server.on("/load_map", []() { if(LittleFS.exists("/map.json")) { File f = LittleFS.open("/map.json", "r"); if(f) { server.streamFile(f, "application/json"); f.close(); return; } } server.send(200, "application/json", "{}"); });
   server.on("/set_wifi", []() { prefs.begin("sys", false); prefs.putString("ssid", server.arg("s")); prefs.putString("pass", server.arg("p")); prefs.end(); server.send(200, "OK"); delay(500); ESP.restart(); });
+  
+  server.on("/beat", []() {
+    unsigned long now = millis();
+    if (globalBPM > 0) {
+      unsigned long interval = 60000 / globalBPM;
+      lastBeatTime = now - interval; 
+    }
+    manualTap = true;
+    server.send(200, "OK");
+  });
+  server.on("/sync", []() {
+    masterSyncTime = millis();
+    if(moveFX.active) moveFX.modPhase = 0.0;
+    if(dimFX.active) dimFX.phase = 0.0;
+    if(gRotFX.active) gRotFX.phase = 0.0;
+    if(pRotFX.active) pRotFX.phase = 0.0;
+    server.send(200, "OK");
+  });
+  server.on("/jog", []() {
+    int v = server.arg("v").toInt();
+    if(v != 0) jogBend = v; else jogBend = 0;
+    server.send(200, "OK");
+  });
 }

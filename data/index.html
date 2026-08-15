@@ -119,9 +119,13 @@
       .status-swatches { display: none !important; }
     }
   </style>
-  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous"></script>
+  <!-- Served locally from LittleFS (gzip, see WebAPI.h /vendor/* routes) so the
+       UI still loads with no internet uplink — e.g. the WiFi AP fallback at a
+       venue with no WLAN. Was CDN-hosted (unpkg.com) before 2026-08-15; that
+       broke the UI whenever the device had no internet access. -->
+  <script src="/vendor/react.js"></script>
+  <script src="/vendor/react-dom.js"></script>
+  <script src="/vendor/babel.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -160,7 +164,7 @@ function useKeyboardJoystick(onMove) {
         }
       }
 
-      // WICHTIG: Nur senden, wenn sich der Wert geändert hat
+      // Only send if the value actually changed
       if (Math.abs(x - lastSent.current.x) > 0.001 || Math.abs(y - lastSent.current.y) > 0.001) {
         lastSent.current = { x, y };
         posRef.current = { x, y };
@@ -269,7 +273,7 @@ function StickyJoystick({
 
   useEffect(() => { fireRef.current = onChange; }, [onChange]);
 
-  // Listener für globale Modifikator-Tasten, damit die Maus sie live mitbekommt
+  // Listener for global modifier keys, so the mouse handling picks them up live
   useEffect(() => {
     const handleMod = (e) => {
       mods.current.shift = e.shiftKey; mods.current.alt = e.altKey;
@@ -962,6 +966,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   const COLOR_BASES = [...COLORS.map((c) => ({ n: `Color · ${c.n}`, v: c.v, range: 0 })), { n: 'Rotation · Slow → Fast', v: 100, range: 155 }];
   const SGOBOS = [{ n: 'White (Open)', v: 0 }, { n: 'Gobo 1', v: 10 }, { n: 'Gobo 2', v: 20 }, { n: 'Gobo 3', v: 30 }, { n: 'Gobo 4', v: 40 }, { n: 'Gobo 5', v: 50 }, { n: 'Gobo 6', v: 60 }, { n: 'Gobo 7', v: 70 }, { n: 'Gobo 8', v: 80 }, { n: 'Gobo 9', v: 90 }];
   const RGOBOS = [{ n: 'White (Open)', v: 0 }, { n: 'Gobo 1', v: 10 }, { n: 'Gobo 2', v: 20 }, { n: 'Gobo 3', v: 30 }, { n: 'Gobo 4', v: 40 }, { n: 'Gobo 5', v: 50 }, { n: 'Gobo 6', v: 60 }];
+  // 1:1 with wheelMap[20] on the device (index i == wheelMap position) — used only by the color chaser dropdown, which sends the array index as st/en to /colfx. Do not reuse COLORS (above) here, it's a different 10-entry set for the single-color picker.
+  const COLOR_STEPS = [{ n: 'White' }, { n: 'W/R' }, { n: 'Red' }, { n: 'R/Y' }, { n: 'Yellow' }, { n: 'Y/B' }, { n: 'Blue' }, { n: 'B/G' }, { n: 'Green' }, { n: 'G/P' }, { n: 'Purple' }, { n: 'P/A' }, { n: 'Amber' }, { n: 'A/C' }, { n: 'Cyan' }, { n: 'C/E' }, { n: 'Emerald' }, { n: 'E/O' }, { n: 'Orange' }, { n: 'O/W' }];
   const SGOBO_BASES = [...SGOBOS.map((g) => ({ n: g.n, v: g.v, range: 0 })), { n: 'Rotation · Reverse', v: 100, range: 29 }, { n: 'Rotation · Stop', v: 130, range: 4 }, { n: 'Rotation · Forward', v: 135, range: 75 }, { n: 'Shake', v: 211, range: 44 }];
   const RGOBO_BASES = [...RGOBOS.map((g) => ({ n: g.n, v: g.v, range: 0 })), { n: 'Rotation · Forward', v: 70, range: 57 }, { n: 'Rotation · Stop', v: 128, range: 1 }, { n: 'Rotation · Reverse', v: 130, range: 62 }, { n: 'Shake', v: 193, range: 62 }];
   const MOVEMENT_TYPES = [[1, 'Circle'], [2, 'Figure 8'], [3, 'Clover'], [4, 'Square'], [5, 'Star'], [6, 'Waterwave'], [7, 'Lissajous (Chaos)'], [8, 'Pan Sweep (Line X)'], [9, 'Tilt Sweep (Line Y)'], [10, 'Spiral In / Out'], [11, "Ballyhoo (Rock'n'Roll)"], [12, 'Infinity Loop']];
@@ -1018,7 +1024,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   }
 
   function ChaserFx({ title, dotKey, accent, state, setState, type }) {
-    const lookup = { col: { list: COLORS, sKey: 'colSt', eKey: 'colEn', hKey: 'colHo', tKey: 'colTr', syKey: 'colSy', running: 'colFxRunning' }, sg: { list: SGOBOS, sKey: 'sgSt', eKey: 'sgEn', hKey: 'sgHo', tKey: 'sgTr', syKey: 'sgSy', running: 'sgFxRunning', scKey: 'sgSc' }, rg: { list: RGOBOS, sKey: 'rgSt', eKey: 'rgEn', hKey: 'rgHo', tKey: 'rgTr', syKey: 'rgSy', running: 'rgFxRunning', scKey: 'rgSc' } };
+    const lookup = { col: { list: COLOR_STEPS, sKey: 'colSt', eKey: 'colEn', hKey: 'colHo', tKey: 'colTr', syKey: 'colSy', running: 'colFxRunning' }, sg: { list: SGOBOS, sKey: 'sgSt', eKey: 'sgEn', hKey: 'sgHo', tKey: 'sgTr', syKey: 'sgSy', running: 'sgFxRunning', scKey: 'sgSc' }, rg: { list: RGOBOS, sKey: 'rgSt', eKey: 'rgEn', hKey: 'rgHo', tKey: 'rgTr', syKey: 'rgSy', running: 'rgFxRunning', scKey: 'rgSc' } };
     const cfg = lookup[type];
     return (
       <Accordion title={title} dot={FX_HUE[dotKey]} badge={state[cfg.running] ? 'RUN' : null}>
@@ -1057,7 +1063,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
           <input value={state.pass || ''} type="password" onChange={(e) => setState((s) => ({ ...s, pass: e.target.value }))} placeholder="WiFi Password" style={{ padding: '10px 12px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, fontFamily: 'inherit' }} />
           <button onClick={handleWifiSave} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.18)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11.5, cursor: 'pointer', letterSpacing: 0.6 }}>↻ SAVE & RESTART</button>
           <div style={{ marginTop: 4, padding: '10px 12px', background: 'rgba(255,255,255,0.02)', border: '1px dashed rgba(255,255,255,0.08)', borderRadius: 9, fontSize: 11, color: 'rgba(255,255,255,0.55)' }}><div style={{ fontWeight: 700, color: 'rgba(255,255,255,0.78)', letterSpacing: 0.5, marginBottom: 4 }}>UI firmware update (index.html)</div><div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', marginBottom: 6 }}>Select new index.html — uploaded over WiFi to LittleFS.</div><input ref={fileRef} type="file" accept=".html" onChange={handleOTA} style={{ display: 'none' }} /><button onClick={() => fileRef.current?.click()} disabled={uploading} style={{ width: '100%', padding: '10px 0', background: uploading ? 'rgba(20,184,166,0.06)' : 'rgba(20,184,166,0.15)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 8, color: uploading ? '#5eead488' : '#5eead4', fontWeight: 700, fontSize: 11, cursor: uploading ? 'default' : 'pointer', letterSpacing: 0.6 }}>{uploading ? '⟳ UPLOADING…' : '⤒ SELECT & FLASH'}</button></div>
-          <button onClick={() => { if (confirm('Factory reset — clear all presets and settings?')) fetch('/set_wifi?s=&p=').then(() => showToast('Reset sent — rebooting', 'info', 3000)); }} style={{ padding: '11px 0', background: 'rgba(127,29,29,0.45)', border: '1px solid rgba(220,38,38,0.4)', borderRadius: 9, color: '#fca5a5', fontWeight: 700, fontSize: 11.5, cursor: 'pointer', letterSpacing: 0.6 }}>⚠ SYSTEM RESET</button>
+          <button onClick={() => { if (confirm('Clear saved WiFi credentials and reboot into AP setup mode? Presets, chaser scenes and fixture patch are kept.')) fetch('/set_wifi?s=&p=').then(() => showToast('WiFi reset sent — rebooting', 'info', 3000)); }} style={{ padding: '11px 0', background: 'rgba(127,29,29,0.45)', border: '1px solid rgba(220,38,38,0.4)', borderRadius: 9, color: '#fca5a5', fontWeight: 700, fontSize: 11.5, cursor: 'pointer', letterSpacing: 0.6 }}>⚠ RESET WIFI</button>
         </div>
       </Accordion>
     );
@@ -1152,6 +1158,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
 (function () {
   const { useState, useRef, useCallback } = React;
   const COLORS_FOR_DROPDOWN = ['White', 'White / Red', 'Red', 'Red / Yellow', 'Yellow', 'Yellow / Blue', 'Blue', 'Blue / Green', 'Green', 'Green / Purple', 'Purple', 'Amber', 'Cyan', 'Emerald', 'Orange'];
+  // Same 10 solid wheel colors as the Programmer tab's COLOR_BASES (CH.COLOR values), redeclared here since each <script type="text/babel"> block is its own scope.
+  const FOLLOWSPOT_COLORS = [{ n: 'White (Open)', v: 0 }, { n: 'Red', v: 5 }, { n: 'Yellow', v: 10 }, { n: 'Blue', v: 15 }, { n: 'Green', v: 20 }, { n: 'Purple', v: 25 }, { n: 'Amber', v: 30 }, { n: 'Cyan', v: 35 }, { n: 'Emerald', v: 40 }, { n: 'Orange', v: 45 }];
 
   function StageMap({ accent, hasImage, imageSrc, points, setPoints, calibrating, activeMarker, setActiveMarker, onTap }) {
     const ref = useRef(null); const dragRef = useRef(null);
@@ -1187,11 +1195,13 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
           if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
           canvas.width = width; canvas.height = height; const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, width, height);
           const dataUrl = canvas.toDataURL('image/jpeg', 0.3);
-          setState((s) => {
-            const nextPoints = s.mapPoints || [{x:0.1,y:0.1,pan:32767,tilt:32767},{x:0.9,y:0.1,pan:32767,tilt:32767},{x:0.9,y:0.9,pan:32767,tilt:32767},{x:0.1,y:0.9,pan:32767,tilt:32767}];
-            fetch('/save_map', { method: 'POST', body: JSON.stringify({ points: nextPoints, image: dataUrl }), headers: { 'Content-Type': 'application/json' } });
-            return { ...s, mapImage: dataUrl, mapHasImage: true, mapPoints: nextPoints };
-          });
+          // New photo -> reset corner markers instead of keeping the old
+          // photo's calibration positions, which would silently misalign.
+          const nextPoints = [{x:0.1,y:0.1,pan:32767,tilt:32767},{x:0.9,y:0.1,pan:32767,tilt:32767},{x:0.9,y:0.9,pan:32767,tilt:32767},{x:0.1,y:0.9,pan:32767,tilt:32767}];
+          fetch('/save_map', { method: 'POST', body: JSON.stringify({ points: nextPoints, image: dataUrl }), headers: { 'Content-Type': 'application/json' } })
+            .then((r) => { if (!r.ok) throw new Error('save failed'); showToast('✓ Photo saved — recalibrate the corners', 'ok', 3000); })
+            .catch(() => showToast('✗ Photo save failed', 'err'));
+          setState((s) => ({ ...s, mapImage: dataUrl, mapHasImage: true, mapPoints: nextPoints }));
         };
         img.src = ev.target.result;
       };
@@ -1227,7 +1237,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
               <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(244,63,94,0.08)', border: `1px dashed ${accent}`, borderRadius: 8, fontSize: 10.5, color: 'rgba(255,255,255,0.75)' }}>
                 <b style={{ color: accent, letterSpacing: 0.5 }}>CALIBRATING {['Top-Left','Top-Right','Bottom-Right','Bottom-Left'][state.mapActiveMarker]}</b>
                 <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.55)', lineHeight: 1.4 }}>1. Drag marker to corner. 2. Move real light to that corner with joystick. 3. Tap <i>Save point</i>.</div>
-                <button onClick={() => { setState((s) => { const idx = s.mapActiveMarker; const pan16 = Math.round(s.pan * 257); const tilt16 = Math.round(s.tilt * 257); const pts = s.mapPoints.map((p, i) => i === idx ? { ...p, pan: pan16, tilt: tilt16 } : p ); const nextState = { ...s, mapPoints: pts, mapActiveMarker: (idx + 1) % 4 }; fetch('/save_map', { method: 'POST', body: JSON.stringify({ points: pts, image: s.mapImage || '' }), headers: { 'Content-Type': 'application/json' } }).then(() => showToast(`✓ Point ${idx + 1} saved`, 'ok')).catch(() => showToast('✗ Map save failed', 'err')); return nextState; }); }} style={{ marginTop: 6, padding: '7px 12px', background: '#15803d', border: 'none', borderRadius: 7, color: '#fff', fontWeight: 700, fontSize: 11, letterSpacing: 0.6, cursor: 'pointer', width: '100%' }}>✓ SAVE POINT {state.mapActiveMarker + 1}</button>
+                <button onClick={() => { setState((s) => { const idx = s.mapActiveMarker; const pan16 = Math.round(s.pan * 257); const tilt16 = Math.round(s.tilt * 257); const pts = s.mapPoints.map((p, i) => i === idx ? { ...p, pan: pan16, tilt: tilt16 } : p ); const nextState = { ...s, mapPoints: pts, mapActiveMarker: (idx + 1) % 4 }; fetch('/save_map', { method: 'POST', body: JSON.stringify({ points: pts, image: s.mapImage || '' }), headers: { 'Content-Type': 'application/json' } }).then((r) => { if (!r.ok) throw new Error('save failed'); showToast(`✓ Point ${idx + 1} saved`, 'ok'); }).catch(() => showToast('✗ Map save failed', 'err')); return nextState; }); }} style={{ marginTop: 6, padding: '7px 12px', background: '#15803d', border: 'none', borderRadius: 7, color: '#fff', fontWeight: 700, fontSize: 11, letterSpacing: 0.6, cursor: 'pointer', width: '100%' }}>✓ SAVE POINT {state.mapActiveMarker + 1}</button>
               </div>
             )}
           </Panel>
@@ -1237,7 +1247,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
             <LabeledSlider label="Dimmer" value={state.dimmer} onChange={(v) => setState((s) => ({ ...s, dimmer: v }))} accent={accent} compact />
             <LabeledSlider label="Focus" value={state.focus} onChange={(v) => setState((s) => ({ ...s, focus: v }))} accent={accent} compact />
             <LabeledSlider label="Zoom" value={state.zoom} onChange={(v) => setState((s) => ({ ...s, zoom: v }))} accent={accent} compact />
-            <div style={{ marginTop: 4 }}><div style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.45)', letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 5 }}>Color</div><Dropdown value={state.color} onChange={(v) => setState((s) => ({ ...s, color: parseInt(v) }))} options={COLORS_FOR_DROPDOWN.map((c, i) => [i, c])} accent={accent} dense /></div>
+            <div style={{ marginTop: 4 }}><div style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.45)', letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 5 }}>Color</div><Dropdown value={state.colorBase} onChange={(v) => setState((s) => ({ ...s, colorBase: parseInt(v), colorOff: 0 }))} options={FOLLOWSPOT_COLORS.map((c) => [c.v, c.n])} accent={accent} dense /></div>
             <button onClick={() => setState((s) => ({ ...s, frost: !s.frost }))} style={{ width: '100%', padding: '11px 0', marginTop: 8, background: state.frost ? 'rgba(34,197,94,0.85)' : 'rgba(34,197,94,0.14)', border: '1px solid rgba(34,197,94,0.32)', borderRadius: 10, color: state.frost ? '#fff' : '#86efac', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}><LED color="#22c55e" size={7} /> Frost · {state.frost ? 'ON' : 'OFF'}</button>
           </Panel>
           <Panel title="Smart dimmer · auto fade" accentDot="#e83e8c" padding={12}>
@@ -1408,7 +1418,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     const beat = useBeatPulse(bpm);
     const tele = useTelemetry();
 
-    // HIER IST DIE KORREKTE, EINZIGE DEKLARATION
+    // The single, correct declaration (do not duplicate elsewhere)
     const handleAccentChange = useCallback((hex) => { setAccent(hex); try { localStorage.setItem('hz_accent', hex); } catch(e) {} }, []);
 
 const isReceiving = useRef(false);
@@ -1419,9 +1429,8 @@ const isReceiving = useRef(false);
         try {
           const r = await fetch('/api/get_dmx'); const d = await r.json();
           if (d.bpm) setBpm(d.bpm);
-          if (d.pn && Array.isArray(d.pn)) setFixtureCount(1);
-          
-          isReceiving.current = true; // FLAG SETZEN: Wir empfangen gerade Daten!
+
+          isReceiving.current = true; // set flag: we're currently receiving data
 
           setState(prev => {
             const next = { ...prev };
@@ -1432,7 +1441,7 @@ const isReceiving = useRef(false);
             if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
             if (d.dSm !== undefined) next.damping = d.dSm;
             if (d.fA !== undefined) {
-              next.fxRunning = !!d.fA; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMM = d.fMM ?? prev.fxMM; next.fxMS = d.fMS ?? prev.fxMS;
+              next.fxRunning = !!d.fA; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS;
               next.dimFxRunning = !!d.dA; next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy;
               next.grFxRunning = !!d.grA; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
               next.prFxRunning = !!d.prA; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
@@ -1446,7 +1455,7 @@ const isReceiving = useRef(false);
             return next;
           });
 
-          // LÄNGERES TIMEOUT (300ms) für langsame Browser-Engines, damit das UI sicher durch-gerendert hat
+          // Longer timeout (300ms) for slow browser engines, so the UI has reliably finished rendering
           setTimeout(() => { isReceiving.current = false; }, 300);
         } catch(e) {}
       };
@@ -1521,9 +1530,12 @@ const isReceiving = useRef(false);
       fetch('/api/patch').then(r => r.ok ? r.json() : null).then(data => { if (Array.isArray(data) && data.length > 0) setFixtureCount(data.length); }).catch(() => {});
     }, []);
 
-    const blackoutPrevDimmer = useRef(null);
-    const handleBlackoutOn = useCallback(() => { blackoutPrevDimmer.current = state.dimmer; fetch('/set_all?c1=0').catch(() => {}); setState(s => ({ ...s, blackout: true, dimmer: 0 })); }, [state.dimmer]);
-    const handleBlackoutOff = useCallback(() => { const restore = blackoutPrevDimmer.current ?? 0; fetch(`/set_all?c1=${restore}`).catch(() => {}); setState(s => ({ ...s, blackout: false, dimmer: restore })); }, []);
+    // Uses the instant /bump override (same mechanism as Blinder/Strobe), not
+    // /set_all, which runs through dimmer smoothing — a panic button must cut
+    // immediately regardless of the smoothing setting. The dimmer value itself
+    // is never touched, so there's nothing to restore on release.
+    const handleBlackoutOn = useCallback(() => { fetch('/bump?t=blackout&s=1').catch(() => {}); setState(s => ({ ...s, blackout: true })); }, []);
+    const handleBlackoutOff = useCallback(() => { fetch('/bump?t=blackout&s=0').catch(() => {}); setState(s => ({ ...s, blackout: false })); }, []);
 
     return (
       <div style={{ width: '100%', height: '100vh', display: 'flex', flexDirection: 'column', background: night ? '#0a0606' : '#0b0b0e', color: '#fff', fontFamily: '"Inter", -apple-system, system-ui, sans-serif', overflow: 'hidden', filter: night ? 'brightness(0.85) sepia(0.5) hue-rotate(-50deg) saturate(2.2)' : 'none', position: 'relative' }}>

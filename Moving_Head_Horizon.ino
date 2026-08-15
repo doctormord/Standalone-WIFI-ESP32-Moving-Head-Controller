@@ -87,8 +87,6 @@ MovementEngine moveFX;
 Modulator dimFX(0, 255);
 Modulator gRotFX(135, 255);
 Modulator pRotFX(135, 255);
-
-// struct StepFX { bool active = false; int startVal = 0; int endVal = 0; int step = 1; int trigger = 0; int sync = 3; unsigned long holdTime = 1000; unsigned long lastStepTime = 0; int currentIdx = 0; bool scratch = false; };
 StepFX colFX, sgobFX, rgobFX;
 
 struct SceneData { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc; };
@@ -117,14 +115,12 @@ void loadAllChaserScenes() {
     prefs.begin(("sc" + String(i + 1)).c_str(), true);
     presetNames[i] = prefs.getString("n", "");
     
-    // FIX: Auch hier das Struct strikt nullen!
     SceneData sd;
     memset(&sd, 0, sizeof(SceneData));
 
     if (prefs.getBytes("data", &sd, sizeof(SceneData)) == sizeof(SceneData)) {
         chaserScenes[i] = sd;
     } else {
-        // FALLBACK für alte Presets
         for (int c = 1; c <= 18; c++) chaserScenes[i].dmx[c] = prefs.getUChar(String(c).c_str(), 0);
         chaserScenes[i].fA = prefs.getBool("fA", false); chaserScenes[i].fT = prefs.getInt("fT", 1); chaserScenes[i].fR = prefs.getFloat("fR", 0.0);
         chaserScenes[i].fTr = prefs.getInt("fTr", 0); chaserScenes[i].fSy = prefs.getInt("fSy", 3);
@@ -153,6 +149,12 @@ void loadAllChaserScenes() {
   }
 }
 
+// Shared by triggerSceneFX() and the /colfx HTTP handler so the parity rule
+// (same-parity start/end -> step 2, else step 1) can't drift between them.
+void updateColFXStep() {
+  colFX.step = ((colFX.startVal % 2 == 0 && colFX.endVal % 2 == 0) || (colFX.startVal % 2 != 0 && colFX.endVal % 2 != 0)) ? 2 : 1;
+}
+
 void triggerSceneFX(int slot) {
   moveFX.active = chaserScenes[slot].fA; moveFX.type = chaserScenes[slot].fT; moveFX.rot = chaserScenes[slot].fR;
   moveFX.trigger = chaserScenes[slot].fTr; moveFX.sync = chaserScenes[slot].fSy;
@@ -175,24 +177,23 @@ void triggerSceneFX(int slot) {
   pRotFX.trigger = chaserScenes[slot].prTr; pRotFX.sync = chaserScenes[slot].prSy;
   if(pRotFX.active) pRotFX.start(); else pRotFX.stop();
 
-  colFX.active = chaserScenes[slot].cA; colFX.startVal = chaserScenes[slot].cSt; colFX.endVal = chaserScenes[slot].cEn;
+  colFX.active = chaserScenes[slot].cA; colFX.startVal = constrain(chaserScenes[slot].cSt, 0, 19); colFX.endVal = constrain(chaserScenes[slot].cEn, 0, 19);
   colFX.holdTime = chaserScenes[slot].cHo; colFX.trigger = chaserScenes[slot].cTr; colFX.sync = chaserScenes[slot].cSy;
-  if ((colFX.startVal % 2 == 0 && colFX.endVal % 2 == 0) || (colFX.startVal % 2 != 0 && colFX.endVal % 2 != 0)) colFX.step = 2; else colFX.step = 1;
+  updateColFXStep();
   if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
 
-  sgobFX.active = chaserScenes[slot].sgA; sgobFX.startVal = chaserScenes[slot].sgSt; sgobFX.endVal = chaserScenes[slot].sgEn;
+  sgobFX.active = chaserScenes[slot].sgA; sgobFX.startVal = constrain(chaserScenes[slot].sgSt, 0, 9); sgobFX.endVal = constrain(chaserScenes[slot].sgEn, 0, 9);
   sgobFX.holdTime = chaserScenes[slot].sgHo; sgobFX.trigger = chaserScenes[slot].sgTr; sgobFX.sync = chaserScenes[slot].sgSy; sgobFX.scratch = chaserScenes[slot].sgSc;
   if(sgobFX.active) { sgobFX.currentIdx = sgobFX.startVal; sgobFX.lastStepTime = millis(); }
 
-  rgobFX.active = chaserScenes[slot].rgA; rgobFX.startVal = chaserScenes[slot].rgSt; rgobFX.endVal = chaserScenes[slot].rgEn;
+  rgobFX.active = chaserScenes[slot].rgA; rgobFX.startVal = constrain(chaserScenes[slot].rgSt, 0, 6); rgobFX.endVal = constrain(chaserScenes[slot].rgEn, 0, 6);
   rgobFX.holdTime = chaserScenes[slot].rgHo; rgobFX.trigger = chaserScenes[slot].rgTr; rgobFX.sync = chaserScenes[slot].rgSy; rgobFX.scratch = chaserScenes[slot].rgSc;
   if(rgobFX.active) { rgobFX.currentIdx = rgobFX.startVal; rgobFX.lastStepTime = millis(); }
 }
 
 void executePreset(int slot) {
+    if (slot < 1 || slot > 10) return;
     chaserActive = false; activePresetSlot = slot;
-    
-    // Wir lesen extrem schnell direkt aus dem RAM! (Kein Flash-Readout nötig)
     SceneData sd = chaserScenes[slot - 1];
 
     for (int i = 1; i <= 18; i++) dmxData[i] = sd.dmx[i];
@@ -201,26 +202,16 @@ void executePreset(int slot) {
     centerPan16 = (dmxData[3] << 8) | dmxData[15];
     centerTilt16 = (dmxData[4] << 8) | dmxData[16];
 
-    moveFX.active = sd.fA; moveFX.type = sd.fT; moveFX.rot = sd.fR; moveFX.trigger = sd.fTr; moveFX.sync = sd.fSy; moveFX.spdSt = sd.fSS; moveFX.spdEn = sd.fSE; moveFX.szSt = sd.fZS; moveFX.szEn = sd.fZE; moveFX.modMo = sd.fMM; moveFX.modCu = sd.fMC; moveFX.modSp = sd.fMS;
-    dimFX.active = sd.dA; dimFX.startVal = sd.dSt; dimFX.endVal = sd.dEn; dimFX.mode = sd.dMo; dimFX.curve = sd.dCu; dimFX.speed = sd.dSp; dimFX.trigger = sd.dTr; dimFX.sync = sd.dSy;
-    gRotFX.active = sd.grA; gRotFX.startVal = sd.grSt; gRotFX.endVal = sd.grEn; gRotFX.mode = sd.grMo; gRotFX.curve = sd.grCu; gRotFX.speed = sd.grSp; gRotFX.trigger = sd.grTr; gRotFX.sync = sd.grSy;
-    pRotFX.active = sd.prA; pRotFX.startVal = sd.prSt; pRotFX.endVal = sd.prEn; pRotFX.mode = sd.prMo; pRotFX.curve = sd.prCu; pRotFX.speed = sd.prSp; pRotFX.trigger = sd.prTr; pRotFX.sync = sd.prSy;
-    colFX.active = sd.cA; colFX.startVal = sd.cSt; colFX.endVal = sd.cEn; colFX.holdTime = sd.cHo; colFX.trigger = sd.cTr; colFX.sync = sd.cSy;
-    sgobFX.active = sd.sgA; sgobFX.startVal = sd.sgSt; sgobFX.endVal = sd.sgEn; sgobFX.holdTime = sd.sgHo; sgobFX.trigger = sd.sgTr; sgobFX.sync = sd.sgSy; sgobFX.scratch = sd.sgSc;
-    rgobFX.active = sd.rgA; rgobFX.startVal = sd.rgSt; rgobFX.endVal = sd.rgEn; rgobFX.holdTime = sd.rgHo; rgobFX.trigger = sd.rgTr; rgobFX.sync = sd.rgSy; rgobFX.scratch = sd.rgSc;
-    
     joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false;
-    
-    if(moveFX.active) moveFX.start(); else moveFX.stop();
-    if(dimFX.active) dimFX.start(); else dimFX.stop();
-    if(gRotFX.active) gRotFX.start(); else gRotFX.stop();
-    if(pRotFX.active) pRotFX.start(); else pRotFX.stop();
-    
-    if ((colFX.startVal % 2 == 0 && colFX.endVal % 2 == 0) || (colFX.startVal % 2 != 0 && colFX.endVal % 2 != 0)) colFX.step = 2; else colFX.step = 1;
-    colFX.currentIdx = colFX.startVal; sgobFX.currentIdx = sgobFX.startVal; rgobFX.currentIdx = rgobFX.startVal;
+
+    // FX-engine state is applied by triggerSceneFX (0-indexed), the same helper
+    // executeChaserSlot() and the chaser fade-complete path use — single source
+    // of truth instead of a second hand-copied field list here.
+    triggerSceneFX(slot - 1);
 }
 
 void executeChaserSlot(int slot) {
+    if (slot < 0 || slot > 9) return;
     for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[slot].dmx[i]; else dmxData[i] = chaserScenes[slot].dmx[i]; }
     centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE];
     joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false;
@@ -253,11 +244,8 @@ void onArtDmx(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* dat
 void updateEngines(unsigned long now) {
   static unsigned long lastEngUpdate = 0; float dt = (now - lastEngUpdate) / 1000.0f; if (dt <= 0) return; lastEngUpdate = now;
 
-  // --- DER FLOATING-POINT ACCUMULATOR FIX ---
-  // Sammelt die Kommazahlen exakt auf, bevor sie für DMX abgeschnitten werden
   static float exactPan = centerPan16;
   static float exactTilt = centerTilt16;
-  // Synchronisieren, falls ein Preset geladen wurde
   if (abs(centerPan16 - (int)exactPan) > 1) exactPan = centerPan16;
   if (abs(centerTilt16 - (int)exactTilt) > 1) exactTilt = centerTilt16;
 
@@ -269,11 +257,9 @@ void updateEngines(unsigned long now) {
       if (fabsf(joySmoothX) < 0.001f && joyInputX == 0.0f) joySmoothX = 0.0f; if (fabsf(joySmoothY) < 0.001f && joyInputY == 0.0f) joySmoothY = 0.0f;
       float pD = joySmoothX * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * (joyMaxSpeed * 25.0f) * dt;
       
-      // Werte exakt als Kommazahl aufsummieren
       exactPan += (joyPanRev ? pD : -pD); exactTilt += (joyTiltRev ? -tD : tD);
       exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
       
-      // Erst beim Schreiben auf die Lampen die Ganzzahl nutzen
       centerPan16 = (int)exactPan; centerTilt16 = (int)exactTilt;
       if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; }
   } 
@@ -319,16 +305,24 @@ void updateEngines(unsigned long now) {
       }
   }
 
-  auto runStep = [&](StepFX &fx, int channel, const byte* map) {
+  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen) {
     if (fx.active) {
       bool doStep = false;
-      if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; } 
-      else if (fx.trigger == 1) { unsigned long interval = (60000.0 / globalBPM) * syncBeats[fx.sync]; if (now - fx.lastStepTime >= interval) doStep = true; } 
+      if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; }
+      else if (fx.trigger == 1) { int safeSync = constrain(fx.sync, 0, 6); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeSync]; if (now - fx.lastStepTime >= interval) doStep = true; }
       else if (checkAudioTrg(fx.trigger)) doStep = true;
-      if (doStep) { fx.lastStepTime = now; fx.currentIdx += fx.step; if (fx.currentIdx > fx.endVal) fx.currentIdx = fx.startVal; byte val = map[fx.currentIdx]; if (fx.scratch) val = constrain(val + 183, 0, 255); dmxData[channel] = val; }
+      if (doStep) {
+        fx.lastStepTime = now; fx.currentIdx += fx.step;
+        int safeEnd = constrain(fx.endVal, 0, mapLen - 1);
+        int safeStart = constrain(fx.startVal, 0, mapLen - 1);
+        if (fx.currentIdx > safeEnd || fx.currentIdx < 0 || fx.currentIdx >= mapLen) fx.currentIdx = safeStart;
+        byte val = map[fx.currentIdx]; if (fx.scratch) val = constrain(val + 183, 0, 255); dmxData[channel] = val;
+      }
     }
   };
-  runStep(colFX, CH_COLOR, wheelMap); runStep(sgobFX, CH_GOBO, sGoboMap); runStep(rgobFX, CH_GOBO_ROT, rGoboMap);
+  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]));
+  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]));
+  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]));
 
   if (chaserActive && !isDipping) { 
     if (stepStartTime == 0) stepStartTime = now;
@@ -338,7 +332,7 @@ void updateEngines(unsigned long now) {
       if (elapsed >= currentFadeTime) { inFade = false; stepStartTime = now; for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[nextSlot].dmx[i]; else dmxData[i] = chaserScenes[nextSlot].dmx[i]; } centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE]; joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false; triggerSceneFX(nextSlot); } 
       else { float progress = currentFadeTime > 0 ? (float)elapsed / currentFadeTime : 1.0f; for (int i = 1; i <= 18; i++) { if (i==1) dimSmoothTarget = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; else if (i==13 || i==14) dmxData[i] = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; } long startP = (chaserScenes[currentSlot].dmx[CH_PAN] << 8) | chaserScenes[currentSlot].dmx[CH_PAN_FINE]; long endP = (chaserScenes[nextSlot].dmx[CH_PAN] << 8) | chaserScenes[nextSlot].dmx[CH_PAN_FINE]; centerPan16 = startP + (endP - startP) * progress; long startT = (chaserScenes[currentSlot].dmx[CH_TILT] << 8) | chaserScenes[currentSlot].dmx[CH_TILT_FINE]; long endT = (chaserScenes[nextSlot].dmx[CH_TILT] << 8) | chaserScenes[nextSlot].dmx[CH_TILT_FINE]; centerTilt16 = startT + (endT - startT) * progress; if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; } }
     } else { 
-      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { unsigned long interval = (60000.0 / globalBPM) * syncBeats[chaserSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
+      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { int safeChSync = constrain(chaserSync, 0, 6); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeChSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
       if (trg) { stepStartTime = now; currentSlot = nextSlot; if (chaserOrder == 1) nextSlot = random(chaserStartSlot, chaserEndSlot + 1); else { nextSlot++; if (nextSlot > chaserEndSlot) nextSlot = chaserStartSlot; } activePresetSlot = currentSlot + 1; if (dipToBlack) triggerLoad(2, nextSlot); else { inFade = true; for (int i = 1; i <= 18; i++) { if (!(i==1 || i==3 || i==4 || i==13 || i==14 || i==15 || i==16)) dmxData[i] = chaserScenes[nextSlot].dmx[i]; } } }
     }
   }
@@ -359,28 +353,26 @@ void updateEngines(unsigned long now) {
       lastDmxOut = now; uart_set_line_inverse(DMX_UART, UART_SIGNAL_TXD_INV); delayMicroseconds(120); uart_set_line_inverse(DMX_UART, UART_SIGNAL_INV_DISABLE); delayMicroseconds(12); uart_write_bytes(DMX_UART, (const char*)dmxBuffer, maxDmxChannel + 1);
   }
 }
+
 #include "WebAPI.h"
 
 void setup() {
   Serial.begin(115200); if(!LittleFS.begin(true)) Serial.println("FS Error");
   prefs.begin("sys", true); String sta_ssid = prefs.getString("ssid", ""), sta_pass = prefs.getString("pass", ""); 
-  dimSmoothVal = prefs.getInt("ds", 0); masterBrightness = prefs.getFloat("mdim", 1.0f); dipToBlack = prefs.getBool("dip", false);
+  dimSmoothVal = constrain(prefs.getInt("ds", 0), 0, 100); masterBrightness = prefs.getFloat("mdim", 1.0f); dipToBlack = prefs.getBool("dip", false);
   joyMaxSpeed = prefs.getInt("j_msp", 2000); joyCurve = prefs.getFloat("j_crv", 1.5f); joyMomentum = prefs.getFloat("j_mom", 0.7f); joyPanRev = prefs.getBool("j_prv", false); joyTiltRev = prefs.getBool("j_trv", false); panMinLimit = prefs.getInt("j_pmi", 0); panMaxLimit = prefs.getInt("j_pma", 65535); tiltMinLimit = prefs.getInt("j_tmi", 0); tiltMaxLimit = prefs.getInt("j_tma", 65535);
   chaserStartSlot = prefs.getInt("c_st", 0); chaserEndSlot = prefs.getInt("c_en", 3); fadeTime = prefs.getInt("c_fd", 2000); holdTime = prefs.getInt("c_hd", 2000); chaserTrigger = prefs.getInt("c_tr", 0); chaserSync = prefs.getInt("c_sy", 3); chaserOrder = prefs.getInt("c_or", 0); chaserFadeTrigger = prefs.getInt("c_ftr", 0); chaserFadeSync = prefs.getInt("c_fsy", 3); prefs.end();
   for(int i=0; i<10; i++) { prefs.begin(("sc" + String(i+1)).c_str(), true); presetNames[i] = prefs.getString("n", ""); prefs.end(); }
   prefs.begin("patch", true); numFixtures = prefs.getInt("n", 1); if (numFixtures < 1 || numFixtures > 8) numFixtures = 1;
   maxDmxChannel = 0; for(int i=0; i<numFixtures; i++) { fixtures[i].addr = prefs.getInt(("a"+String(i)).c_str(), 1 + (i*18)); fixtures[i].invP = prefs.getBool(("ip"+String(i)).c_str(), false); fixtures[i].invT = prefs.getBool(("it"+String(i)).c_str(), false); fixtures[i].phase = prefs.getInt(("ph"+String(i)).c_str(), 0); int endChan = fixtures[i].addr + 17; if (endChan > maxDmxChannel) maxDmxChannel = endChan; }
   if (maxDmxChannel > 512) maxDmxChannel = 512; if (maxDmxChannel < 18) maxDmxChannel = 18; prefs.end();
+  
   if (sta_ssid != "") { 
     WiFi.mode(WIFI_STA); 
-    
-    // --- WLAN-UPGRADES FÜR STABILITÄT ---
-    WiFi.setTxPower(WIFI_POWER_19_5dBm); // Sendeleistung auf absolutes Maximum
-    WiFi.setAutoReconnect(true);         // Automatisch neu verbinden bei Verbindungsabbruch
-    
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setAutoReconnect(true);         
     WiFi.begin(sta_ssid.c_str(), sta_pass.c_str()); 
     int tries = 0; 
-    // Timeout auf 20 Sekunden erhöht (40 * 500ms), falls der Router langsam ist
     while (WiFi.status() != WL_CONNECTED && tries < 40) { delay(500); tries++; } 
   }
   
@@ -389,10 +381,16 @@ void setup() {
     WiFi.softAP(ap_ssid, ap_password); 
   }
   
-  WiFi.setSleep(false); // Verhindert, dass das WLAN-Modul zum Stromsparen abschaltet
-  
+  WiFi.setSleep(false);
   MDNS.begin("movinghead"); artnet.begin(); artnet.setArtDmxCallback(onArtDmx);
   setupAPI(); server.begin(); setupDMX(); loadAllChaserScenes(); initAudioEngine();
 }
 
-void loop() { server.handleClient(); ArduinoOTA.handle(); artnet.read(); pollAudioEngine(); updateEngines(millis()); }
+void loop() { 
+  server.handleClient(); 
+  ArduinoOTA.handle(); 
+  artnet.read(); 
+  pollAudioEngine(); 
+  updateEngines(millis()); 
+  delay(2);
+}
