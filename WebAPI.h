@@ -128,10 +128,12 @@ void setupAPI() {
     sd.rgHo = (uint32_t)rgobFX.holdTime; sd.rgTr = rgobFX.trigger; sd.rgSy = rgobFX.sync; sd.rgSc = rgobFX.scratch;
 
     prefs.begin(("sc" + String(s)).c_str(), false);
-    prefs.clear(); 
-    prefs.putString("n", n); 
-    prefs.putBytes("data", &sd, sizeof(SceneData)); 
+    prefs.clear();
+    prefs.putString("n", n);
+    size_t written = prefs.putBytes("data", &sd, sizeof(SceneData));
     prefs.end();
+
+    if (written != sizeof(SceneData)) { server.send(500, "text/plain", "storage error"); return; }
 
     // sd already holds exactly what was just persisted, and presetNames[s-1]
     // was set above — update in-memory state directly instead of reloading
@@ -214,6 +216,7 @@ void setupAPI() {
   });
 
   server.on("/chaser", []() {
+    bool startFresh = !chaserActive && (server.arg("act") == "1");
     chaserActive = (server.arg("act") == "1");
     if (server.hasArg("start")) chaserStartSlot = constrain(server.arg("start").toInt(), 0, 9);
     if (server.hasArg("end")) chaserEndSlot = constrain(server.arg("end").toInt(), 0, 9);
@@ -237,8 +240,8 @@ void setupAPI() {
     prefs.putInt("c_fsy", chaserFadeSync);
     prefs.end();
 
-    if (chaserActive) { currentSlot = chaserStartSlot; nextSlot = chaserStartSlot; stepStartTime = millis(); inFade = false; executeChaserSlot(currentSlot); }
-    else { activePresetSlot = 0; }
+    if (startFresh) { currentSlot = chaserStartSlot; nextSlot = chaserStartSlot; stepStartTime = millis(); inFade = false; executeChaserSlot(currentSlot); }
+    else if (!chaserActive) { activePresetSlot = 0; }
     server.send(200, "OK");
   });
 
@@ -254,6 +257,7 @@ void setupAPI() {
   
   server.on("/colfx", []() {
       colFX.active = (server.arg("a") == "1"); colFX.startVal = constrain(server.arg("st").toInt(), 0, 19); colFX.endVal = constrain(server.arg("en").toInt(), 0, 19);
+      if (colFX.startVal > colFX.endVal) { int t = colFX.startVal; colFX.startVal = colFX.endVal; colFX.endVal = t; }
       colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
       updateColFXStep();
       if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
@@ -262,6 +266,7 @@ void setupAPI() {
 
   server.on("/sgobfx", []() {
       sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = constrain(server.arg("st").toInt(), 0, 9); sgobFX.endVal = constrain(server.arg("en").toInt(), 0, 9);
+      if (sgobFX.startVal > sgobFX.endVal) { int t = sgobFX.startVal; sgobFX.startVal = sgobFX.endVal; sgobFX.endVal = t; }
       sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); sgobFX.scratch = (server.arg("sc") == "1");
       if(sgobFX.active) { sgobFX.lastStepTime = millis(); sgobFX.currentIdx = sgobFX.startVal; }
       server.send(200, "OK");
@@ -269,6 +274,7 @@ void setupAPI() {
 
   server.on("/rgobfx", []() {
       rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = constrain(server.arg("st").toInt(), 0, 6); rgobFX.endVal = constrain(server.arg("en").toInt(), 0, 6);
+      if (rgobFX.startVal > rgobFX.endVal) { int t = rgobFX.startVal; rgobFX.startVal = rgobFX.endVal; rgobFX.endVal = t; }
       rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); rgobFX.scratch = (server.arg("sc") == "1");
       if(rgobFX.active) { rgobFX.lastStepTime = millis(); rgobFX.currentIdx = rgobFX.startVal; }
       server.send(200, "OK");

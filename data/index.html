@@ -985,8 +985,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
         <div style={{ marginTop: 8 }}><LabeledSlider label="Rotation" value={state.fxRot} onChange={(v) => setState((s) => ({ ...s, fxRot: v }))} min={0} max={360} unit="°" accent={accent} compact /></div>
         <div style={{ marginTop: 8, marginBottom: 6, fontSize: 9.5, color: FX_HUE.movement, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase' }}>Size + Speed modulator</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.fxMode} onChange={(v) => setState((s) => ({ ...s, fxMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.fxCurve} onChange={(v) => setState((s) => ({ ...s, fxCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.fxTrigger} setTrigger={(v) => setState((s) => ({ ...s, fxTrigger: v }))} sync={state.fxSync} setSync={(v) => setState((s) => ({ ...s, fxSync: v }))} hold={state.fxModSpeed} setHold={(v) => setState((s) => ({ ...s, fxModSpeed: v }))} holdLabel="Modulation speed" accent={accent} />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}><LabeledSlider label="Speed Start" value={state.fxSpeedStart} onChange={(v) => setState((s) => ({ ...s, fxSpeedStart: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Speed End" value={state.fxSpeedEnd} onChange={(v) => setState((s) => ({ ...s, fxSpeedEnd: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size Start" value={state.fxSizeStart} onChange={(v) => setState((s) => ({ ...s, fxSizeStart: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size End" value={state.fxSizeEnd} onChange={(v) => setState((s) => ({ ...s, fxSizeEnd: v }))} min={1} max={100} unit="%" accent={accent} compact /></div>
+        <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}><LabeledSlider label="Speed Start" value={state.fxSS} onChange={(v) => setState((s) => ({ ...s, fxSS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Speed End" value={state.fxSE} onChange={(v) => setState((s) => ({ ...s, fxSE: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size Start" value={state.fxZS} onChange={(v) => setState((s) => ({ ...s, fxZS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size End" value={state.fxZE} onChange={(v) => setState((s) => ({ ...s, fxZE: v }))} min={1} max={100} unit="%" accent={accent} compact /></div>
         <FxButton running={state.fxRunning} label="MOVEMENT FX" onClick={() => setState((s) => ({ ...s, fxRunning: !s.fxRunning }))} />
       </Accordion>
     );
@@ -996,7 +996,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     return (
       <Accordion title="Dimmer FX" dot={FX_HUE.dimmer} badge={state.dimFxRunning ? 'RUN' : null}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.dimMode} onChange={(v) => setState((s) => ({ ...s, dimMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.dimCurve} onChange={(v) => setState((s) => ({ ...s, dimCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.dimTrigger} setTrigger={(v) => setState((s) => ({ ...s, dimTrigger: v }))} sync={state.dimSync} setSync={(v) => setState((s) => ({ ...s, dimSync: v }))} hold={state.dimSpeed} setHold={(v) => setState((s) => ({ ...s, dimSpeed: v }))} holdLabel="Manual speed" accent={accent} />
+        <TriggerBlock trigger={state.dimTr} setTrigger={(v) => setState((s) => ({ ...s, dimTr: v }))} sync={state.dimSy} setSync={(v) => setState((s) => ({ ...s, dimSy: v }))} hold={state.dimSp} setHold={(v) => setState((s) => ({ ...s, dimSp: v }))} holdLabel="Manual speed" accent={accent} />
         <div style={{ marginTop: 6 }}><LabeledSlider label="Start value" value={state.dimSt} onChange={(v) => setState((s) => ({ ...s, dimSt: v }))} accent={accent} compact /><LabeledSlider label="End value" value={state.dimEn} onChange={(v) => setState((s) => ({ ...s, dimEn: v }))} accent={accent} compact /></div>
         <FxButton running={state.dimFxRunning} label="DIMMER FX" onClick={() => setState((s) => ({ ...s, dimFxRunning: !s.dimFxRunning }))} />
       </Accordion>
@@ -1008,14 +1008,14 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
       <Accordion title="Rotation FX · gobo + prism" dot={FX_HUE.rotation} badge={state.grFxRunning || state.prFxRunning ? 'RUN' : null}>
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Gobo rotation · CH9</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.grMode} onChange={(v) => setState((s) => ({ ...s, grMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.grCurve} onChange={(v) => setState((s) => ({ ...s, grCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.grTrigger} setTrigger={(v) => setState((s) => ({ ...s, grTrigger: v }))} sync={state.grSync} setSync={(v) => setState((s) => ({ ...s, grSync: v }))} hold={state.grSpeed} setHold={(v) => setState((s) => ({ ...s, grSpeed: v }))} holdLabel="Manual speed" accent={accent} />
+        <TriggerBlock trigger={state.grTr} setTrigger={(v) => setState((s) => ({ ...s, grTr: v }))} sync={state.grSy} setSync={(v) => setState((s) => ({ ...s, grSy: v }))} hold={state.grSp} setHold={(v) => setState((s) => ({ ...s, grSp: v }))} holdLabel="Manual speed" accent={accent} />
         <LabeledSlider label="Start DMX" value={state.grSt} onChange={(v) => setState((s) => ({ ...s, grSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.grEn} onChange={(v) => setState((s) => ({ ...s, grEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.grFxRunning} label="GOBO ROT" onClick={() => setState((s) => ({ ...s, grFxRunning: !s.grFxRunning }))} />
 
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 }}>Prism rotation · CH11</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.prMode} onChange={(v) => setState((s) => ({ ...s, prMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.prCurve} onChange={(v) => setState((s) => ({ ...s, prCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.prTrigger} setTrigger={(v) => setState((s) => ({ ...s, prTrigger: v }))} sync={state.prSync} setSync={(v) => setState((s) => ({ ...s, prSync: v }))} hold={state.prSpeed} setHold={(v) => setState((s) => ({ ...s, prSpeed: v }))} holdLabel="Manual speed" accent={accent} />
+        <TriggerBlock trigger={state.prTr} setTrigger={(v) => setState((s) => ({ ...s, prTr: v }))} sync={state.prSy} setSync={(v) => setState((s) => ({ ...s, prSy: v }))} hold={state.prSp} setHold={(v) => setState((s) => ({ ...s, prSp: v }))} holdLabel="Manual speed" accent={accent} />
         <LabeledSlider label="Start DMX" value={state.prSt} onChange={(v) => setState((s) => ({ ...s, prSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.prEn} onChange={(v) => setState((s) => ({ ...s, prEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.prFxRunning} label="PRISM ROT" onClick={() => setState((s) => ({ ...s, prFxRunning: !s.prFxRunning }))} />
@@ -1392,7 +1392,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     const [tab, setTab] = useState('LIVE');
     const [night, setNight] = useState(() => localStorage.getItem('hz_night') === '1');
     
-    // HIER IST DIE KORREKTE, UMBENANNTE VARIABLE
+    // The correctly renamed variable
     const [accent, setAccent] = useState(() => localStorage.getItem('hz_accent') || ACCENT_DEFAULT);
 
     const [muted, setMuted] = useState(false);
@@ -1444,7 +1444,7 @@ const isReceiving = useRef(false);
           setState(prev => {
             const next = { ...prev };
             const color = d[CH.COLOR]; const colorEntry = COLORS.find(c => c.v === color);
-            next.dimmer = d[CH.DIMMER] ?? prev.dimmer; next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d[CH.PAN] ?? prev.pan; next.tilt = d[CH.TILT] ?? prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = d[CH.GOBO_IDX] ?? prev.goboRot; next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = d[CH.PRISM_ROT] ?? prev.prismRot; next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
+            next.dimmer = d[CH.DIMMER] ?? prev.dimmer; next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d.cp != null ? Math.round(d.cp / 257) : prev.pan; next.tilt = d.ct != null ? Math.round(d.ct / 257) : prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = d[CH.GOBO_IDX] ?? prev.goboRot; next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = d[CH.PRISM_ROT] ?? prev.prismRot; next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
             if (colorEntry) next.colorBase = colorEntry.v;
             if (d.pn) next.presetNames = d.pn; next.presetActive = d.pr > 0 ? d.pr : null;
             if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
@@ -1475,11 +1475,13 @@ const isReceiving = useRef(false);
       const s = state; const p = prevRef.current;
       const batch = {};
       
-      const track = (ch, val) => { 
-        if (p['ch'+ch] !== val) { 
-          if (!isReceiving.current) batch[ch] = val; 
-          p['ch'+ch] = val; 
-        } 
+      const track = (ch, val) => {
+        if (p['ch'+ch] !== val) {
+          // Only update the comparison baseline when the value is actually
+          // sent — otherwise an edit made during the post-poll isReceiving
+          // window would be marked "seen" without ever being transmitted.
+          if (!isReceiving.current) { batch[ch] = val; p['ch'+ch] = val; }
+        }
       };
       
       track(CH.DIMMER, s.dimmer); track(CH.STROBE, s.strobe); track(CH.SPEED, s.motorSpeed);

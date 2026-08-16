@@ -754,3 +754,93 @@ Hardware-/Browser-Test. Die drei zurückgestellten Punkte sowie ein erneuter
 `/ultrareview`-Lauf (nach Ablauf des Session-Limits um 3:10 Uhr, um die
 ausgefallenen Teil-Agenten nachzuholen) bleiben offen für eine künftige
 Session.
+
+---
+
+## 2026-08-16 (Fortsetzung) — `/ultrareview` mit korrektem Diff-Scope nachgeholt, 8 von 8 Findings gefixt
+
+User bat darum, `/ultrareview` „jetzt nachzuholen". Erster Versuch griff
+wieder daneben: `git diff @{upstream}...HEAD` und der Working-Tree-Diff
+waren beide leer (Branch war komplett synchron mit `origin/future`), der
+Agent fand also gar keinen Diff und beendete sich mit leerem Ergebnis,
+ohne die vorher per `SendMessage` mitgegebene Scope-Anweisung
+(`origin/main` vs. `origin/future`) verarbeitet zu haben — vermutlich war
+die Nachricht noch nicht zugestellt, als der erste Tool-Round schon lief.
+Per `SendMessage` an den (bereits „completed") Agenten resumed, diesmal
+mit dem exakten Git-Befehl statt einer Beschreibung
+(`git diff origin/main...origin/future`), um jede Interpretationslücke
+auszuschließen.
+
+**Zweiter Versuch lief vollständig durch** (53 Tool-Aufrufe, ~16 Minuten) und
+lieferte 8 Findings, alle laut Agent verifiziert. Vor dem Melden zusätzlich
+selbst am Code nachvollzogen (`grep`/`Read`), alle 8 bestätigt:
+
+1. **4 der 6 FX-Panels im Programmer-Tab (Movement/Dimmer/Gobo-Rotation/
+   Prisma-Rotation) an tote State-Keys gebunden.** `TriggerBlock`- und
+   Slider-Props in `MovementFx`/`DimmerFx`/`RotationFx` lasen/schrieben
+   Langform-Namen (`fxTrigger`, `fxSync`, `fxModSpeed`,
+   `fxSpeedStart/End`, `fxSizeStart/End`, `dimTrigger/Sync/Speed`,
+   `grTrigger/Sync/Speed`, `prTrigger/Sync/Speed`), die im gesamten
+   restlichen Code nirgends vorkommen — der tatsächliche State (Init,
+   `/api/get_dmx`-Poll-Sync, `/fx`+`/modfx`-Outbound-Sync) nutzt
+   durchgängig Kurzform-Keys (`fxTr`, `fxSy`, `fxMS`, `fxSS`/`fxSE`,
+   `fxZS`/`fxZE`, `dimTr`/`dimSy`/`dimSp`, `grTr`/`grSy`/`grSp`,
+   `prTr`/`prSy`/`prSp`). Per `grep` bestätigt: jeder Langform-Key kommt
+   exakt einmal vor (nur in seiner eigenen Komponente), `TriggerBlock`
+   selbst macht kein internes Aliasing. Damit waren diese Regler in
+   **beide Richtungen** komplett wirkungslos — Änderungen erreichten das
+   Gerät nie, und die Anzeige zeigte nie den echten Geräte-Wert, weil der
+   eingehende Poll ebenfalls die Kurzform-Keys schreibt. Nur der Farb-/
+   Gobo-Chaser (`ChaserFx`) war korrekt verdrahtet. Vermutlich ein sehr
+   alter Bug aus einer frühen Umbenennungs-Runde (lange bevor diese
+   Session begann), der schlicht nie auffiel, weil die UI keinen Fehler
+   zeigt — die Regler „funktionieren" ja optisch.
+2. **`/chaser` restartete bei jeder Config-Änderung, nicht nur bei
+   Ein/Aus.** Der Handler resettete `currentSlot`/`nextSlot` auf
+   `chaserStartSlot` bei jedem `act=1`, ohne zu prüfen ob der Chaser
+   schon lief — anders als `/fx`/`/modfx` im selben File, die einen
+   `startFresh`-Guard haben. Das Frontend sendet `/chaser?act=...` aber
+   bei *jeder* Änderung an Trigger/Sync/Order/Start/End/Fade/Hold/
+   Fade-Trigger/Fade-Sync, nicht nur beim Umschalten — ein Hold-Time-
+   Regler mitten im laufenden Chaser hätte die Sequenz auf Slot 0
+   zurückgeworfen.
+3. **Frontend `track()` verschluckte Kanal-Änderungen dauerhaft**, nicht
+   nur verzögert, wenn sie ins 300ms-`isReceiving`-Fenster nach dem Poll
+   fielen: Die Vergleichs-Baseline `p['ch'+ch]` wurde unbedingt
+   aktualisiert, der eigentliche Versand aber nur bedingt (`if
+   (!isReceiving.current)`) — beim nächsten Render fand der Diff-Check
+   keinen Unterschied mehr (Baseline war ja schon auf dem neuen Wert) und
+   der Wert wurde nie gesendet, obwohl die UI ihn korrekt anzeigte.
+4. **`/colfx`/`/sgobfx`/`/rgobfx` fehlte derselbe Start>End-Swap-Guard**,
+   den `/chaser` in der Vorrunde schon bekommen hatte — ohne den bleibt
+   ein Farb-/Gobo-Chaser bei vertauschter Start/End-Auswahl auf dem
+   Startwert eingefroren (`runStep()` springt sofort zurück, sobald
+   `currentIdx` über `endVal` hinausgeht).
+5. **Pan/Tilt-Live-Anzeige fror während aktivem Movement-FX ein.** Die
+   `/api/get_dmx`-Poll-Auswertung las die 8-Bit-`dmxData[CH_PAN]`/
+   `[CH_TILT]`-Bytes, die `updateEngines()` nur schreibt wenn
+   `!moveFX.active` — der Backend-Response enthält aber längst die immer
+   aktuellen, vollauflösenden `cp`/`ct`-Werte (`centerPan16`/
+   `centerTilt16`), die das Frontend nie gelesen hat (`grep` bestätigt
+   null Treffer für `d.cp`/`d.ct` vor diesem Fix).
+6. **`/save` prüfte den NVS-Schreiberfolg nicht** — eine vom Ultrareview
+   selbst aufgedeckte Regression aus der eigenen Persistierungs-
+   Optimierung der Vorrunde (direktes In-Memory-Update statt
+   `loadAllChaserScenes()`-Reload). Der alte Code hätte einen
+   fehlgeschlagenen Schreibvorgang durch das erneute Laden von der Flash
+   indirekt sichtbar gemacht, der neue, schnellere Code nicht.
+7. **Dip-to-Black spielte bei ungültigem Slot trotzdem sinnlos ab.**
+   `triggerLoad()` startete den Fade-to-black, bevor der Ziel-Slot
+   validiert wurde — die (aus der vorletzten Runde stammenden)
+   Bounds-Checks in `executePreset`/`executeChaserSlot` sorgen zwar dafür,
+   dass am Ende nichts Falsches geladen wird, aber der komplette
+   Fade-zu-Schwarz-und-zurück lief trotzdem sichtbar durch, für nichts.
+8. Ein letzter übersehener deutscher Kommentar (`data/index.html:1395`,
+   Geschwister-Kommentar 35 Zeilen weiter war schon übersetzt worden).
+
+**Alle 8 gefixt.** Details der Einzel-Fixes in `backlog.md` → „Kürzlich
+gefixt". Mit `pio run` und `pio run -t buildfs` verifiziert, beides
+`[SUCCESS]`. Wie immer: Kompilier-/Größen-Check, kein Hardware-/
+Browser-Test — insbesondere Finding 1 (FX-Panel-Verdrahtung) verdient
+einen echten Hardware-/Browser-Test, sobald möglich, da es UI-Verhalten
+betrifft, das sich per Compile-Check nicht beobachten lässt.

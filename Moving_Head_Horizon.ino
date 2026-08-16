@@ -222,6 +222,8 @@ void executeChaserSlot(int slot) {
 }
 
 void triggerLoad(int type, int param) {
+    if (type == 1 && (param < 1 || param > 10)) return;
+    if (type == 2 && (param < 0 || param > 9)) return;
     if (dipToBlack) {
         pendingLoadType = type; pendingLoadParam = param; isDipping = true; dipStartTime = millis(); autoFading = true; fadeStateOut = true; fadeStartTime = millis();
         unsigned long currentFadeTime = fadeTime; if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, 6); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }

@@ -314,3 +314,42 @@ Fixes.
 
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`.
 Details in `history.md`.
+
+**2026-08-16, `/ultrareview` mit korrektem Diff-Scope nachgeholt — 8 von 8
+Findings gefixt.** Alle selbst am Code verifiziert, bevor gefixt:
+
+- **4 FX-Panels (Movement/Dimmer/Gobo-Rot/Prisma-Rot) an falsche State-
+  Keys gebunden — größter Fund.** Trigger/Sync/Manual-Speed-Regler (und
+  bei Movement zusätzlich Speed-/Size-Envelope) nutzten Langform-Keys
+  (`fxTrigger`, `dimSync`, `grSpeed`, …), die sonst nirgends im Code
+  vorkamen — der tatsächlich gesendete/empfangene State nutzt
+  Kurzform-Keys (`fxTr`, `dimSy`, `grSp`, …). Diese Regler waren dadurch
+  in beide Richtungen komplett wirkungslos (Änderung erreicht das Gerät
+  nie, Anzeige zeigt nie den echten Geräte-Wert). Nur der Farb-/Gobo-
+  Chaser war korrekt verdrahtet. Alle 16 betroffenen Keys auf die
+  korrekten Kurzformen umgestellt.
+- **`/chaser` restartete bei jeder Config-Änderung, nicht nur bei Ein/Aus.**
+  `startFresh`-Guard ergänzt (analog zu `/fx`/`/modfx`) — ein Hold-Time-
+  Regler mittendrin im Chaser-Lauf reißt die Sequenz nicht mehr ab.
+- **Frontend `track()` verschluckte Kanal-Änderungen dauerhaft** (nicht
+  nur verzögert), wenn sie ins 300ms-Zeitfenster nach dem Poll fielen —
+  die Vergleichs-Baseline wurde aktualisiert, obwohl der Wert nie
+  gesendet wurde. Baseline-Update jetzt nur noch im selben Zweig wie der
+  tatsächliche Versand.
+- **`/colfx`/`/sgobfx`/`/rgobfx` fehlte der Start>End-Swap-Guard**, den
+  `/chaser` schon hatte — jetzt ergänzt, verhindert eingefrorene
+  Farb-/Gobo-Chaser bei vertauschter Auswahl.
+- **Pan/Tilt-Live-Anzeige fror während aktivem Movement-FX ein.** Frontend
+  liest jetzt `d.cp`/`d.ct` (die immer aktuellen 16-Bit-Werte, auf
+  8-Bit-UI-Skala umgerechnet) statt der 8-Bit-`dmxData`-Bytes, die
+  `updateEngines()` bei aktivem Movement-FX gar nicht mehr schreibt.
+- **`/save` prüft jetzt den NVS-Schreibvorgang** (Rückgabewert von
+  `putBytes()`), bevor der In-Memory-Zustand aktualisiert wird — eigene
+  Regression aus der Persistierungs-Optimierung der Vorrunde behoben.
+- **Dip-to-Black bei ungültigem Slot spielt nicht mehr sinnlos ab.**
+  `triggerLoad()` validiert den Slot jetzt *vor* dem Start des Fades,
+  nicht erst danach.
+- **Letzter deutscher Kommentar übersetzt** (`data/index.html`).
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`.
+Details in `history.md`.
