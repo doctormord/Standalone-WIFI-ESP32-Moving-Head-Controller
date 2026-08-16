@@ -88,9 +88,9 @@ void setupAPI() {
     String n = server.arg("n");
     presetNames[s-1] = n;
     
-    dmxData[1] = (byte)dimSmoothTarget;
-    dmxData[3] = (byte)(centerPan16 >> 8); dmxData[15] = (byte)(centerPan16 & 0xFF);
-    dmxData[4] = (byte)(centerTilt16 >> 8); dmxData[16] = (byte)(centerTilt16 & 0xFF);
+    dmxData[CH_DIMMER] = (byte)dimSmoothTarget;
+    dmxData[CH_PAN] = (byte)(centerPan16 >> 8); dmxData[CH_PAN_FINE] = (byte)(centerPan16 & 0xFF);
+    dmxData[CH_TILT] = (byte)(centerTilt16 >> 8); dmxData[CH_TILT_FINE] = (byte)(centerTilt16 & 0xFF);
 
     if(colFX.active) dmxData[CH_COLOR] = wheelMap[constrain(colFX.currentIdx, 0, 19)];
     if(sgobFX.active) dmxData[CH_GOBO] = sGoboMap[constrain(sgobFX.currentIdx, 0, 9)];
@@ -131,19 +131,27 @@ void setupAPI() {
     prefs.clear(); 
     prefs.putString("n", n); 
     prefs.putBytes("data", &sd, sizeof(SceneData)); 
-    prefs.end(); 
-    
-    loadAllChaserScenes();
+    prefs.end();
+
+    // sd already holds exactly what was just persisted, and presetNames[s-1]
+    // was set above — update in-memory state directly instead of reloading
+    // all 10 NVS slots from flash.
+    chaserScenes[s - 1] = sd;
     server.send(200, "OK");
   });
 
   server.on("/joy_cfg", []() {
-    joyMaxSpeed = server.arg("spd").toInt(); joyCurve = server.arg("crv").toFloat(); joyMomentum = server.arg("mom").toFloat() / 100.0f;
+    joyMaxSpeed = constrain(server.arg("spd").toInt(), 1, 20000);
+    joyCurve = constrain(server.arg("crv").toFloat(), 0.1f, 5.0f);
+    joyMomentum = constrain(server.arg("mom").toFloat(), 0.0f, 99.0f) / 100.0f;
     joyPanRev = server.arg("pr") == "1"; joyTiltRev = server.arg("tr") == "1";
-    panMinLimit = constrain(server.arg("pmin").toInt(), 0, 255) << 8; panMaxLimit = (constrain(server.arg("pmax").toInt(), 0, 255) << 8) | 0xFF;
-    if (panMinLimit > panMaxLimit) { int t = panMinLimit; panMinLimit = panMaxLimit; panMaxLimit = t; }
-    tiltMinLimit = constrain(server.arg("tmin").toInt(), 0, 255) << 8; tiltMaxLimit = (constrain(server.arg("tmax").toInt(), 0, 255) << 8) | 0xFF;
-    if (tiltMinLimit > tiltMaxLimit) { int t = tiltMinLimit; tiltMinLimit = tiltMaxLimit; tiltMaxLimit = t; }
+    auto axisLimits = [](const String& minArg, const String& maxArg, int &minOut, int &maxOut) {
+      minOut = constrain(minArg.toInt(), 0, 255) << 8;
+      maxOut = (constrain(maxArg.toInt(), 0, 255) << 8) | 0xFF;
+      if (minOut > maxOut) { int t = minOut; minOut = maxOut; maxOut = t; }
+    };
+    axisLimits(server.arg("pmin"), server.arg("pmax"), panMinLimit, panMaxLimit);
+    axisLimits(server.arg("tmin"), server.arg("tmax"), tiltMinLimit, tiltMaxLimit);
     prefs.begin("sys", false);
     prefs.putInt("j_msp", joyMaxSpeed); prefs.putFloat("j_crv", joyCurve); prefs.putFloat("j_mom", joyMomentum);
     prefs.putBool("j_prv", joyPanRev); prefs.putBool("j_trv", joyTiltRev);
@@ -164,13 +172,13 @@ void setupAPI() {
     for (int i = 1; i <= 18; i++) {
       String arg = "c" + String(i);
       if (server.hasArg(arg)) {
-        int v = server.arg(arg).toInt();
+        int v = constrain(server.arg(arg).toInt(), 0, 255);
         dmxData[i] = (byte)v;
-        if(i==1) { dimFX.stop(); dimSmoothTarget = v; }
-        if(i==3) centerPan16 = (v << 8) | (centerPan16 & 0xFF);
-        if(i==15) centerPan16 = (centerPan16 & 0xFF00) | v;
-        if(i==4) centerTilt16 = (v << 8) | (centerTilt16 & 0xFF);
-        if(i==16) centerTilt16 = (centerTilt16 & 0xFF00) | v;
+        if(i==CH_DIMMER) { dimFX.stop(); dimSmoothTarget = v; }
+        if(i==CH_PAN) centerPan16 = (v << 8) | (centerPan16 & 0xFF);
+        if(i==CH_PAN_FINE) centerPan16 = (centerPan16 & 0xFF00) | v;
+        if(i==CH_TILT) centerTilt16 = (v << 8) | (centerTilt16 & 0xFF);
+        if(i==CH_TILT_FINE) centerTilt16 = (centerTilt16 & 0xFF00) | v;
       }
     }
     server.send(200, "OK");
@@ -239,7 +247,7 @@ void setupAPI() {
   server.on("/bump", []() { String t = server.arg("t"); bool s = (server.arg("s") == "1"); if(t=="blinder") bumpBlinder=s; if(t=="strobeF") bumpStrobeF=s; if(t=="strobe50") bumpStrobe50=s; if(t=="blackout") bumpBlackout=s; server.send(200, "OK"); });
   server.on("/masterdim", []() { masterBrightness = server.arg("v").toFloat() / 100.0f; prefs.begin("sys", false); prefs.putFloat("mdim", masterBrightness); prefs.end(); server.send(200, "OK"); });
   server.on("/smooth", []() { dimSmoothVal = constrain(server.arg("v").toInt(), 0, 100); prefs.begin("sys", false); prefs.putInt("ds", dimSmoothVal); prefs.end(); server.send(200, "OK"); });
-  server.on("/autofade", []() { fadeDuration = server.arg("t").toInt(); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "OK"); });
+  server.on("/autofade", []() { fadeDuration = constrain(server.arg("t").toInt(), 1, 3600000); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "OK"); });
   server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "OK"); });
   server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "OK"); });
   server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); server.send(200, "OK"); });

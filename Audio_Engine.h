@@ -142,29 +142,33 @@ void pollAudioEngine() {
         unsigned long currentInterval = MS_PER_MINUTE / globalBPM;
         long error = std::abs((long)diff - (long)currentInterval);
         
+        bool sampleWritten = false;
         if (error < (currentInterval / BPM_DEVIATION_TOLERANCE_DIVISOR) || globalBPM == BPM_DEFAULT_FALLBACK) {
             beatIntervals[beatIdx] = diff;
             beatIdx = (beatIdx + 1) % BPM_HISTORY_SIZE;
+            sampleWritten = true;
         }
 
-        unsigned long sorted[BPM_HISTORY_SIZE];
-        int validCount = 0;
-        for(int i=0; i<BPM_HISTORY_SIZE; i++) {
-          if(beatIntervals[i] > 0) sorted[validCount++] = beatIntervals[i];
-        }
-
-        if (validCount >= BPM_MIN_VALID_SAMPLES) { 
-          for(int i = 1; i < validCount; i++) {
-            unsigned long key = sorted[i];
-            int j = i - 1;
-            while(j >= 0 && sorted[j] > key) { sorted[j+1] = sorted[j]; j--; }
-            sorted[j+1] = key;
+        if (sampleWritten) {
+          unsigned long sorted[BPM_HISTORY_SIZE];
+          int validCount = 0;
+          for(int i=0; i<BPM_HISTORY_SIZE; i++) {
+            if(beatIntervals[i] > 0) sorted[validCount++] = beatIntervals[i];
           }
-          unsigned long medianInterval = sorted[validCount / 2];
-          int detectedBPM = MS_PER_MINUTE / medianInterval;
 
-          globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
-          globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+          if (validCount >= BPM_MIN_VALID_SAMPLES) {
+            for(int i = 1; i < validCount; i++) {
+              unsigned long key = sorted[i];
+              int j = i - 1;
+              while(j >= 0 && sorted[j] > key) { sorted[j+1] = sorted[j]; j--; }
+              sorted[j+1] = key;
+            }
+            unsigned long medianInterval = sorted[validCount / 2];
+            int detectedBPM = MS_PER_MINUTE / medianInterval;
+
+            globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
+            globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+          }
         }
       }
       lastBeatTime = now;

@@ -144,14 +144,14 @@ public:
         switch(type) {
             case 1: x = sinf(p); y = cosf(p); break; 
             case 2: x = sinf(p); y = sinf(p*2.0f); break; 
-            case 3: x = sinf(p*2.0f)*cosf(p); y = sinf(p*2.0f)*sinf(p); break; 
-            case 4: x = (sinf(p) > 0 ? 1 : -1); y = (cosf(p) > 0 ? 1 : -1); break; 
-            case 5: x = sinf(p) * cosf(p*2.0f); y = cosf(p) * cosf(p*2.0f); break; 
-            case 6: x = sinf(p) * 0.5f + sinf(p*2.5f) * 0.5f; y = cosf(p); break; 
-            case 7: x = sinf(p*3.0f); y = cosf(p*4.0f); break; 
-            case 8: x = sinf(p); y = 0; break; 
-            case 9: x = 0; y = sinf(p); break; 
-            case 10: x = sinf(p) * (0.5f + 0.5f*cosf(p*0.5f)); y = cosf(p) * (0.5f + 0.5f*cosf(p*0.5f)); break; 
+            case 3: { float s2p = sinf(p*2.0f); x = s2p*cosf(p); y = s2p*sinf(p); } break;
+            case 4: x = (sinf(p) > 0 ? 1 : -1); y = (cosf(p) > 0 ? 1 : -1); break;
+            case 5: { float c2p = cosf(p*2.0f); x = sinf(p)*c2p; y = cosf(p)*c2p; } break;
+            case 6: x = sinf(p) * 0.5f + sinf(p*2.5f) * 0.5f; y = cosf(p); break;
+            case 7: x = sinf(p*3.0f); y = cosf(p*4.0f); break;
+            case 8: x = sinf(p); y = 0; break;
+            case 9: x = 0; y = sinf(p); break;
+            case 10: { float sizeMod = 0.5f + 0.5f*cosf(p*0.5f); x = sinf(p)*sizeMod; y = cosf(p)*sizeMod; } break;
             case 11: x = sinf(p*1.3f); y = cosf(p*1.7f); break; 
             case 12: x = sinf(p); y = sinf(p) * cosf(p); break; 
             default: x = sinf(p); y = cosf(p); break;

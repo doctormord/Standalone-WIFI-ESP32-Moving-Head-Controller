@@ -679,3 +679,78 @@ vermerkt.
 
 Push verifiziert: `git ls-remote` gegen den Remote-Branch zeigt denselben
 Commit-Hash wie der lokale `HEAD`.
+
+---
+
+## 2026-08-16 — `/ultrareview` gestartet, teilweise an Session-Limit gescheitert, 15 von 18 Findings gefixt
+
+`/ultrareview` (= `/code-review ultra`) angestoßen, nachdem das lokale
+Verzeichnis zum Git-Repo wurde. Erster Lauf griff mit der Standard-
+Heuristik daneben: da `origin/future` und die Arbeitskopie exakt
+übereinstimmten (gerade erst gepusht), fand der Agent keinen sinnvollen
+Diff und fiel auf `HEAD~1...HEAD` zurück — reviewte nur das letzte,
+reine Doku-Commit. Per `SendMessage` an den laufenden Agenten
+klargestellt: der eigentlich relevante Vergleich ist `origin/main` gegen
+`origin/future` (der alte, veröffentlichte Stand gegen den gerade
+gepushten, konsolidierten Code — entspricht genau dem, was eine PR
+future→main zeigen würde).
+
+**Der neu gestartete Lauf lief in mehrere parallele Teil-Agenten
+("Angles") auf, von denen mehrere an einem Account-Session-Limit
+scheiterten** (`You've hit your session limit · resets 3:10am
+(Europe/Berlin)`) — betroffen: der Hauptorchestrator selbst sowie die
+Teil-Agenten „line-by-line diff scan", „removed-behavior auditor",
+„cross-file tracer" und „wrapper/proxy correctness". Die eigentliche
+Synthese-/Verifikations-Stufe (die normalerweise Rohfunde dedupliziert
+und gegen den Code verifiziert) hat dadurch nie stattgefunden.
+
+**Drei Teil-Agenten liefen trotzdem komplett durch** und lieferten rohe,
+unsynthetisierte Fundlisten: „Efficiency" (8 Funde), „Altitude/Bandaid-
+Fixes" (7 Funde), „Language-Pitfalls" (7 Funde) — macht 22 Rohfunde. Da
+kein Synthese-Schritt mehr lief, wurden diese nicht blind übernommen:
+7 der wichtigsten/schwerwiegendsten Funde wurden selbst per `grep`/`Read`
+direkt am Code nachverifiziert (nicht nur dem Agenten-Report vertraut),
+bevor sie gemeldet wurden. Ein bereits im Backlog dokumentierter Fund
+(Rotationsmatrix pro Fixture neu berechnet) wurde erkannt und nicht
+dupliziert gemeldet. 18 der 22 Rohfunde (bereinigt, ohne die Dopplung)
+wurden final gemeldet.
+
+**User bestätigte „ja dann mach das mal" — 15 von 18 gefixt, 3 bewusst
+zurückgestellt** (Details siehe `backlog.md` → „Kürzlich gefixt" bzw.
+„Tech Debt" für die zurückgestellten). Sechs echte, selbst verifizierte
+Bugs behoben: `/autofade`-NaN-Risiko (Leaf-Guard + Boundary-Clamp),
+`updateEngines()`s fehlender oberer `dt`-Clamp, `/set_all`s fehlender
+Kanalwert-Clamp, `beatInterval`-Division ohne Zero-Guard, doppelte Magic-
+Channel-Numbers 13/14 (jetzt `CH_FOCUS`/`CH_ZOOM`), und der Frontend-
+Falsy-Zero-Bug bei `presetActive`. Dazu neun weitere Duplikations-/
+Effizienz-Punkte (siehe `backlog.md` für die volle Liste) — u. a.
+`executePreset`/`/save`/`/set_all` durchgängig auf `CH_*`-Konstanten
+umgestellt (drei Stellen hatten bisher rohe Pan/Tilt-Kanalliterale, wo
+`executeChaserSlot` bereits Konstanten nutzte), `/joy_cfg`s doppelte
+Swap-Logik in ein Lambda gezogen und `spd`/`crv`/`mom` nachträglich
+geklammert, Magic-Constant `183` benannt, redundante NVS-Reloads in
+`/save` und `setup()` entfernt, doppelte Trig-Calls in drei Movement-
+Shapes dedupliziert, `Audio_Engine.h`s Median-Neuberechnung auf
+tatsächlich neue Samples beschränkt, und ein React-Antipattern (Fetch-
+Seiteneffekt in einem `setState`-Updater) beim Stage-Map-„SAVE POINT"
+behoben.
+
+**Drei Funde bewusst nicht gefixt**, weil sie echte Restrukturierungen
+mit höherem Risiko wären statt chirurgischer Änderungen — genau die
+Kategorie, die in dieser Session konsequent zurückgestellt statt blind
+durchgezogen wurde:
+- `SceneData`-NVS-Format-Versionierung — ein Versions-Feld hinzuzufügen
+  würde `sizeof(SceneData)` ändern und dadurch *alle aktuell gespeicherten
+  Presets* beim nächsten Boot auf Defaults zurückfallen lassen (der
+  Legacy-Fallback kennt nur das ganz alte Einzel-Key-Format). Ein echter
+  Breaking Change für existierende Geräte — bräuchte eine durchdachte
+  Migration, kein Schnellschuss.
+- `/api/get_dmx`s JSON-Bau per `String +=` → `snprintf`/ArduinoJson.
+- Die zwei unsynchronisierten Frontend-Polling-Loops zusammenlegen.
+
+**Verifikation:** `pio run` und `pio run -t buildfs` → beide `[SUCCESS]`,
+Flash-Nutzung minimal verändert. Wie immer: Kompilier-/Größen-Check, kein
+Hardware-/Browser-Test. Die drei zurückgestellten Punkte sowie ein erneuter
+`/ultrareview`-Lauf (nach Ablauf des Session-Limits um 3:10 Uhr, um die
+ausgefallenen Teil-Agenten nachzuholen) bleiben offen für eine künftige
+Session.

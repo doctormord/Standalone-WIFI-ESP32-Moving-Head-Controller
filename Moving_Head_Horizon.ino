@@ -22,12 +22,15 @@
 #define CH_COLOR      6
 #define CH_GOBO       7
 #define CH_GOBO_ROT   8
+#define CH_FOCUS      13
+#define CH_ZOOM       14
 #define CH_PAN_FINE   15
 #define CH_TILT_FINE  16
 
 const byte wheelMap[20] = {0, 50, 5, 55, 10, 60, 15, 65, 20, 70, 25, 75, 30, 80, 35, 85, 40, 90, 45, 95};
 const byte sGoboMap[10] = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90}; 
 const byte rGoboMap[7]  = {0, 10, 20, 30, 40, 50, 60};
+#define STEPFX_SCRATCH_OFFSET 183 // fixture-specific: shifts a static gobo/rotating-gobo wheel value into its "shake" range
 
 const char* ap_ssid = "Moving_Head_Ctrl";   
 const char* ap_password = "12345678";  
@@ -198,9 +201,9 @@ void executePreset(int slot) {
 
     for (int i = 1; i <= 18; i++) dmxData[i] = sd.dmx[i];
     
-    dimSmoothTarget = dmxData[1]; 
-    centerPan16 = (dmxData[3] << 8) | dmxData[15];
-    centerTilt16 = (dmxData[4] << 8) | dmxData[16];
+    dimSmoothTarget = dmxData[CH_DIMMER];
+    centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE];
+    centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE];
 
     joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false;
 
@@ -242,7 +245,7 @@ void onArtDmx(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* dat
 }
 
 void updateEngines(unsigned long now) {
-  static unsigned long lastEngUpdate = 0; float dt = (now - lastEngUpdate) / 1000.0f; if (dt <= 0) return; lastEngUpdate = now;
+  static unsigned long lastEngUpdate = 0; float dt = (now - lastEngUpdate) / 1000.0f; if (dt <= 0) return; if (dt > 1.0f) dt = 0.02f; lastEngUpdate = now;
 
   static float exactPan = centerPan16;
   static float exactTilt = centerTilt16;
@@ -277,7 +280,7 @@ void updateEngines(unsigned long now) {
       if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; }
   }
 
-  unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; }
+  if (globalBPM > 0) { unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; } }
   if (manualTap) { if (dimFX.trigger == 1) dimFX.phase = 0.0; if (gRotFX.trigger == 1) gRotFX.phase = 0.0; if (pRotFX.trigger == 1) pRotFX.phase = 0.0; if (moveFX.trigger == 1) moveFX.modPhase = 0.0; masterSyncTime = now; manualTap = false; }
   auto checkAudioTrg = [&](int trg) { return (trg == 2 && triggerBass) || (trg == 3 && triggerMid) || (trg == 4 && triggerHigh); };
   if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
@@ -290,7 +293,7 @@ void updateEngines(unsigned long now) {
   else { if (dimSmoothVal > 0) { float sensitivity = (100.0f - dimSmoothVal) * 0.1f; dimSmoothCurrent += (dimSmoothTarget - dimSmoothCurrent) * sensitivity * dt * 10.0f; } else { dimSmoothCurrent = dimSmoothTarget; } }
 
   if (autoFading) {
-    float progress = (float)(now - fadeStartTime) / (float)fadeDuration; if (progress >= 1.0f) { progress = 1.0f; autoFading = false; }
+    float progress = fadeDuration > 0 ? (float)(now - fadeStartTime) / (float)fadeDuration : 1.0f; if (progress >= 1.0f) { progress = 1.0f; autoFading = false; }
     float v = progress; if (fadeCurve == 1) v = progress * progress; else if (fadeCurve == 3) v = 0.5f - 0.5f * cosf(progress * PI); 
     fadeMultiplier = fadeStateOut ? (1.0f - v) : v; 
   } else { fadeMultiplier = fadeStateOut ? 0.0f : 1.0f; }
@@ -316,7 +319,7 @@ void updateEngines(unsigned long now) {
         int safeEnd = constrain(fx.endVal, 0, mapLen - 1);
         int safeStart = constrain(fx.startVal, 0, mapLen - 1);
         if (fx.currentIdx > safeEnd || fx.currentIdx < 0 || fx.currentIdx >= mapLen) fx.currentIdx = safeStart;
-        byte val = map[fx.currentIdx]; if (fx.scratch) val = constrain(val + 183, 0, 255); dmxData[channel] = val;
+        byte val = map[fx.currentIdx]; if (fx.scratch) val = constrain(val + STEPFX_SCRATCH_OFFSET, 0, 255); dmxData[channel] = val;
       }
     }
   };
@@ -330,10 +333,10 @@ void updateEngines(unsigned long now) {
     if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, 6); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
     if (inFade) {
       if (elapsed >= currentFadeTime) { inFade = false; stepStartTime = now; for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[nextSlot].dmx[i]; else dmxData[i] = chaserScenes[nextSlot].dmx[i]; } centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE]; joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false; triggerSceneFX(nextSlot); } 
-      else { float progress = currentFadeTime > 0 ? (float)elapsed / currentFadeTime : 1.0f; for (int i = 1; i <= 18; i++) { if (i==1) dimSmoothTarget = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; else if (i==13 || i==14) dmxData[i] = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; } long startP = (chaserScenes[currentSlot].dmx[CH_PAN] << 8) | chaserScenes[currentSlot].dmx[CH_PAN_FINE]; long endP = (chaserScenes[nextSlot].dmx[CH_PAN] << 8) | chaserScenes[nextSlot].dmx[CH_PAN_FINE]; centerPan16 = startP + (endP - startP) * progress; long startT = (chaserScenes[currentSlot].dmx[CH_TILT] << 8) | chaserScenes[currentSlot].dmx[CH_TILT_FINE]; long endT = (chaserScenes[nextSlot].dmx[CH_TILT] << 8) | chaserScenes[nextSlot].dmx[CH_TILT_FINE]; centerTilt16 = startT + (endT - startT) * progress; if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; } }
+      else { float progress = currentFadeTime > 0 ? (float)elapsed / currentFadeTime : 1.0f; for (int i = 1; i <= 18; i++) { if (i==1) dimSmoothTarget = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; else if (i==CH_FOCUS || i==CH_ZOOM) dmxData[i] = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; } long startP = (chaserScenes[currentSlot].dmx[CH_PAN] << 8) | chaserScenes[currentSlot].dmx[CH_PAN_FINE]; long endP = (chaserScenes[nextSlot].dmx[CH_PAN] << 8) | chaserScenes[nextSlot].dmx[CH_PAN_FINE]; centerPan16 = startP + (endP - startP) * progress; long startT = (chaserScenes[currentSlot].dmx[CH_TILT] << 8) | chaserScenes[currentSlot].dmx[CH_TILT_FINE]; long endT = (chaserScenes[nextSlot].dmx[CH_TILT] << 8) | chaserScenes[nextSlot].dmx[CH_TILT_FINE]; centerTilt16 = startT + (endT - startT) * progress; if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; } }
     } else { 
       bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { int safeChSync = constrain(chaserSync, 0, 6); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeChSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
-      if (trg) { stepStartTime = now; currentSlot = nextSlot; if (chaserOrder == 1) nextSlot = random(chaserStartSlot, chaserEndSlot + 1); else { nextSlot++; if (nextSlot > chaserEndSlot) nextSlot = chaserStartSlot; } activePresetSlot = currentSlot + 1; if (dipToBlack) triggerLoad(2, nextSlot); else { inFade = true; for (int i = 1; i <= 18; i++) { if (!(i==1 || i==3 || i==4 || i==13 || i==14 || i==15 || i==16)) dmxData[i] = chaserScenes[nextSlot].dmx[i]; } } }
+      if (trg) { stepStartTime = now; currentSlot = nextSlot; if (chaserOrder == 1) nextSlot = random(chaserStartSlot, chaserEndSlot + 1); else { nextSlot++; if (nextSlot > chaserEndSlot) nextSlot = chaserStartSlot; } activePresetSlot = currentSlot + 1; if (dipToBlack) triggerLoad(2, nextSlot); else { inFade = true; for (int i = 1; i <= 18; i++) { if (!(i==CH_DIMMER || i==CH_PAN || i==CH_TILT || i==CH_FOCUS || i==CH_ZOOM || i==CH_PAN_FINE || i==CH_TILT_FINE)) dmxData[i] = chaserScenes[nextSlot].dmx[i]; } } }
     }
   }
 
@@ -362,7 +365,7 @@ void setup() {
   dimSmoothVal = constrain(prefs.getInt("ds", 0), 0, 100); masterBrightness = prefs.getFloat("mdim", 1.0f); dipToBlack = prefs.getBool("dip", false);
   joyMaxSpeed = prefs.getInt("j_msp", 2000); joyCurve = prefs.getFloat("j_crv", 1.5f); joyMomentum = prefs.getFloat("j_mom", 0.7f); joyPanRev = prefs.getBool("j_prv", false); joyTiltRev = prefs.getBool("j_trv", false); panMinLimit = prefs.getInt("j_pmi", 0); panMaxLimit = prefs.getInt("j_pma", 65535); tiltMinLimit = prefs.getInt("j_tmi", 0); tiltMaxLimit = prefs.getInt("j_tma", 65535);
   chaserStartSlot = prefs.getInt("c_st", 0); chaserEndSlot = prefs.getInt("c_en", 3); fadeTime = prefs.getInt("c_fd", 2000); holdTime = prefs.getInt("c_hd", 2000); chaserTrigger = prefs.getInt("c_tr", 0); chaserSync = prefs.getInt("c_sy", 3); chaserOrder = prefs.getInt("c_or", 0); chaserFadeTrigger = prefs.getInt("c_ftr", 0); chaserFadeSync = prefs.getInt("c_fsy", 3); prefs.end();
-  for(int i=0; i<10; i++) { prefs.begin(("sc" + String(i+1)).c_str(), true); presetNames[i] = prefs.getString("n", ""); prefs.end(); }
+  // presetNames[] is populated by loadAllChaserScenes() below — no need to read it separately here first.
   prefs.begin("patch", true); numFixtures = prefs.getInt("n", 1); if (numFixtures < 1 || numFixtures > 8) numFixtures = 1;
   maxDmxChannel = 0; for(int i=0; i<numFixtures; i++) { fixtures[i].addr = prefs.getInt(("a"+String(i)).c_str(), 1 + (i*18)); fixtures[i].invP = prefs.getBool(("ip"+String(i)).c_str(), false); fixtures[i].invT = prefs.getBool(("it"+String(i)).c_str(), false); fixtures[i].phase = prefs.getInt(("ph"+String(i)).c_str(), 0); int endChan = fixtures[i].addr + 17; if (endChan > maxDmxChannel) maxDmxChannel = endChan; }
   if (maxDmxChannel > 512) maxDmxChannel = 512; if (maxDmxChannel < 18) maxDmxChannel = 18; prefs.end();

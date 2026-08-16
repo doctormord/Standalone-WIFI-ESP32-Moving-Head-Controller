@@ -7,6 +7,33 @@
 
 ## 🛠 Technische Schulden (Tech Debt)
 
+**2026-08-16, `/ultrareview` (Cloud-Multi-Agent):** Hauptorchestrator und
+mehrere Teil-Agenten sind an einem Account-Session-Limit gescheitert, drei
+Teilreviews liefen durch. Die meisten Funde wurden noch am selben Tag
+gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
+
+- **`SceneData`-NVS-Blob hat kein Versions-Tag.** Nur ein `sizeof()`-
+  Gleichheitscheck schützt vor Format-Drift — erkennt Größenänderungen,
+  aber nicht Layout-Änderungen bei gleicher Größe (z. B. zwei gleich große
+  Felder vertauscht). **Bewusst nicht gefixt:** Ein Versions-Feld
+  hinzuzufügen ändert `sizeof(SceneData)` und würde alle *aktuell* im
+  Blob-Format gespeicherten Presets beim nächsten Boot auf Defaults
+  zurückfallen lassen (der Legacy-Fallback-Pfad kennt nur das ganz alte
+  Einzel-Key-Format, nicht den heutigen Blob mit altem Layout) — ein
+  echter Breaking Change für existierende Geräte, kein chirurgischer Fix.
+  Bräuchte eine durchdachte Migration, keinen Schnellschuss.
+- **`/api/get_dmx` baut die JSON-Antwort über ~50 sequenzielle
+  `String +=`-Aufrufe.** Jeder `String(int)`/`String(float)`-Zwischenwert
+  ist eine eigene Heap-Allokation trotz `reserve()`. Eine Umstellung auf
+  `snprintf` in einen festen Puffer oder ArduinoJson wäre der eigentliche
+  Fix, ist aber eine echte Restrukturierung dieses zentralen Endpunkts,
+  keine punktuelle Änderung — bewusst nicht in derselben Session gemacht,
+  in der auch viele andere Dateien angefasst wurden.
+- **Zwei unsynchronisierte Frontend-Polling-Loops** (`useTelemetry` alle
+  500 ms gegen `/api/state`, `App` alle 2000 ms gegen `/api/get_dmx`) mit
+  überlappenden Feldern. Zusammenlegen wäre eine Architekturänderung am
+  Polling-Modell, kein chirurgischer Fix — bewusst zurückgestellt.
+
 - **Index-Konvention inkonsistent.** `executePreset` nutzt
   `chaserScenes[slot-1]` (1-basiert, Guard 1–10), `executeChaserSlot` nutzt
   `chaserScenes[slot]` (0-basiert, Guard 0–9). Seit 2026-08-15 sind beide
@@ -249,3 +276,41 @@ zusätzlicher Fund dabei.**
 
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 Flash-Nutzung minimal gesunken. Details in `history.md`.
+
+**2026-08-16, `/ultrareview`-Findings gefixt (15 von 18).** Sechs davon
+selbst am Code verifizierte, echte Bugs:
+
+- **`/autofade` NaN-Risiko behoben:** Leaf-Guard (`fadeDuration > 0 ? ... :
+  1.0f`, analog zum Chaser-Fade) plus Boundary-Clamp am Eingang (1–3.600.000 ms).
+- **`updateEngines()`s `dt` jetzt nach oben geklammert** (`> 1.0f → 0.02f`),
+  konsistent mit `FX_Engine.h`. Verhindert Bewegungs-Sprünge nach langen
+  Stalls (z. B. dem bis zu 20s WLAN-Verbindungsaufbau in `setup()`).
+- **`/set_all` klammert Kanalwerte jetzt auf 0–255** vor dem Byte-Cast.
+- **`beatInterval`-Division jetzt mit Zero-Guard**, analog zum `/beat`-Handler.
+- **Magic Channel-Numbers 13/14 → `CH_FOCUS`/`CH_ZOOM`.** Neue Konstanten
+  ergänzt, an beiden Chaser-Crossfade-Stellen eingesetzt.
+- **Frontend: `presetActive` resettet jetzt korrekt auf `null`**, wenn das
+  Backend `pr=0` meldet, statt nur bei `pr>0` zu aktualisieren.
+
+Plus neun weitere Duplikations-/Robustheits-/Effizienzpunkte: `executePreset`/
+`/save`/`/set_all` nutzen jetzt durchgängig `CH_*`-Konstanten statt roher
+Pan/Tilt-Kanalliterale; `/joy_cfg`s doppelte Min/Max-Swap-Logik in ein
+gemeinsames Lambda gezogen, `spd`/`crv`/`mom` jetzt ebenfalls geklammert
+(vorher nur `pmin`/`pmax`/`tmin`/`tmax`); Magic-Constant `183`
+(StepFX-Scratch-Offset) als `STEPFX_SCRATCH_OFFSET` benannt; `/save`
+aktualisiert `chaserScenes[]` jetzt direkt im Speicher statt aller 10
+NVS-Slots neu zu laden; `setup()` liest Preset-Namen nicht mehr doppelt
+(macht `loadAllChaserScenes()` ohnehin); doppelte `sinf`/`cosf`-Aufrufe in
+den Movement-Shapes 3/5/10 in `FX_Engine.h` dedupliziert; `Audio_Engine.h`
+berechnet Median/BPM-Smoothing nur noch, wenn tatsächlich ein neues Sample
+geschrieben wurde; Frontend: Seiteneffekt (`fetch`) aus dem
+`setState`-Updater der Stage-Map-„SAVE POINT"-Aktion herausgezogen (liest
+`state` jetzt direkt aus dem Closure statt aus dem Updater-Parameter).
+
+Drei Punkte bewusst zurückgestellt (siehe „Tech Debt" oben): `SceneData`-
+Versions-Tag, `/api/get_dmx`-JSON-Bau-Rewrite, Polling-Loop-Merge — alle
+drei sind echte Restrukturierungen mit höherem Risiko, keine chirurgischen
+Fixes.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`.
+Details in `history.md`.

@@ -1237,7 +1237,16 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
               <div style={{ marginTop: 8, padding: '8px 10px', background: 'rgba(244,63,94,0.08)', border: `1px dashed ${accent}`, borderRadius: 8, fontSize: 10.5, color: 'rgba(255,255,255,0.75)' }}>
                 <b style={{ color: accent, letterSpacing: 0.5 }}>CALIBRATING {['Top-Left','Top-Right','Bottom-Right','Bottom-Left'][state.mapActiveMarker]}</b>
                 <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.55)', lineHeight: 1.4 }}>1. Drag marker to corner. 2. Move real light to that corner with joystick. 3. Tap <i>Save point</i>.</div>
-                <button onClick={() => { setState((s) => { const idx = s.mapActiveMarker; const pan16 = Math.round(s.pan * 257); const tilt16 = Math.round(s.tilt * 257); const pts = s.mapPoints.map((p, i) => i === idx ? { ...p, pan: pan16, tilt: tilt16 } : p ); const nextState = { ...s, mapPoints: pts, mapActiveMarker: (idx + 1) % 4 }; fetch('/save_map', { method: 'POST', body: JSON.stringify({ points: pts, image: s.mapImage || '' }), headers: { 'Content-Type': 'application/json' } }).then((r) => { if (!r.ok) throw new Error('save failed'); showToast(`✓ Point ${idx + 1} saved`, 'ok'); }).catch(() => showToast('✗ Map save failed', 'err')); return nextState; }); }} style={{ marginTop: 6, padding: '7px 12px', background: '#15803d', border: 'none', borderRadius: 7, color: '#fff', fontWeight: 700, fontSize: 11, letterSpacing: 0.6, cursor: 'pointer', width: '100%' }}>✓ SAVE POINT {state.mapActiveMarker + 1}</button>
+                <button onClick={() => {
+                  const idx = state.mapActiveMarker;
+                  const pan16 = Math.round(state.pan * 257);
+                  const tilt16 = Math.round(state.tilt * 257);
+                  const pts = state.mapPoints.map((p, i) => i === idx ? { ...p, pan: pan16, tilt: tilt16 } : p);
+                  fetch('/save_map', { method: 'POST', body: JSON.stringify({ points: pts, image: state.mapImage || '' }), headers: { 'Content-Type': 'application/json' } })
+                    .then((r) => { if (!r.ok) throw new Error('save failed'); showToast(`✓ Point ${idx + 1} saved`, 'ok'); })
+                    .catch(() => showToast('✗ Map save failed', 'err'));
+                  setState((s) => ({ ...s, mapPoints: pts, mapActiveMarker: (idx + 1) % 4 }));
+                }} style={{ marginTop: 6, padding: '7px 12px', background: '#15803d', border: 'none', borderRadius: 7, color: '#fff', fontWeight: 700, fontSize: 11, letterSpacing: 0.6, cursor: 'pointer', width: '100%' }}>✓ SAVE POINT {state.mapActiveMarker + 1}</button>
               </div>
             )}
           </Panel>
@@ -1437,7 +1446,7 @@ const isReceiving = useRef(false);
             const color = d[CH.COLOR]; const colorEntry = COLORS.find(c => c.v === color);
             next.dimmer = d[CH.DIMMER] ?? prev.dimmer; next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d[CH.PAN] ?? prev.pan; next.tilt = d[CH.TILT] ?? prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = d[CH.GOBO_IDX] ?? prev.goboRot; next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = d[CH.PRISM_ROT] ?? prev.prismRot; next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
             if (colorEntry) next.colorBase = colorEntry.v;
-            if (d.pn) next.presetNames = d.pn; if (d.pr > 0) next.presetActive = d.pr;
+            if (d.pn) next.presetNames = d.pn; next.presetActive = d.pr > 0 ? d.pr : null;
             if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
             if (d.dSm !== undefined) next.damping = d.dSm;
             if (d.fA !== undefined) {
