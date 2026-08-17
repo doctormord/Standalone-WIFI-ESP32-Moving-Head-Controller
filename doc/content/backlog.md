@@ -530,3 +530,62 @@ oder git-log-Archäologie zu betreiben.
 Mit `pio run` verifiziert (`[SUCCESS]`, kein `buildfs` nötig — nur
 `Moving_Head_Horizon.ino` geändert), auf dem echten Gerät geflasht und per
 `curl` als online bestätigt. Details in `history.md`.
+
+**2026-08-17, Fortsetzung — Joystick-Beschleunigung neu gebaut (v3),
+Stop-Latenz und FX/Slider-Race gefixt.** Direktes Nutzer-Feedback nach dem
+letzten Test-Batch:
+
+- **Kurzes Antippen einer Pfeiltaste bewegte sofort deutlich zu weit
+  („8 steps"), Bewegung lief nach Loslassen sichtbar weiter.** Root Cause
+  eine eigene Regression aus der vorigen Curve-Runde (v2): `accelMul`
+  sprang beim Loslassen abrupt von seinem gerampten (kleinen) Wert auf
+  `1.0`, während `joySmoothX` (unabhängig von `accelMul`) längst auf den
+  Zielwert konvergiert war — die Multiplikation der beiden ergab exakt im
+  Loslass-Moment einen kurzen Vollgas-Ausschlag statt eines weichen
+  Ausklingens. **Fix:** `accelMul` friert jetzt beim Loslassen auf seinem
+  letzten Wert ein, statt auf `1.0` zu springen — Verzögerung bleibt
+  jetzt durchgängig stetig, ein kurzer Tap bleibt klein, auch beim
+  Ausklingen.
+- **Curve=Minimum hatte trotzdem immer eine 2-Sekunden-Rampe — sollte bei
+  0 sofort volle Kraft geben.** Root Cause: die Rampen-*Dauer* war fest
+  auf 2 Sekunden verdrahtet, Curve veränderte nur die *Form* der Kurve
+  darüber, nicht die Länge. **Fix:** Curve ist jetzt direkt die
+  Rampendauer in Sekunden (`accelMul = holdTime / joyCurve`, linear) —
+  bei `joyCurve ≈ 0` sofortige Vollgeschwindigkeit ohne jede Rampe,
+  höhere Werte ergeben eine entsprechend längere Rampe. Regler-Bereich im
+  Frontend auf `0–5` erweitert (vorher `1.0–3.0`), Backend-Clamp
+  `/joy_cfg` von `0.1–5.0` auf `0.0–5.0` gelockert, damit `0` wirklich
+  ankommt.
+- **Stop-Kommando (x=0,y=0) konnte hinter einem noch laufenden
+  Bewegungsbefehl in der `tFetch`-Debounce-Queue hängen bleiben** (bis zu
+  ~80 ms Verzögerung durch Cooldown + zweiten Roundtrip) — genau in dem
+  Zeitfenster bewegte sich das Fixture nach dem Loslassen sichtbar weiter.
+  User-Diagnose („dieser trigger muss iwie fastlane sofort an die api")
+  war exakt richtig. **Fix:** neue `sendJoy()`-Hilfsfunktion — ein
+  Stop-Befehl umgeht die Debounce-Queue komplett (direkter `fetch()`,
+  kein `tFetch`) und räumt einen eventuell noch wartenden, jetzt
+  überholten Bewegungsbefehl aus der Queue. Für Tastatur- *und*
+  Maus-/Touch-Joystick gleichermaßen (gemeinsame Funktion).
+- **„Stop Gobo Rot" setzte CH9 nicht zuverlässig auf 0, es drehte sich
+  scheinbar weiter" — User fand den echten Mechanismus selbst.** User
+  bemerkte richtig, dass die Programmer-Tab-Slider für Kanäle mit
+  laufendem FX/Chaser (Dimmer, Color, beide Gobo-Räder, Gobo-Index,
+  Prisma-Rotation) alle 2s per Poll den *aktuellen, FX-getriebenen*
+  Live-Wert übernehmen — und vermutete zu Recht unnötigen
+  Bandbreiten-Verbrauch dahinter. Der tiefere Effekt: der
+  Outbound-Sync-`track()`-Mechanismus konnte genau diesen veralteten
+  Live-Snapshot kurz nach dem Stoppen per `/set_all` zurückschreiben und
+  damit den frisch von der FX-Engine gesetzten Stop-Wert (z. B. CH9 → 0)
+  sofort wieder überschreiben — der Motor „drehte weiter", weil der
+  Kanal gar nicht wirklich auf 0 blieb. **Fix:** `track()` bekommt einen
+  `skip`-Parameter; für alle FX-/Chaser-gekoppelten Kanäle
+  (`dimFxRunning`, `colFxRunning`, `sgFxRunning`, `rgFxRunning`,
+  `grFxRunning`, `prFxRunning`) wird der Kanal komplett von der
+  Outbound-Sync ausgenommen, solange die zugehörige FX läuft — kein
+  periodisches Echo mehr (löst auch das Bandbreiten-Anliegen), und sobald
+  gestoppt wird, greift die normale Sync wieder sauber, ohne einen
+  veralteten Baseline-Mismatch auszulösen.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
+auf dem echten Gerät geflasht (`upload` + `uploadfs`) und per `curl` als
+online bestätigt. Details in `history.md`.

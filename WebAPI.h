@@ -153,7 +153,7 @@ void setupAPI() {
 
   server.on("/joy_cfg", []() {
     joyMaxSpeed = constrain(server.arg("spd").toInt(), 1, 20000);
-    joyCurve = constrain(server.arg("crv").toFloat(), 0.1f, 5.0f);
+    joyCurve = constrain(server.arg("crv").toFloat(), 0.0f, 5.0f);
     joyMomentum = constrain(server.arg("mom").toFloat(), 0.0f, 99.0f) / 100.0f;
     joyPanRev = server.arg("pr") == "1"; joyTiltRev = server.arg("tr") == "1";
     auto axisLimits = [](const String& minArg, const String& maxArg, int &minOut, int &maxOut) {

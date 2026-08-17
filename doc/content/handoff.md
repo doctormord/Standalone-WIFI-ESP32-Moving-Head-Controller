@@ -1,47 +1,50 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-17)
-> **Offizielles Fixture-Datenblatt (SHEHDS 160W 3in1 GOBO) beschafft und
-> ausgewertet.** User lieferte Handbuch-PDF + Avolites-`.d4` +
-> MagicQ-`.R20` + `.ssl2` (letzteres binär, nicht auslesbar). Alles
-> extrahiert nach **`doc/content/mapping_sheds_160w_3in1_gobo.md`** — die
-> jetzt maßgebliche Referenz für alle Kanal-/Gobo-/Shake-Zahlen dieses
-> Fixtures. Vorher musste in dieser Session mehrfach ohne belastbare Basis
-> geraten werden (Shake-Offset, Ungewissheit bei Gobo-Nummerierung) —
-> das ist jetzt behoben.
+> **Eigene Regression aus der letzten Joystick-Curve-Runde gefunden und
+> gefixt, plus einen echten Bug, den der User selbst diagnostiziert hat.**
+> Direkt im Anschluss an die Fixture-Datenblatt-Runde kam noch am selben
+> Tag konkretes Live-Test-Feedback: kurzes Antippen einer Pfeiltaste löste
+> einen deutlichen Bewegungs-Ausschlag aus und lief nach dem Loslassen
+> sichtbar weiter; Curve=0/Momentum=0 sollte sofort volle Geschwindigkeit
+> geben, hatte aber trotzdem eine Rampe; „Stop Gobo Rot" setzte CH9 nicht
+> zuverlässig auf 0.
 >
-> **Wichtigste Erkenntnisse:**
-> 1. **Farbrad/Gobo-Räder/Prisma/Frost waren schon immer korrekt im Code**
->    (`wheelMap`/`sGoboMap`/`rGoboMap` stimmen 1:1 mit dem Datenblatt). Der
->    „Gobo 6 kommt nicht"-Bug aus der vorigen Runde ist damit **kein
->    Code-Bug** — vermutlich physische Abweichung/Defekt am konkreten
->    Gerät, nur durch Sichtprüfung zu klären.
-> 2. **Shake-Formel war nachweislich falsch, jetzt mit echten Werten
->    gefixt.** Der alte `STEPFX_SCRATCH_OFFSET = 183` (geraten, nie
->    verifiziert) landete bei den meisten Gobo-Nummern in der falschen
->    Shake-Zone (Beispiel Gobo 6/CH7: alter Code → Zone von Gobo 7). Neue,
->    aus dem Datenblatt abgeleitete Formel: `211 + (n-1)×5` für CH7 (statisch),
->    `226 + (n-1)×5` für CH8 (rotierend), kein Shake für CH6 (Farbe, hat
->    laut Datenblatt keine Shake-Funktion) oder Index 0 (White/Open).
-> 3. **CH9-Drehrichtungsgrenze (64–192 CW / 193–255 CCW) dokumentiert** —
->    aktuelle Defaults liegen sicher innerhalb einer Zone, aber jetzt als
->    Invariante für künftige Preset-Änderungen festgehalten.
-> 4. **CH17-Macro-Dropdown vermutlich fixture-fremde Platzhalterwerte** —
->    erkannt, aber bewusst nicht blind gefixt (Datenblatt selbst zu grob,
->    um die 13 granularen Dropdown-Werte zu verifizieren/ersetzen).
->
-> Geflasht (`pio run -t upload`, kein `buildfs` nötig — nur
-> `Moving_Head_Horizon.ino` geändert), per `curl` als online bestätigt.
+> **Gefixt (Details in `history.md`, 2026-08-17 dritte Fortsetzung):**
+> 1. **Eigene Regression aus der vorigen Runde:** `accelMul` sprang beim
+>    Loslassen abrupt auf `1.0`, während `joySmoothX` (unabhängig davon)
+>    schon nahe am Zielwert war — das Produkt ergab exakt im
+>    Loslass-Moment einen kurzen Vollgas-Ausschlag statt eines weichen
+>    Ausklingens. Jetzt friert `accelMul` beim Loslassen auf seinem
+>    letzten Wert ein statt zu springen.
+> 2. **Curve steuerte bisher nur die Form einer fest verdrahteten
+>    2-Sekunden-Rampe, nicht deren Dauer** — Curve=Minimum hatte
+>    trotzdem immer eine 2s-Rampe. Jetzt ist Curve direkt die Rampendauer
+>    in Sekunden (linear), `Curve≈0` bedeutet sofortige Vollgeschwindigkeit.
+>    Regler-Bereich im Frontend auf `0–5s` erweitert, Backend-Clamp
+>    entsprechend gelockert.
+> 3. **Stop-Kommando konnte in der Debounce-Queue hängen bleiben**
+>    (bis zu ~80ms Verzögerung) — neue `sendJoy()`-Hilfsfunktion umgeht
+>    die Queue für Stop-Befehle komplett, für Tastatur *und* Maus/Touch.
+> 4. **„Stop Gobo Rot" setzte CH9 nicht zuverlässig auf 0 — User hat den
+>    echten Mechanismus selbst gefunden.** Die Programmer-Tab-Slider für
+>    Kanäle mit laufendem FX/Chaser übernahmen per Poll ständig den
+>    Live-Wert und schrieben ihn per `/set_all` zurück — direkt nach dem
+>    Stoppen konnte so ein veralteter Live-Snapshot den frisch von der
+>    FX-Engine gesetzten Stop-Wert (CH9→0) wieder überschreiben. Jetzt
+>    werden alle 6 FX-/Chaser-gekoppelten Kanäle (Dimmer, Color, beide
+>    Gobo-Räder, Gobo-Index, Prisma-Rotation) komplett von der
+>    Outbound-Sync ausgenommen, solange ihr FX läuft — behebt auch das
+>    vom User zu Recht vermutete Bandbreiten-Problem.
 >
 > **Was noch NICHT visuell/physisch verifiziert ist:**
-> - Ob Gobo-Chaser-Shake jetzt tatsächlich sichtbar/spürbar funktioniert.
-> - Ob „Gobo 6 static" wirklich ein Hardware-/Mechanik-Problem ist (durch
->   Sichtprüfung am physischen Rad zu bestätigen).
-> - Alles aus den beiden vorigen Runden am selben Tag (Motor-Stop,
->   Modulator-Speed, Poll-Race, Mode/Curve, Jog-Snapback, Joystick-Curve
->   v2, drei einheitliche Joystick-Tabs, geglätteter Followspot-Marker,
->   F5-Tab-Persistenz) — siehe die beiden vorigen Handoff-Runden in
->   `history.md` für Details, alles bisher nur code-seitig verifiziert.
+> - Kurzer Tap bleibt jetzt klein, kein Ausschlag/Nachlaufen mehr.
+> - Curve=0 gibt wirklich sofortige Vollgeschwindigkeit.
+> - „Stop Gobo Rot" hält CH9 jetzt zuverlässig auf 0.
+> - Alles aus den vorigen Runden am selben Tag (Motor-Stop, Modulator-
+>   Speed, Poll-Race, Mode/Curve, Jog-Snapback, drei einheitliche
+>   Joystick-Tabs, Fixture-Datenblatt/Shake-Fix) — siehe die vorigen
+>   Handoff-Runden in `history.md`, bisher nur code-seitig verifiziert.
 >
 > **Bekannter offener Punkt (unverändert):** Der One-Click-Web-Installer
 > (`install.html` → `firmware/manifest.json`) ist kaputt, seit der alte
@@ -54,12 +57,11 @@
 > Polling-Loops zusammenlegen.
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Am Fixture/im Browser nachtesten — insbesondere den Gobo-Chaser-Shake
->    (jetzt mit korrekten Zonen) und ob Gobo 6 tatsächlich ein
->    Hardware-Thema ist. Das ist der wichtigste nächste Schritt, den nur
->    der User erledigen kann.
-> 2. Falls gewünscht: CH17-Macro-Dropdown am echten Bordmenü verifizieren
->    (`Set → Run Mode`) und ggf. durch echte Werte ersetzen.
+> 1. Am Fixture/im Browser nachtesten — insbesondere Joystick-Feel (Tap,
+>    Curve=0, Loslassen) und ob „Stop Gobo Rot" CH9 jetzt wirklich auf 0
+>    hält. Wichtigster nächster Schritt, den nur der User erledigen kann.
+> 2. Gobo-Chaser-Shake (jetzt mit korrekten Zonen aus der vorigen Runde)
+>    und die Gobo-6-Frage (vermutlich Hardware) am Fixture prüfen.
 > 3. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
 > 4. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
 >    Split, ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder
@@ -67,39 +69,30 @@
 
 ## Aktueller Status
 
-Neun Review-/Test-Runden durch (Details siehe `history.md`), plus jetzt
-erstmals ein **offizielles Herstellerdatenblatt** als Referenz
+Zehn Review-/Test-Runden durch (Details siehe `history.md`), inklusive
+eines offiziellen Herstellerdatenblatts als Referenz
 (`mapping_sheds_160w_3in1_gobo.md`). Zielhardware: **ESP32-C3 Supermini**
 (Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
 lokal als auch auf GitHub (`future`-Branch) git-versioniert und läuft auf
-echter Hardware. Verbleibender Blocker: die zuletzt gefixten
-Verhaltensänderungen sind noch nicht am laufenden Gerät/im Browser
-bestätigt.
+echter Hardware. Bemerkenswert an dieser Runde: eine der beiden
+Kern-Ursachen war eine **eigene Regression** aus der unmittelbar vorigen
+Session-Runde (Curve-Snap-Bug) — ein Hinweis, dass schnelle iterative
+Fixes auf Basis von Nutzer-Feedback (ohne Zwischenschritt eigener
+Live-Verifikation) selbst neue, subtile Bugs einführen können; entdeckt
+nur, weil der User konsequent weiter live am Gerät testet.
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 17) gemacht wurde
 
-1. Exploratorische Frage zu React-Code-Splitting/Vite beantwortet — dabei
-   den Fund gemacht, dass React/Babel per CDN geladen wurden. Gefixt.
-2. Stage-Map-Bild-Speichern/Laden geprüft, drei kleine Punkte gefixt.
-3. `/code-review` (Vollcodebase) ergab 9 Findings — alle gefixt.
-4. Projekt auf GitHub gepusht (`future`-Branch).
-5. `/ultrareview` (1. Anlauf) — 15 von 18 gefixt.
-6. `/ultrareview` (2. Anlauf, „nachholen") — 8 von 8 gefixt.
-7. Erster echter Hardware-Test: doppelten `Content-Encoding`-Header
-   gefunden und gefixt.
-8. Zweiter echter Hands-on-Test: 7 gemeldete Bugs plus 2 Nachträge —
-   5+2 gefixt (FX-Stop-Reset, Modulator-Speed, Poll/Toggle-Race,
-   Mode/Curve-Key-Mismatch, Jog-Snapback, Joystick-Curve v1).
-9. Dritte Runde, direktes Feedback zum Joystick: Curve v1 reichte nicht
-   (neu gebaut als zeitbasierte 2s-Rampe), gemeinsame
-   `JoystickAdvancedControls`-Komponente in alle drei Bewegungs-Tabs,
-   toter Curve-Button entfernt, Advanced-Motors-Block entfernt,
-   Followspot-Marker geglättet, F5-Tab-Persistenz.
-10. Vierte Runde: offizielles Fixture-Datenblatt (PDF + `.d4` + `.R20` +
-    `.ssl2`) ausgewertet, komplette DMX-Tabelle nach
-    `mapping_sheds_160w_3in1_gobo.md` extrahiert, Shake-Offset-Formel mit
-    den jetzt bekannten echten Zonen korrekt neu gebaut, Gobo-Nummerierung
-    als code-seitig korrekt verifiziert (Bug vermutlich Hardware-seitig).
+1–9: siehe vorige Handoff-Snapshots / `history.md` (React/Babel lokal,
+Stage-Map-Fixes, mehrere Review-Runden, erster+zweiter Hardware-Test,
+Joystick-Controls vereinheitlicht, Fixture-Datenblatt ausgewertet).
+10. Vierte Live-Test-Runde: eigene Regression aus der Curve-v2-Änderung
+    gefunden (Release-Snap-Bug) und gefixt; Curve-Semantik auf
+    „Curve = Rampendauer in Sekunden, 0 = sofort" umgebaut; Stop-Befehl
+    bekommt einen Fastlane-Pfad an der Debounce-Queue vorbei; User hat
+    selbst den Mechanismus hinter „CH9 stoppt nicht" gefunden (Poll/
+    `track()`-Race bei FX-gekoppelten Slidern) — alle sechs betroffenen
+    Kanäle jetzt während laufender FX von der Outbound-Sync ausgenommen.
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 17).
 
@@ -110,6 +103,5 @@ Dieser Handoff ist der **einzige aktuelle Snapshot** — beim nächsten Mal
 ersetzen (Banner + Status aktualisieren), nicht anhäufen. `history.md` ist
 Append-only — dort landen abgeschlossene Sessions als neuer, chronologischer
 Eintrag, ohne bestehende Einträge zu verändern.
-`mapping_sheds_160w_3in1_gobo.md` ist die neue Fixture-DMX-Referenz —
-keine Session-Historie, sondern ein Nachschlagewerk; bei Bedarf direkt
-erweitern/korrigieren (kein Append-only-Zwang wie bei `history.md`).
+`mapping_sheds_160w_3in1_gobo.md` ist die Fixture-DMX-Referenz — kein
+Session-Verlauf, bei Bedarf direkt erweitern/korrigieren.

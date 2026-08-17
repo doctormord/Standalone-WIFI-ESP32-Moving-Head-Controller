@@ -1337,3 +1337,133 @@ angeschlossenen echten Gerät geflasht (`pio run -t upload`), danach per
 Ob der Shake-Effekt jetzt tatsächlich sichtbar/spürbar am Fixture
 funktioniert und ob die Gobo-6-Frage tatsächlich physisch/mechanisch ist,
 kann nur der User am echten Gerät bestätigen.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Eigene Regression aus der Curve-Runde gefunden, plus ein User-diagnostizierter Bug
+
+Direkt im Anschluss an die vorige Runde (Fixture-Datenblatt/Shake-Fix)
+meldete der User drei zusammenhängende Beobachtungen aus echtem
+Live-Betrieb, in zwei Nachrichten kurz hintereinander.
+
+### 1. „Einmal tippen mit den Pfeiltasten ergibt immer schon 8 steps beim fahren... fährt dann noch weiter wenn man schon losgelassen hat"
+
+Root Cause: eine selbst verursachte Regression aus der vorigen Runde
+(dort „Joystick-Curve neu gebaut, v2"). Die dortige Änderung führte
+`accelMul` ein — 0→1 gerampt über eine feste Haltezeit, multipliziert auf
+die Bewegungsgeschwindigkeit. Der Fehler: beim Loslassen (`joyHeld` wird
+`false`) sprang `accelMul` unconditional auf `1.0`, „damit die
+Verzögerung normal weiterläuft" — aber `joySmoothX` (der
+momentum-geglättete Wert, der die eigentliche Bewegungsrichtung/-stärke
+trägt) konvergiert **unabhängig von `accelMul`** gegen `joyInputX` und
+kann daher schon nahe am Zielwert stehen, selbst wenn `accelMul` während
+des kurzen Haltens noch klein war (frühe Rampenphase). Das Produkt
+`joySmoothX × accelMul` machte also GENAU im Loslass-Moment einen Sprung
+von „klein × klein" auf „(fast) voll × 1.0" — ein kurzer, unkontrollierter
+Geschwindigkeitsausschlag exakt beim Loslassen, gefolgt vom normalen
+Momentum-Ausklingen bei jetzt vollem Multiplikator. Erklärt beide
+Symptome in einem: der Ausschlag selbst („8 steps" bei einem kurzen Tap)
+und das sichtbare Weiterfahren danach (Ausklingen jetzt bei vollem statt
+gerampten Multiplikator).
+
+**Fix:** `accelMul` friert beim Loslassen auf seinem zuletzt gerampten
+Wert ein, statt auf `1.0` zu springen. Dadurch bleibt der Übergang
+Halten→Loslassen stetig — ein kurzer Tap bleibt während der gesamten
+Interaktion (Halten *und* Ausklingen) klein, ein langes Halten bei voller
+Rampe verhält sich weiterhin wie vorher (voller Multiplikator, normales
+Momentum-Ausklingen).
+
+### 2. „Curve=0 und Momentum=0 sollte sofort hart losballern, hat aber trotzdem Rampe"
+
+Nachtrag des Users, unmittelbar danach — deckte einen zweiten,
+unabhängigen Designfehler in derselben v2-Änderung auf: die Rampen-
+**Dauer** war fest auf 2 Sekunden verdrahtet, `joyCurve` veränderte nur
+die *Form* der Kurve über dieses feste Fenster (`powf(rampT, joyCurve)`).
+Ein Curve-Wert nahe am Minimum ergab also weiterhin eine 2-Sekunden-
+Rampe, nur mit flacherer Kurvenform — nicht das erwartete „Curve aus =
+keine Rampe". Nutzer-Erwartung (wie an einem echten Lichtpult): Curve auf
+0 bedeutet sofortige Vollgeschwindigkeit, nur höhere Werte fügen eine
+Rampe hinzu.
+
+**Fix (v3):** `joyCurve` ist jetzt direkt die Rampendauer in Sekunden,
+linear: `accelMul = constrain(joyHoldTime / joyCurve, 0, 1)`, mit
+`joyCurve ≈ 0` als Sonderfall für sofortige Vollgeschwindigkeit
+(`accelMul = 1.0` immer). Damit das UI diesen Wert überhaupt erreichen
+kann: Frontend-Regler-Bereich von `10–30` (repräsentiert 1,0–3,0) auf
+`0–50` (repräsentiert 0,0–5,0) erweitert, Backend-Clamp in `/joy_cfg` von
+`0,1–5,0` auf `0,0–5,0` gelockert (vorher hätte selbst ein gesendetes
+`crv=0` serverseitig auf 0,1 angehoben — nah an sofort, aber nicht
+exakt). `joyMomentum=0` war schon vorher korrekt „sofort" (der
+Momentum-Blend kollabiert bei `smoothFactor=1` bereits auf `blend=1`,
+also Instant-Tracking) — dieser Teil brauchte keine Änderung, nur die
+Curve-Seite war betroffen.
+
+### 3. „Stop Gobo Rot" setzte CH9 nicht auf 0 — User fand die eigentliche Ursache selbst
+
+Diese Nachricht enthielt zwei Beobachtungen, die sich als **derselbe
+Bug** herausstellten: (a) CH9 wird beim Stoppen von `gRotFX` nicht
+zuverlässig auf 0 gesetzt, der Motor dreht scheinbar weiter, und (b) der
+Verdacht, dass die kontinuierliche Live-Aktualisierung der Programmer-
+Tab-Slider während eine FX/Chaser läuft unnötig Bandbreite verbraucht.
+
+Nachvollzogen: `state.goboRot` (der rohe CH9-Slider im Programmer-Tab)
+wird bei jedem `/api/get_dmx`-Poll (alle ~2s) auf den *aktuellen,
+FX-getriebenen* Live-Wert von CH9 aktualisiert — unabhängig davon, ob der
+User diesen Slider je manuell angefasst hat. Der Outbound-Sync-
+`track()`-Mechanismus (derselbe, der z. B. `state.dimmer` per `/set_all`
+synct) hatte dafür **keine Ausnahme** — sobald der zuletzt gesendete
+Baseline-Wert (`p['ch9']`) vom aktuellen `state.goboRot` abwich (was bei
+laufendem `gRotFX` fast immer der Fall ist, da CH9 ständig oszilliert),
+wurde der Poll-Snapshot per `/set_all?c9=...` zurück ans Gerät gesendet —
+ein reiner Echo-Roundtrip, der bei laufender FX (die den Kanal
+Zig-mal-pro-Sekunde neu schreibt) unauffällig bleibt, aber genau im
+Moment des Stoppens gefährlich wird: der letzte, VOR dem Stopp gepollte
+(also veraltete) CH9-Wert steht noch in `state.goboRot`, während die
+Backend-FX-Engine den Kanal bereits korrekt auf `0` zurückgesetzt hat
+(Fix aus einer früheren Runde). Der nächste `track()`-Durchlauf erkennt
+den (jetzt fälschlich als „Änderung" interpretierten) Unterschied und
+schreibt den alten, veralteten Wert per `/set_all` zurück — und macht den
+gerade erst korrekt gesetzten Stop-Wert wieder rückgängig. Der User hatte
+also nicht nur ein UX-/Bandbreiten-Anliegen richtig erkannt, sondern
+damit direkt auch die tatsächliche Fehlerursache für „CH9 stoppt nicht"
+gefunden.
+
+**Fix:** `track(ch, val, skip)` bekommt einen dritten Parameter. Für alle
+sechs FX-/Chaser-gekoppelten Kanäle (`CH.DIMMER`↔`dimFxRunning`,
+`CH.COLOR`↔`colFxRunning`, `CH.GOBO`↔`sgFxRunning`,
+`CH.GOBO_ROT`↔`rgFxRunning`, `CH.GOBO_IDX`↔`grFxRunning`,
+`CH.PRISM_ROT`↔`prFxRunning`) wird `skip` auf das jeweilige Running-Flag
+gesetzt. Solange `skip` true ist, wird der Kanal komplett von der
+Outbound-Sync ausgenommen (kein `/set_all` mehr, behebt auch das
+Bandbreiten-Anliegen) — die Vergleichs-Baseline wird dabei aber weiterhin
+*still* mitgeführt (`p['ch'+ch] = val`, ohne zu senden), damit beim
+Stoppen kein künstlicher Baseline-Mismatch entsteht, der genau dieselbe
+Race erneut auslösen würde. Sobald `skip` wieder false ist (FX gestoppt),
+läuft die normale Sync sauber weiter, sobald der nächste Poll den Slider
+auf den echten (jetzt korrekten) Wert aktualisiert hat.
+
+### Zusätzlich, kleinerer, verwandter Fund: Stop-Kommando konnte in der Debounce-Queue hängen
+
+Bei der Untersuchung von Punkt 1 zusätzlich gefunden: sowohl der
+Tastatur- als auch der Maus-/Touch-Joystick senden Bewegungsbefehle über
+`tFetch(url, 'joy', 40)` — eine gemeinsame Debounce-/Cooldown-Queue pro
+`id`. Ein Stop-Kommando (`x=0,y=0`), das kurz nach einem noch laufenden
+Bewegungsbefehl gesendet wird, kann bis zu ~80 ms (Cooldown + zweiter
+Roundtrip) in dieser Queue hängen bleiben, bevor es das Gerät überhaupt
+erreicht — in diesem Fenster bewegt sich das Fixture nach dem Loslassen
+sichtbar weiter. Der User hatte das unabhängig richtig diagnostiziert
+(„dieser trigger muss iwie fastlane sofort an die api"). **Fix:** neue
+`sendJoy(v)`-Hilfsfunktion — erkennt `x===0 && y===0` und sendet in
+diesem Fall direkt per `fetch()` unter Umgehung der Queue, inklusive
+Löschen eines eventuell noch wartenden, jetzt überholten
+Bewegungsbefehls (`tfPending['joy'] = null`). Von Tastatur- und Maus-
+Handler gemeinsam genutzt (`keyJoyRef`, `joystickHandler`).
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
+angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), danach per
+`curl` als online bestätigt. Ob sich die Joystick-Beschleunigung jetzt
+tatsächlich wie erwartet anfühlt (Curve=0 sofort voll, kurzer Tap bleibt
+klein, kein Nachlaufen) und ob „Stop Gobo Rot" CH9 jetzt zuverlässig auf 0
+hält, kann nur der User am echten Gerät bestätigen.

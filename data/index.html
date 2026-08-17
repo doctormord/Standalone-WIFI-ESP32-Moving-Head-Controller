@@ -784,7 +784,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
           <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
               <LabeledSlider label="Max Speed" value={state.joySpeed} onChange={(v) => setState((s) => ({ ...s, joySpeed: v }))} min={100} max={5000} accent={accent} compact />
-              <LabeledSlider label="Curve" value={state.joyCurve} onChange={(v) => setState((s) => ({ ...s, joyCurve: v }))} min={10} max={30} step={1} accent={accent} compact />
+              <LabeledSlider label="Curve" value={state.joyCurve} onChange={(v) => setState((s) => ({ ...s, joyCurve: v }))} min={0} max={50} step={1} accent={accent} compact />
               <LabeledSlider label="Momentum" value={state.joyMomentum} onChange={(v) => setState((s) => ({ ...s, joyMomentum: v }))} min={0} max={95} step={5} unit="%" accent={accent} compact />
             </div>
           </div>
@@ -1412,6 +1412,14 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
       if (tfPending[id]) { const next = tfPending[id]; tfPending[id] = null; tFetch(next, id, delay); }
     }, delay);
   }
+  // A stop command (x=0,y=0) queued behind tFetch's debounce/cooldown could sit for up to ~80ms
+  // behind an in-flight move command, during which the fixture keeps moving after the key/drag was
+  // already released. Stop bypasses the queue entirely (plain immediate fetch) and clears any
+  // still-pending move so it can't fire again right after the stop lands.
+  function sendJoy(v) {
+    if (v.x === 0 && v.y === 0) { tfPending['joy'] = null; fetch('/joy_in?x=0&y=0').catch(() => {}); return; }
+    tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40);
+  }
 
   const CH = { DIMMER:1, STROBE:2, PAN:3, TILT:4, SPEED:5, COLOR:6, GOBO:7, GOBO_ROT:8, GOBO_IDX:9, PRISM:10, PRISM_ROT:11, FROST:12, FOCUS:13, ZOOM:14, PAN_FINE:15, TILT_FINE:16, MACRO:17 };
   const COLORS = [{n:'White',v:0},{n:'W/R',v:50},{n:'Red',v:5},{n:'R/Y',v:55},{n:'Yellow',v:10},{n:'Y/B',v:60},{n:'Blue',v:15},{n:'B/G',v:65},{n:'Green',v:20},{n:'G/P',v:70},{n:'Purple',v:25},{n:'P/A',v:75},{n:'Amber',v:30},{n:'A/C',v:80},{n:'Cyan',v:35},{n:'C/E',v:85},{n:'Emerald',v:40},{n:'E/O',v:90},{n:'Orange',v:45},{n:'O/W',v:95}];
@@ -1449,9 +1457,7 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'PATCH'];
       mapCalibrating: false, mapActiveMarker: 0, mapImage: '', mapHasImage: false, openWhite: false,
     });
 
-    const keyJoyRef = useKeyboardJoystick(useCallback((v) => {
-      tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40);
-    }, []));
+    const keyJoyRef = useKeyboardJoystick(useCallback((v) => { sendJoy(v); }, []));
 
     const [bpm, tap, setBpm] = useTapTempo();
     const beat = useBeatPulse(bpm);
@@ -1507,7 +1513,12 @@ const isReceiving = useRef(false);
       const s = state; const p = prevRef.current;
       const batch = {};
       
-      const track = (ch, val) => {
+      const track = (ch, val, skip) => {
+        // Keep the comparison baseline silently in sync with the (stale, poll-driven) value while
+        // skipped, so the moment the FX stops there's no leftover mismatch against an old baseline
+        // that would otherwise trigger one immediate, stale /set_all right after the FX engine's own
+        // stop-value just took effect.
+        if (skip) { p['ch'+ch] = val; return; }
         if (p['ch'+ch] !== val) {
           // Only update the comparison baseline when the value is actually
           // sent — otherwise an edit made during the post-poll isReceiving
@@ -1516,9 +1527,17 @@ const isReceiving = useRef(false);
         }
       };
       
-      track(CH.DIMMER, s.dimmer); track(CH.STROBE, s.strobe); track(CH.SPEED, s.motorSpeed);
-      track(CH.COLOR, s.colorBase + s.colorOff); track(CH.GOBO, s.sgoboBase + s.sgoboOff); track(CH.GOBO_ROT, s.rgoboBase + s.rgoboOff); track(CH.GOBO_IDX, s.goboRot);
-      track(CH.PRISM, s.prism ? 200 : 0); track(CH.PRISM_ROT, s.prismRot); track(CH.FROST, s.frost ? 200 : 0); track(CH.FOCUS, s.focus); track(CH.ZOOM, s.zoom); track(CH.PAN_FINE, s.panFine); track(CH.TILT_FINE, s.tiltFine); track(CH.MACRO, s.macro);
+      // Channels driven by a running FX/chaser are excluded here: while active, the FX engine owns
+      // the channel and the raw slider only ever reflects a snapshot from the last ~2s poll. Tracking
+      // it anyway would periodically echo that stale, already-outdated value back via /set_all -
+      // wasted bandwidth every poll cycle, and worse, a race right at FX-stop: the poll right before
+      // stopping can leave the slider holding an old live value that /set_all would then re-write
+      // over the FX engine's own just-applied stop value (e.g. CH9 reset to 0 on gobo-rot FX stop),
+      // undoing it. Excluding the channel while its FX runs removes both problems; normal tracking
+      // resumes the moment the FX is stopped and the next poll has refreshed the slider to match.
+      track(CH.DIMMER, s.dimmer, s.dimFxRunning); track(CH.STROBE, s.strobe); track(CH.SPEED, s.motorSpeed);
+      track(CH.COLOR, s.colorBase + s.colorOff, s.colFxRunning); track(CH.GOBO, s.sgoboBase + s.sgoboOff, s.sgFxRunning); track(CH.GOBO_ROT, s.rgoboBase + s.rgoboOff, s.rgFxRunning); track(CH.GOBO_IDX, s.goboRot, s.grFxRunning);
+      track(CH.PRISM, s.prism ? 200 : 0); track(CH.PRISM_ROT, s.prismRot, s.prFxRunning); track(CH.FROST, s.frost ? 200 : 0); track(CH.FOCUS, s.focus); track(CH.ZOOM, s.zoom); track(CH.PAN_FINE, s.panFine); track(CH.TILT_FINE, s.tiltFine); track(CH.MACRO, s.macro);
       
       if (Object.keys(batch).length > 0) { const params = new URLSearchParams(); Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v)); fetch('/set_all?' + params.toString()).catch(() => {}); }
       
@@ -1562,9 +1581,7 @@ const isReceiving = useRef(false);
     const releaseJog = useCallback(() => { tFetch('/jog?v=0', 'jog'); }, []);
     
     // MOUSE JOYSTICK HANDLER
-    const joystickHandler = useCallback((v) => { 
-      tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40); 
-    }, []);
+    const joystickHandler = useCallback((v) => { sendJoy(v); }, []);
 
     const handleMapTap = useCallback((nx, ny) => { const p = state.mapPoints; const topPan = p[0].pan + (p[1].pan - p[0].pan) * nx; const botPan = p[3].pan + (p[2].pan - p[3].pan) * nx; const finalPan = topPan + (botPan - topPan) * ny; const topTilt = p[0].tilt + (p[1].tilt - p[0].tilt) * nx; const botTilt = p[3].tilt + (p[2].tilt - p[3].tilt) * nx; const finalTilt = topTilt + (botTilt - topTilt) * ny; tFetch(`/map_go?p=${Math.max(0, Math.min(65535, Math.round(finalPan)))}&t=${Math.max(0, Math.min(65535, Math.round(finalTilt)))}`, 'map', 40); }, [state.mapPoints]);
 

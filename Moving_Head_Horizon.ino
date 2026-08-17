@@ -258,17 +258,26 @@ void updateEngines(unsigned long now) {
       float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 30.0f);
       joySmoothX += (joyInputX - joySmoothX) * blend; joySmoothY += (joyInputY - joySmoothY) * blend;
       if (fabsf(joySmoothX) < 0.001f && joyInputX == 0.0f) joySmoothX = 0.0f; if (fabsf(joySmoothY) < 0.001f && joyInputY == 0.0f) joySmoothY = 0.0f;
-      // Curve shapes a time-based accel ramp while the stick is actively held, decoupled from the
-      // momentum blend above (which converges in ~150ms and would make any curve reshaping of its
-      // output imperceptible). Ramps from a standstill over JOY_ACCEL_TIME seconds, shaped by joyCurve;
-      // release is untouched (accelMul is 1.0 whenever the stick isn't held), so deceleration still
-      // relies purely on joySmoothX's own momentum-driven decay, unchanged from before.
-      const float JOY_ACCEL_TIME = 2.0f;
+      // Curve is the accel ramp's DURATION in seconds (0 = instant full speed, matching a real console's
+      // "curve off" expectation), not just its shape -- a fixed-duration ramp whose shape merely got
+      // gentler at low curve values still forced every keypress through a multi-second ramp regardless
+      // of the curve setting, which is wrong. Decoupled from the momentum blend above (which only
+      // governs how fast joySmoothX tracks direction changes, not overall accel time).
+      // accelMul freezes at its last value on release instead of snapping to 1.0 -- joySmoothX itself
+      // already converges to the held target regardless of accelMul (accelMul only scales the output,
+      // not the blend above), so snapping to 1.0 the instant the key is released would multiply that
+      // already-converged joySmoothX by a sudden full-speed factor, producing a burst of movement right
+      // at release instead of a smooth decay. Freezing keeps release continuous with whatever speed was
+      // actually being applied a moment before, and a brief tap (small accelMul the whole time) now
+      // stays small through release instead of ending in a full-speed kick.
       static float joyHoldTime = 0.0f;
+      static float joyAccelMul = 1.0f;
       bool joyHeld = (fabsf(joyInputX) > 0.001f || fabsf(joyInputY) > 0.001f);
-      if (joyHeld) joyHoldTime += dt; else joyHoldTime = 0.0f;
-      float accelMul = joyHeld ? powf(constrain(joyHoldTime / JOY_ACCEL_TIME, 0.0f, 1.0f), joyCurve) : 1.0f;
-      float pD = joySmoothX * accelMul * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * accelMul * (joyMaxSpeed * 25.0f) * dt;
+      if (joyHeld) {
+        joyHoldTime += dt;
+        joyAccelMul = (joyCurve <= 0.05f) ? 1.0f : constrain(joyHoldTime / joyCurve, 0.0f, 1.0f);
+      } else joyHoldTime = 0.0f;
+      float pD = joySmoothX * joyAccelMul * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * joyAccelMul * (joyMaxSpeed * 25.0f) * dt;
       
       exactPan += (joyPanRev ? pD : -pD); exactTilt += (joyTiltRev ? -tD : tD);
       exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
