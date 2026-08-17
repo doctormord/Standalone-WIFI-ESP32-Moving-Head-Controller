@@ -8,6 +8,17 @@
 > ok." Damit ist der letzte offene Rückfrage-Punkt aus den vorigen Runden
 > gelöst.
 >
+> **Direkter Folge-Vorschlag geprüft und verworfen:** User schlug vor,
+> einen eigenen, stufenlosen Shake über CH7/CH8s Rotation-Zonen zu bauen
+> (CW/CCW-Alternation statt der 5 festen Fixture-Stufen). Vor dem Bauen
+> live getestet (Gobo 1 gewählt, dann langsame Rotation) — Ergebnis: die
+> Rotation-Zone dreht das **ganze Rad kontinuierlich durch verschiedene
+> Gobo-Motive**, sie wackelt nicht das gewählte einzelne Gobo an Ort und
+> Stelle. Ein CW/CCW-Shake darüber sähe wie wildes Vor-und-Zurück-Spinnen
+> aus, nicht wie sauberes Wackeln. **Nicht weiterverfolgt**, keine
+> Code-Änderung — in `mapping_sheds_160w_3in1_gobo.md` festgehalten. Der
+> bereits gebaute 5-Stufen-Shake bleibt der richtige Weg für dieses Fixture.
+>
 > **Was das erklärt:** Das alte Software-Modell ließ den DMX-Wert
 > kontinuierlich innerhalb der Zone oszillieren, um „Speed"/„Range" zu
 > simulieren — dadurch sprang die Fixture ständig zwischen ihren 5

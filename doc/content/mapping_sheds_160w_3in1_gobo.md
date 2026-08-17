@@ -158,6 +158,22 @@ innerhalb der Zone mehr (eine frühere Version tat das versehentlich und
 ließ die Fixture dadurch ständig zwischen ihren 5 eingebauten
 Geschwindigkeiten hin- und herspringen).
 
+**Rotation/Scroll-Zone (100–210) ist KEIN Ersatz für Shake — live
+widerlegt (2026-08-17).** Idee war, einen eigenen, stufenlosen Shake
+selbst zu bauen, indem man schnell zwischen einem kleinen CW- und
+CCW-Rotationswert hin- und herschaltet (beide Zonen sind laut Handbuch
+stufenlos geschwindigkeits-gemappt, anders als die 5-stufige
+Shake-Zone). Live getestet: Gobo 1 ausgewählt, dann auf einen niedrigen
+CW-Rotationswert (CH7=105) gewechselt. User-Beobachtung: „ist nur
+durchgelaufen... ansonsten constant speed" — die Zone dreht das
+**gesamte Rad kontinuierlich durch verschiedene Gobo-Motive**, sie
+wackelt NICHT das aktuell gewählte einzelne Gobo an Ort und Stelle. Ein
+selbstgebauter Shake über CW/CCW-Alternation auf dieser Zone würde daher
+wie ein wildes Vor-und-Zurück-Spinnen durch mehrere Motive aussehen,
+nicht wie ein sauberes Wackeln — die 5-stufige Shake-Zone bleibt der
+einzige Weg zu einem echten, sauberen Einzel-Gobo-Wackeln auf diesem
+Fixture. Nicht weiterverfolgt.
+
 ### CH8 — Gobo (rotierend, Rad 2, 6 Gobos + Open)
 | DMX | Funktion |
 |---|---|

@@ -1955,3 +1955,62 @@ Shake-Verhalten ist jetzt als gelöst markiert, mit dem genauen
 User-Zitat als Beleg. `pio run` und `pio run -t buildfs` beide
 `[SUCCESS]`, auf dem angeschlossenen echten Gerät geflasht (`upload` +
 `uploadfs`).
+
+---
+
+## 2026-08-17 (Fortsetzung) — Idee für einen selbstgebauten, stufenlosen Shake live geprüft und verworfen
+
+Direkt im Anschluss an die erfolgreiche 5-Stufen-Shake-Kalibrierung kam
+ein cleverer Vorschlag vom User: „du könntest ja theoretisch einen
+eigenen shake bauen, da wir das rad ja links/rechts drehen können und
+der speed da stufenlos ist... CH7 und CH8 bieten das doch an oder nicht?
+dafür gibts ja nen slider wo man den speed links/rechts einstellen
+kann." Gemeint: CH7 hat laut Handbuch zwei stufenlos
+geschwindigkeits-gemappte Rotationszonen (`100–129` CW, `135–210` CCW,
+„Scroll" laut `.d4`-Datei) — im Gegensatz zur 5-stufigen Shake-Zone. Die
+Idee: schnell zwischen einem kleinen CW- und CCW-Wert hin- und
+herschalten, um einen eigenen, weicheren Shake mit frei wählbarer
+Geschwindigkeit *und* Stärke zu bauen — genau das, was sich der User von
+Anfang an unter „Shake Ramp" vorgestellt hatte.
+
+### Analyse vor dem Bauen
+
+Kanalabgleich: CH7 hat tatsächlich beide Richtungen (symmetrisch nutzbar).
+CH8 hat laut Handbuch **nur** `70–129` CW, keine dokumentierte
+Gegenrichtung — für ein echtes Wackeln am Rad 2 hätte stattdessen CH9
+(die eigene Index-/Rotationsachse von Rad 2, `64–192` CW / `193–255`
+CCW) genutzt werden müssen, was aber mit der bereits existierenden
+„Rotation FX" (`gRotFX`) kollidiert wäre, die genau diesen Kanal auch
+ansteuert.
+
+Wichtiger als die Kanalfrage: unklar war, ob „Rotation/Scroll" bei diesem
+Fixture bedeutet „dasselbe Gobo dreht sich an Ort und Stelle" (das würde
+den Plan tragen) oder „das ganze Rad spinnt durch und man sieht dabei
+die Nachbar-Gobos durchlaufen" (das würde den Plan kaputt machen — ein
+CW/CCW-Alternations-„Shake" sähe dann wie wildes Vor-und-Zurück-Spinnen
+durch mehrere Motive aus, nicht wie ein sauberes Wackeln). Das Handbuch
+beantwortet das nicht.
+
+### Live-Test statt Bauen auf Verdacht
+
+Statt den ganzen Oszillator zu bauen und erst danach am echten Gerät zu
+scheitern (wie schon zweimal beim ursprünglichen Shake-Modell), erst
+verifiziert: Gobo 1 ausgewählt (`c7=15`), 4s gehalten, dann auf einen
+niedrigen CW-Rotationswert gewechselt (`c7=105`), 7s gehalten, User
+beobachtet live. Ergebnis: „ist nur durchgelaufen, ganz am ende ganz
+schnell ansonsten constant speed" — die Rotation-Zone dreht das gesamte
+Rad kontinuierlich durch verschiedene Gobo-Motive, sie wackelt **nicht**
+das aktuell gewählte einzelne Gobo an Ort und Stelle.
+
+### Ergebnis: nicht weiterverfolgt
+
+Die Idee ist damit widerlegt, nicht nur ungebaut liegen gelassen — ein
+selbstgebauter Shake über CW/CCW-Alternation auf der Rotation-Zone würde
+technisch funktionieren, aber optisch das Gegenteil eines sauberen
+Wackelns liefern. Der bereits gebaute, fixture-native 5-Stufen-Shake
+bleibt der einzige saubere Weg zu einem echten Einzel-Gobo-Wackeln auf
+diesem Fixture. Keine Code-Änderung in dieser Runde — reine Recherche,
+die eine potenziell aufwendige Fehlimplementierung verhindert hat. In
+`mapping_sheds_160w_3in1_gobo.md` festgehalten (neuer Abschnitt direkt
+bei der CH7-Shake-Dokumentation), damit die Idee nicht ohne Grund erneut
+aufkommt.

@@ -844,3 +844,20 @@ Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 auf dem echten Gerät geflasht (`upload` + `uploadfs`) und per `curl`
 sowohl als online als auch mit der neuen Stufen-Logik funktional
 bestätigt. Details in `history.md`.
+
+**2026-08-17, Fortsetzung — Idee „eigener stufenloser Shake über die
+Rotation-Zone" live getestet und verworfen (reine Recherche, kein
+Code-Fix).** User-Idee: CH7/CH8 haben stufenlose CW/CCW-Rotationszonen
+(anders als die 5-stufige Shake-Zone) — durch schnelles Hin- und
+Herschalten zwischen einem kleinen CW- und CCW-Wert könnte man einen
+eigenen, weicheren Shake mit frei wählbarer Speed/Stärke bauen. Vor dem
+Implementieren live verifiziert (Gobo 1 gewählt, dann CH7 auf einen
+niedrigen Rotationswert): Die Rotation-Zone dreht **das ganze Rad
+kontinuierlich durch verschiedene Gobo-Motive**, sie wackelt nicht das
+gewählte einzelne Gobo an Ort und Stelle. Ein CW/CCW-Alternations-Shake
+darüber würde also wie wildes Vor-und-Zurück-Spinnen durch mehrere
+Motive aussehen, nicht wie ein sauberes Wackeln — **nicht
+weiterverfolgt**, keine Code-Änderung. In
+`mapping_sheds_160w_3in1_gobo.md` festgehalten, damit diese Idee nicht
+nochmal ohne Grund aufkommt. Der bereits gebaute, fixture-native
+5-Stufen-Shake bleibt der richtige Weg für dieses Gerät.
