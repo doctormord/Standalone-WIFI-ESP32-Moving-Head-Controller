@@ -589,3 +589,71 @@ letzten Test-Batch:
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 auf dem echten Gerät geflasht (`upload` + `uploadfs`) und per `curl` als
 online bestätigt. Details in `history.md`.
+
+**2026-08-17, Fortsetzung — Gobo-Chaser-Shake bekommt Speed/Range,
+Stop-Reset für alle Wheel-Chaser, Track-Force-Resend-Bug, Movement-FX-
+Size-Clamp.** Nutzer-Feedback nach dem letzten Test-Batch:
+
+- **„Chaser static gobo mit shake... läuft mit richtigem Delay, aber
+  Shake lässt sich nicht einstellen (Speed, Range)."** Shake war bisher
+  ein reines An/Aus (`scratch`-Bool) auf einen fixen Wert innerhalb der
+  5-DMX-breiten Shake-Zone des jeweiligen Gobos — nichts daran war
+  einstellbar. Jetzt oszilliert der DMX-Wert kontinuierlich (Dreieckswelle,
+  jeden Frame neu berechnet statt nur bei jedem Chase-Step) innerhalb der
+  Shake-Zone, mit zwei neuen, echten Parametern: `scratchSpeed` (Hz,
+  UI 0,1–10,0) und `scratchRange` (0–100 % der 5-Werte-Zone). Neue
+  `spd`/`rng`-Parameter an `/sgobfx`/`/rgobfx`, im `/api/get_dmx`-JSON
+  exponiert, neue UI-Regler „Shake speed"/„Shake range" in `ChaserFx`
+  (nur sichtbar, wenn „Shake"-Modus gewählt ist). **Bewusst nicht in
+  `SceneData`/NVS persistiert** — `SceneData` ist ein
+  größen-geprüfter Binär-Blob mit echten gespeicherten Presets auf
+  diesem Gerät; neue Felder hinzuzufügen würde laut bereits bestehendem
+  Tech-Debt-Eintrag alle aktuell gespeicherten Presets beim nächsten Boot
+  auf Defaults zurückfallen lassen. Live-only für jetzt: wirkt sofort,
+  setzt sich bei Preset-/Chaser-Recall oder Neustart auf den Default
+  zurück.
+- **„Wenn ich stop drücke, shaked der Gobo-Wheel aber weiter."** Gleiches
+  Bug-Muster wie zuvor bei CH9 (Gobo-Rotation), nur diesmal bei den
+  StepFX-Wheel-Choppern (Color-/Gobo-Chaser): `runStep()` schrieb
+  `dmxData[channel]` nur innerhalb von `if(doStep)`, also nie beim
+  Stoppen — landete der Kanal gerade in der (physisch vom Fixture selbst
+  interpretierten) Shake-Zone, schüttelte das Gerät eigenständig weiter,
+  unabhängig von unserer Firmware. Gefixt nach demselben Muster wie
+  `gRotFX`/`pRotFX`: `runStep` bekommt jetzt eine `wasActive`-Referenz pro
+  Chaser (Color/Static-Gobo/Rot-Gobo, 3 separate `static bool`s) und
+  schreibt beim Stoppen einmalig den regulären, nicht-shakenden Wert des
+  zuletzt gewählten Gobos (`map[currentIdx]`).
+- **„Gobo-Rot-Chaser stoppen, danach im Setup White(0) wählen bringt
+  nichts zurück — erst einen anderen Wert wählen, dann wieder auf 0."**
+  Eigene Nebenwirkung des `track()`-Skip-Fixes von eben: während des
+  Skips wurde die Vergleichs-Baseline still auf den (irrelevanten,
+  meist unveränderten) manuellen Slider-Wert synchronisiert — traf der
+  erste manuelle Wert nach dem Stoppen zufällig mit dieser (unveränderten)
+  Baseline zusammen (z. B. beide „0"/White, der übliche Default), erkannte
+  `track()` fälschlich „keine Änderung" und sendete nichts, obwohl der
+  echte Gerätekanal etwas ganz anderes zeigte (wo der Chaser ihn
+  verlassen hat). Gefixt: `track()` merkt sich jetzt separat, ob ein
+  Kanal zuletzt geskippt war, und erzwingt beim ersten Aufruf nach
+  Skip-Ende **einen** Resend, unabhängig vom Baseline-Vergleich — Baseline
+  selbst bleibt während des Skips unangetastet (kein stilles Sync mehr).
+- **Movement-FX „Size" bei 0 lässt die Bewegung optisch „hängen".**
+  Frontend-Regler klammern zwar schon auf 1–100, aber `/fx`
+  (`zs`/`ze`/`ss`/`se`) und der Preset-Ladepfad (`triggerSceneFX`)
+  hatten keinen serverseitigen Clamp — ein Preset mit gespeichertem
+  `size=0` (oder ein direkter API-Aufruf) hätte die Bewegungsamplitude
+  auf einen einzigen Punkt kollabieren lassen, während die FX weiterhin
+  „läuft" meldet — sieht identisch zu einer hängengebliebenen FX aus.
+  Jetzt auf 1–100 geklammert, an beiden Stellen (Defense-in-Depth, wie im
+  Rest des Projekts üblich).
+
+**Noch offen, nicht blind gefixt:** „Die beiden Slider für MAX in
+Movement FX sind größer als das Layout initial" — vermutlich ein
+CSS-/Rendering-Timing-Bug (z. B. im Zusammenspiel mit der
+Accordion-Öffnen-Animation), aber ohne Browser-Zugriff nicht sicher genug
+zu lokalisieren, welche zwei Regler genau gemeint sind (Speed End/Size
+End in Movement FX? Oder der neue „Max Speed"-Regler im gemeinsamen
+Joystick-Block?). Rückfrage beim User nötig statt Rätselraten.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
+auf dem echten Gerät geflasht und per `curl` als online bestätigt.
+Details in `history.md`.

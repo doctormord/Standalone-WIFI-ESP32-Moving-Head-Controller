@@ -1467,3 +1467,134 @@ angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), danach per
 tatsächlich wie erwartet anfühlt (Curve=0 sofort voll, kurzer Tap bleibt
 klein, kein Nachlaufen) und ob „Stop Gobo Rot" CH9 jetzt zuverlässig auf 0
 hält, kann nur der User am echten Gerät bestätigen.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Shake bekommt echte Parameter, eigener Folgefehler gefunden und gefixt
+
+Weiteres Live-Test-Feedback, noch am selben Tag: „chaser static gobo mit
+shake läuft mit richtigen delay aber shake lässt sich nicht einstellen,
+(also speed und range) eigentlich sollte das ja iwie eine shake ramp sein
+weisst? wenn ich stop drücke shaked der gobo wheel aber weiter."
+
+### Shake bekommt echte Speed-/Range-Parameter
+
+Bisher war „Shake" (`StepFX::scratch`) ein reines An/Aus: bei aktivem
+Scratch wurde der DMX-Wert auf einen EINZIGEN, festen Punkt innerhalb der
+5-DMX-Werte-breiten Shake-Zone des jeweiligen Gobos gesetzt (siehe
+`mapping_sheds_160w_3in1_gobo.md`) — nichts an diesem Wert war
+einstellbar, entsprach also nicht der Erwartung „Shake Ramp" (eine
+tatsächlich oszillierende Bewegung mit einstellbarer Geschwindigkeit/
+Amplitude). Neu gebaut: `StepFX` bekommt zwei neue Felder,
+`scratchSpeed` (float, Hz) und `scratchRange` (int, 0–100 % der 5-Werte-
+Zone). `runStep()` in `Moving_Head_Horizon.ino` berechnet den Shake-Wert
+jetzt als kontinuierliche Dreieckswelle (`fmodf(now/1000 * speedHz, 1.0)`,
+dann in eine 0→1→0-Rampe umgewandelt), **jeden Frame neu**, nicht mehr
+nur bei jedem diskreten Chase-Schritt — dadurch ist überhaupt eine
+sichtbare Oszillation vorhanden, die Speed/Range tatsächlich beeinflussen
+können. Neue Query-Parameter `spd`/`rng` an `/sgobfx` und `/rgobfx`
+(WebAPI.h, mit Clamps 0,1–20,0 Hz / 0–100 %), im `/api/get_dmx`-JSON als
+`sgSp`/`sgRng`/`rgSp`/`rgRng` exponiert. Frontend: `ChaserFx`-Komponente
+bekommt zwei neue `LabeledSlider` („Shake speed", „Shake range"), die nur
+erscheinen, wenn im Shake-Dropdown „Effect · Shake (Wobble)" gewählt ist.
+
+**Bewusst nicht in `SceneData`/NVS persistiert.** Dieses Gerät hat echte,
+im Feld gespeicherte Presets (5 Presets, 8 gepatchte Fixtures). Neue
+Felder zu `SceneData` hinzuzufügen ändert dessen `sizeof()` — laut dem
+bereits bestehenden Tech-Debt-Eintrag in `backlog.md` würde das alle
+aktuell gespeicherten Presets beim nächsten Boot auf Defaults
+zurückfallen lassen (der Legacy-Fallback kennt nur ein noch älteres
+Format, nicht den heutigen Blob mit altem Layout). `scratchSpeed`/
+`scratchRange` leben deshalb nur im RAM-`StepFX`-Objekt: wirken sofort,
+werden aber nicht gespeichert — Preset-/Chaser-Recall oder ein Neustart
+setzt sie auf den Default (`2.0` Hz / `100` %) zurück. Sollte diese
+Live-only-Einschränkung stören, bräuchte es eine echte, durchdachte
+`SceneData`-Migration (Versions-Tag), keinen Schnellschuss in dieser
+Runde.
+
+### „Wenn ich stop drücke, shaked der Gobo-Wheel aber weiter"
+
+Dasselbe Bug-Muster wie zuvor bei CH9 (Gobo-Rotation-Modulator), nur
+diesmal bei den StepFX-Wheel-Choppern (Color-/Static-Gobo-/Rot-Gobo-
+Chaser): `runStep()` schrieb `dmxData[channel]` bisher nur innerhalb von
+`if (doStep) { ... }` — beim Stoppen (`fx.active` wird `false`) wurde der
+Kanal einfach nie wieder beschrieben und blieb auf dem letzten Wert
+eingefroren. Bei einem normalen (nicht-shakenden) Gobo ist das harmlos
+(Rad bleibt auf der zuletzt gewählten Position stehen) — landete der
+Kanal aber gerade MITTEN im Shake (ein Wert innerhalb der 5-DMX-breiten
+Shake-Zone), interpretiert das Fixture diesen Wert **selbst, mit seiner
+eigenen Firmware** weiterhin als „schütteln" — unabhängig davon, dass
+unsere Firmware den Chaser längst als gestoppt betrachtet. Gefixt nach
+demselben Muster wie zuvor bei `gRotFX`/`pRotFX`: `runStep()` bekommt
+jetzt eine `wasActive`-Referenz pro Chaser (drei separate
+`static bool colWasActive, sgWasActive, rgWasActive`, da die Lambda für
+alle drei Chaser gemeinsam genutzt wird) und schreibt bei der
+aktiv→inaktiv-Flanke einmalig den regulären, nicht-shakenden Wert des
+zuletzt gewählten Gobos (`map[currentIdx]`) — der Wert liegt garantiert
+außerhalb jeder Shake-Zone, das Fixture hört auf zu schütteln.
+
+### Eigener Folgefehler: erster manueller Wert nach dem Stoppen ging manchmal verloren
+
+Beim Testen dieser Fixes fiel ein dritter, selbst verursachter Bug auf,
+noch in derselben Nachricht gemeldet: „wenn ich gobo rot chaser stoppe...
+und dann im setup white(0) wähle geht er nicht auf den gobo zurück, ich
+muss erst einen anderen wählen und dann auf 0 zurück". Root Cause: der
+`track()`-Skip-Mechanismus aus der vorigen Runde (der FX-gekoppelte
+Kanäle während des FX-Laufs von der Outbound-Sync ausnimmt) hielt die
+Vergleichs-Baseline dabei still auf dem jeweils aktuellen — aber für die
+manuelle Steuerung irrelevanten — State-Wert synchron (`p['ch'+ch] = val`
+auch während des Skips). Traf der erste manuelle Wert, den der User NACH
+dem Stoppen wählt, zufällig mit dieser (die ganze FX-Laufzeit über
+unveränderten) Baseline zusammen — der häufigste Fall: beide „0"/White,
+da der manuelle Gobo-Picker meist auf seinem Default steht, während der
+Chaser lief — erkannte `track()` fälschlich „keine Änderung" und sendete
+gar nichts, obwohl der echte Gerätekanal etwas völlig anderes zeigte
+(wo immer der Chaser ihn verlassen hat). Wählte der User stattdessen
+zuerst einen ANDEREN Wert, änderte sich die Baseline echt, der Send ging
+durch — und von dort aus funktionierte auch der Rücksprung auf 0 wieder
+normal, weil jetzt eine echte Werteänderung vorlag. Genau das
+Umgehungsverhalten, das der User beschrieb.
+
+**Fix:** `track(ch, val, skip)` merkt sich jetzt separat pro Kanal, ob er
+beim letzten Aufruf geskippt war (`p['pend'+ch]`). Während des Skips wird
+die Baseline gar nicht mehr angefasst. Der erste Aufruf, nachdem `skip`
+wieder `false` wird, erzwingt **einen** Resend, unabhängig vom
+Baseline-Vergleich (`forceSend`) — der Flag wird erst gelöscht, wenn der
+Resend tatsächlich passiert (respektiert weiterhin das
+`isReceiving`-Zeitfenster, damit kein Force-Resend in ein laufendes Poll-
+Fenster hineinplatzt und verlorengeht).
+
+### Zusätzlich gefixt: Movement-FX „Size" bei 0
+
+Beim Umbau des Shake-Mechanismus zusätzlich gemeldet: Movement-FX „Size"
+sollte nicht auf `0` fallen können dürfen. Die Frontend-Regler klammern
+bereits auf 1–100, aber `/fx` (`WebAPI.h`, Parameter `zs`/`ze`/`ss`/`se`)
+und der Preset-Ladepfad (`triggerSceneFX`) hatten keinen serverseitigen
+Clamp — ein Preset mit gespeichertem `size=0` (oder ein direkter
+API-Aufruf, z. B. Art-Net-unabhängig über HTTP) hätte die Bewegungs-
+Amplitude auf einen einzigen Punkt kollabieren lassen, während die FX
+weiterhin als „laufend" gemeldet wird — sieht identisch zu einer
+hängengebliebenen FX aus, ohne es zu sein. Jetzt an beiden Stellen auf
+1–100 geklammert (Defense-in-Depth, wie im Rest des Projekts an
+vergleichbaren Stellen bereits üblich).
+
+### Bewusst nicht gefixt: Layout-Bug bei „MAX"-Reglern
+
+„die beiden slider für MAX in movement fx sind größer als das layout
+initial" — ohne Browser-Zugriff nicht sicher zu lokalisieren, welche
+zwei Regler genau gemeint sind (Speed End/Size End in Movement FX? Der
+neue gemeinsame „Max Speed"-Regler aus `JoystickAdvancedControls"?) und
+was genau „größer als initial" beschreibt (denkbar: ein Timing-Effekt der
+`Accordion`-Öffnen-Animation, die per CSS `max-height`-Transition
+arbeitet). Statt zu raten und ggf. blind an der falschen Stelle zu
+„fixen", als offener Punkt zurückgestellt — braucht entweder ein
+Screenshot/genauere Beschreibung oder eigene Browser-Verifikation.
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
+angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), danach per
+`curl` als online bestätigt. Ob sich der Shake jetzt tatsächlich wie eine
+einstellbare Ramp anfühlt, ob er nach dem Stoppen wirklich aufhört, und
+ob der Track-Force-Resend-Fix das gemeldete Verhalten behebt, kann nur
+der User am echten Gerät bestätigen.

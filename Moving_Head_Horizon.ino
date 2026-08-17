@@ -160,7 +160,7 @@ void updateColFXStep() {
 void triggerSceneFX(int slot) {
   moveFX.active = chaserScenes[slot].fA; moveFX.type = chaserScenes[slot].fT; moveFX.rot = chaserScenes[slot].fR;
   moveFX.trigger = chaserScenes[slot].fTr; moveFX.sync = chaserScenes[slot].fSy;
-  moveFX.spdSt = chaserScenes[slot].fSS; moveFX.spdEn = chaserScenes[slot].fSE; moveFX.szSt = chaserScenes[slot].fZS; moveFX.szEn = chaserScenes[slot].fZE;
+  moveFX.spdSt = constrain(chaserScenes[slot].fSS, 1, 100); moveFX.spdEn = constrain(chaserScenes[slot].fSE, 1, 100); moveFX.szSt = constrain(chaserScenes[slot].fZS, 1, 100); moveFX.szEn = constrain(chaserScenes[slot].fZE, 1, 100);
   moveFX.modMo = chaserScenes[slot].fMM; moveFX.modCu = chaserScenes[slot].fMC; moveFX.modSp = chaserScenes[slot].fMS;
   if(moveFX.active) moveFX.start(); else moveFX.stop();
 
@@ -337,7 +337,8 @@ void updateEngines(unsigned long now) {
   // CH7 (static gobo) shake zones start at 211, CH8 (rotating gobo) at 226, both 5 DMX units per gobo,
   // covering gobo indices 1..N (index 0 = White/Open has no shake zone). shakeBase=0 disables shake
   // entirely (the color wheel, CH6, has no shake function on this fixture per the same chart).
-  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen, int shakeBase) {
+  static bool colWasActive = false, sgWasActive = false, rgWasActive = false;
+  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen, int shakeBase, bool &wasActive) {
     if (fx.active) {
       bool doStep = false;
       if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; }
@@ -348,16 +349,33 @@ void updateEngines(unsigned long now) {
         int safeEnd = constrain(fx.endVal, 0, mapLen - 1);
         int safeStart = constrain(fx.startVal, 0, mapLen - 1);
         if (fx.currentIdx > safeEnd || fx.currentIdx < 0 || fx.currentIdx >= mapLen) fx.currentIdx = safeStart;
-        byte val;
-        if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0) val = (byte)constrain(shakeBase + (fx.currentIdx - 1) * 5, 0, 255);
-        else val = map[fx.currentIdx];
-        dmxData[channel] = val;
       }
+      byte val;
+      if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0) {
+        // Continuously oscillate within the gobo's narrow (5-DMX-unit) fixture-internal shake zone,
+        // written every frame (not just on doStep) so Speed/Range are actually audible/visible instead
+        // of holding one fixed value for the whole hold interval.
+        float speedHz = constrain(fx.scratchSpeed, 0.1f, 20.0f);
+        float phase = fmodf((now / 1000.0f) * speedHz, 1.0f);
+        float tri = phase < 0.5f ? phase * 2.0f : 2.0f - phase * 2.0f; // 0..1..0 triangle wave
+        int width = constrain(fx.scratchRange, 0, 100) * 4 / 100; // 0..4 within the 5-wide zone
+        val = (byte)constrain(shakeBase + (fx.currentIdx - 1) * 5 + (int)roundf(tri * width), 0, 255);
+      } else {
+        val = map[constrain(fx.currentIdx, 0, mapLen - 1)];
+      }
+      dmxData[channel] = val;
+      wasActive = true;
+    } else if (wasActive) {
+      // Land on the plain, non-shake value for whatever gobo was last selected -- otherwise a stop
+      // caught mid-shake leaves the channel sitting inside the shake zone, and the fixture keeps
+      // shaking on its own (its own onboard firmware, not ours) even though we consider it stopped.
+      dmxData[channel] = map[constrain(fx.currentIdx, 0, mapLen - 1)];
+      wasActive = false;
     }
   };
-  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]), 0);
-  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]), 211);
-  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]), 226);
+  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]), 0, colWasActive);
+  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]), 211, sgWasActive);
+  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]), 226, rgWasActive);
 
   if (chaserActive && !isDipping) { 
     if (stepStartTime == 0) stepStartTime = now;

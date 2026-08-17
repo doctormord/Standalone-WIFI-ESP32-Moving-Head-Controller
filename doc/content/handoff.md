@@ -1,67 +1,76 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-17)
-> **Eigene Regression aus der letzten Joystick-Curve-Runde gefunden und
-> gefixt, plus einen echten Bug, den der User selbst diagnostiziert hat.**
-> Direkt im Anschluss an die Fixture-Datenblatt-Runde kam noch am selben
-> Tag konkretes Live-Test-Feedback: kurzes Antippen einer Pfeiltaste löste
-> einen deutlichen Bewegungs-Ausschlag aus und lief nach dem Loslassen
-> sichtbar weiter; Curve=0/Momentum=0 sollte sofort volle Geschwindigkeit
-> geben, hatte aber trotzdem eine Rampe; „Stop Gobo Rot" setzte CH9 nicht
-> zuverlässig auf 0.
+> **Shake bekommt echte Speed-/Range-Parameter, plus ein eigener
+> Folgefehler aus der vorigen Runde gefunden und gefixt.** Noch am selben
+> Tag wie die Joystick-Curve-v3-Runde kam weiteres Live-Test-Feedback:
+> der Gobo-Chaser-Shake läuft mit korrektem Delay, aber Speed/Range lassen
+> sich nicht einstellen; nach dem Stoppen schüttelt das Gobo-Rad
+> eigenständig weiter; nach dem Stoppen des Gobo-Rot-Chasers bringt die
+> Auswahl von „White(0)" im Programmer-Tab nichts, erst ein anderer Wert
+> und dann zurück auf 0 funktioniert; Movement-FX „Size" bei 0 sollte
+> geklammert werden; ein Layout-Bug bei zwei „MAX"-Reglern (noch offen).
 >
-> **Gefixt (Details in `history.md`, 2026-08-17 dritte Fortsetzung):**
-> 1. **Eigene Regression aus der vorigen Runde:** `accelMul` sprang beim
->    Loslassen abrupt auf `1.0`, während `joySmoothX` (unabhängig davon)
->    schon nahe am Zielwert war — das Produkt ergab exakt im
->    Loslass-Moment einen kurzen Vollgas-Ausschlag statt eines weichen
->    Ausklingens. Jetzt friert `accelMul` beim Loslassen auf seinem
->    letzten Wert ein statt zu springen.
-> 2. **Curve steuerte bisher nur die Form einer fest verdrahteten
->    2-Sekunden-Rampe, nicht deren Dauer** — Curve=Minimum hatte
->    trotzdem immer eine 2s-Rampe. Jetzt ist Curve direkt die Rampendauer
->    in Sekunden (linear), `Curve≈0` bedeutet sofortige Vollgeschwindigkeit.
->    Regler-Bereich im Frontend auf `0–5s` erweitert, Backend-Clamp
->    entsprechend gelockert.
-> 3. **Stop-Kommando konnte in der Debounce-Queue hängen bleiben**
->    (bis zu ~80ms Verzögerung) — neue `sendJoy()`-Hilfsfunktion umgeht
->    die Queue für Stop-Befehle komplett, für Tastatur *und* Maus/Touch.
-> 4. **„Stop Gobo Rot" setzte CH9 nicht zuverlässig auf 0 — User hat den
->    echten Mechanismus selbst gefunden.** Die Programmer-Tab-Slider für
->    Kanäle mit laufendem FX/Chaser übernahmen per Poll ständig den
->    Live-Wert und schrieben ihn per `/set_all` zurück — direkt nach dem
->    Stoppen konnte so ein veralteter Live-Snapshot den frisch von der
->    FX-Engine gesetzten Stop-Wert (CH9→0) wieder überschreiben. Jetzt
->    werden alle 6 FX-/Chaser-gekoppelten Kanäle (Dimmer, Color, beide
->    Gobo-Räder, Gobo-Index, Prisma-Rotation) komplett von der
->    Outbound-Sync ausgenommen, solange ihr FX läuft — behebt auch das
->    vom User zu Recht vermutete Bandbreiten-Problem.
+> **Gefixt (Details in `history.md`, 2026-08-17 vierte Fortsetzung):**
+> 1. **Shake ist jetzt eine echte, einstellbare Ramp** statt eines reinen
+>    An/Aus auf einen fixen Wert: neue `scratchSpeed`/`scratchRange`-
+>    Parameter, kontinuierliche Dreieckswellen-Oszillation innerhalb der
+>    5-DMX-breiten Shake-Zone (jeden Frame neu berechnet). Neue UI-Regler
+>    „Shake speed"/„Shake range" in `ChaserFx`. **Bewusst nicht in
+>    `SceneData`/NVS persistiert** (würde die Größe des Preset-Blobs
+>    ändern und echte gespeicherte Presets auf diesem Gerät zurücksetzen)
+>    — live-only, resettet bei Preset-Recall/Neustart auf Default.
+> 2. **Shake lief nach dem Stoppen weiter** — gleiches Muster wie der
+>    CH9-Bug: `runStep()` schrieb den Kanal nur bei jedem Chase-Schritt,
+>    nie beim Stoppen. Landete der Kanal gerade in der Shake-Zone, schüttelt
+>    das Fixture mit seiner EIGENEN Firmware weiter. Jetzt schreibt
+>    `runStep()` beim Stoppen einmalig den regulären (nicht-shakenden)
+>    Wert des zuletzt gewählten Gobos, für alle drei Wheel-Chaser
+>    (Color/Static-Gobo/Rot-Gobo).
+> 3. **Eigener Folgefehler:** der `track()`-Skip-Fix aus der vorigen Runde
+>    hielt die Vergleichs-Baseline still auf dem unveränderten manuellen
+>    Wert synchron — traf der erste manuelle Wert nach dem Stoppen
+>    zufällig damit zusammen (meist: beide „0"), erkannte `track()`
+>    fälschlich „keine Änderung" und sendete nichts. Jetzt erzwingt der
+>    erste Aufruf nach Skip-Ende immer einen Resend, unabhängig vom
+>    Baseline-Vergleich.
+> 4. **Movement-FX „Size" jetzt auch serverseitig auf 1–100 geklammert**
+>    (`/fx` und der Preset-Ladepfad) — vorher nur im Frontend, ein
+>    gespeichertes `size=0` hätte die Bewegung unsichtbar kollabieren
+>    lassen, während die FX weiter „läuft" gemeldet wird.
 >
-> **Was noch NICHT visuell/physisch verifiziert ist:**
-> - Kurzer Tap bleibt jetzt klein, kein Ausschlag/Nachlaufen mehr.
-> - Curve=0 gibt wirklich sofortige Vollgeschwindigkeit.
-> - „Stop Gobo Rot" hält CH9 jetzt zuverlässig auf 0.
-> - Alles aus den vorigen Runden am selben Tag (Motor-Stop, Modulator-
->   Speed, Poll-Race, Mode/Curve, Jog-Snapback, drei einheitliche
->   Joystick-Tabs, Fixture-Datenblatt/Shake-Fix) — siehe die vorigen
->   Handoff-Runden in `history.md`, bisher nur code-seitig verifiziert.
+> **Bewusst zurückgestellt, nicht geraten:** „Die beiden Slider für MAX
+> in Movement FX sind größer als das Layout initial" — ohne Browser-
+> Zugriff nicht sicher genug lokalisierbar (welche zwei Regler genau?
+> Speed/Size End in Movement FX, oder der neue „Max Speed"-Regler im
+> Joystick-Block?). Braucht eine genauere Beschreibung oder einen
+> Screenshot vom User, statt blind an der falschen Stelle zu suchen.
+>
+> **Was noch NICHT visuell/physisch verifiziert ist:** ob sich Shake jetzt
+> wie eine echte Ramp anfühlt und Speed/Range wirken, ob Shake nach dem
+> Stoppen wirklich aufhört, ob „White(0) nach Stop" jetzt sofort
+> funktioniert. Plus alles aus den vorigen Runden am selben Tag (Motor-
+> Stop, Modulator-Speed, Joystick-Curve v3, Fixture-Datenblatt) —
+> siehe die vorigen Handoff-Runden in `history.md`.
 >
 > **Bekannter offener Punkt (unverändert):** Der One-Click-Web-Installer
 > (`install.html` → `firmware/manifest.json`) ist kaputt, seit der alte
 > `firmware/`-Ordner beim GitHub-Push entfernt wurde.
 >
-> **Drei Findings weiterhin bewusst zurückgestellt** (echte
+> **Vier Findings weiterhin bewusst zurückgestellt** (echte
 > Restrukturierungen, siehe `backlog.md` → Tech Debt): `SceneData`-NVS-
-> Format-Versionierung, `/api/get_dmx`s JSON-String-Bau auf
-> `snprintf`/ArduinoJson umstellen, die zwei unsynchronisierten Frontend-
-> Polling-Loops zusammenlegen.
+> Format-Versionierung (jetzt auch relevant für die neuen
+> Shake-Parameter, falls die live-only-Einschränkung mal stört),
+> `/api/get_dmx`s JSON-String-Bau auf `snprintf`/ArduinoJson umstellen,
+> die zwei unsynchronisierten Frontend-Polling-Loops zusammenlegen, der
+> Layout-Bug bei den „MAX"-Reglern (braucht erst mehr Info).
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Am Fixture/im Browser nachtesten — insbesondere Joystick-Feel (Tap,
->    Curve=0, Loslassen) und ob „Stop Gobo Rot" CH9 jetzt wirklich auf 0
->    hält. Wichtigster nächster Schritt, den nur der User erledigen kann.
-> 2. Gobo-Chaser-Shake (jetzt mit korrekten Zonen aus der vorigen Runde)
->    und die Gobo-6-Frage (vermutlich Hardware) am Fixture prüfen.
+> 1. Am Fixture/im Browser nachtesten — insbesondere Shake-Speed/Range,
+>    Shake-Stop-Verhalten, und den „White(0) nach Stop"-Fix. Wichtigster
+>    nächster Schritt, den nur der User erledigen kann.
+> 2. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug
+>    liefern, damit er gezielt gefixt werden kann.
 > 3. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
 > 4. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
 >    Split, ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder
@@ -69,30 +78,28 @@
 
 ## Aktueller Status
 
-Zehn Review-/Test-Runden durch (Details siehe `history.md`), inklusive
+Elf Review-/Test-Runden durch (Details siehe `history.md`), inklusive
 eines offiziellen Herstellerdatenblatts als Referenz
 (`mapping_sheds_160w_3in1_gobo.md`). Zielhardware: **ESP32-C3 Supermini**
 (Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
 lokal als auch auf GitHub (`future`-Branch) git-versioniert und läuft auf
-echter Hardware. Bemerkenswert an dieser Runde: eine der beiden
-Kern-Ursachen war eine **eigene Regression** aus der unmittelbar vorigen
-Session-Runde (Curve-Snap-Bug) — ein Hinweis, dass schnelle iterative
-Fixes auf Basis von Nutzer-Feedback (ohne Zwischenschritt eigener
-Live-Verifikation) selbst neue, subtile Bugs einführen können; entdeckt
-nur, weil der User konsequent weiter live am Gerät testet.
+echter Hardware. Diese Session zeigt inzwischen ein wiederkehrendes
+Muster: sehr schnelle, iterative Fix-Runden auf direktes Live-Feedback
+hin führen gelegentlich selbst zu neuen, subtilen Bugs (siehe die
+Curve-Snap-Regression und den Track-Force-Resend-Folgefehler) — beide
+wurden nur gefunden, weil der User konsequent nach jedem Fix weiter live
+am Gerät testet, nicht durch eigene Vorab-Verifikation.
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 17) gemacht wurde
 
-1–9: siehe vorige Handoff-Snapshots / `history.md` (React/Babel lokal,
-Stage-Map-Fixes, mehrere Review-Runden, erster+zweiter Hardware-Test,
-Joystick-Controls vereinheitlicht, Fixture-Datenblatt ausgewertet).
-10. Vierte Live-Test-Runde: eigene Regression aus der Curve-v2-Änderung
-    gefunden (Release-Snap-Bug) und gefixt; Curve-Semantik auf
-    „Curve = Rampendauer in Sekunden, 0 = sofort" umgebaut; Stop-Befehl
-    bekommt einen Fastlane-Pfad an der Debounce-Queue vorbei; User hat
-    selbst den Mechanismus hinter „CH9 stoppt nicht" gefunden (Poll/
-    `track()`-Race bei FX-gekoppelten Slidern) — alle sechs betroffenen
-    Kanäle jetzt während laufender FX von der Outbound-Sync ausgenommen.
+1–10: siehe vorige Handoff-Snapshots / `history.md`.
+11. Fünfte Live-Test-Runde: Gobo-Chaser-Shake von reinem An/Aus zu
+    echten Speed-/Range-Parametern ausgebaut (bewusst live-only, nicht
+    NVS-persistiert); Shake-Weiterlaufen nach Stop gefixt (gleiches
+    Muster wie CH9); eigenen Folgefehler im `track()`-Skip-Mechanismus
+    gefunden und mit einem Force-Resend-Flag gefixt; Movement-FX-Size
+    serverseitig auf 1–100 geklammert; ein Layout-Bug bewusst
+    zurückgestellt statt blind geraten.
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 17).
 
