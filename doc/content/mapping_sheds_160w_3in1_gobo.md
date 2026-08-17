@@ -144,6 +144,20 @@ im Code zu fixen.
 **Shake-Zonen-Formel:** `211 + (gobo_nr - 1) × 5` für `gobo_nr` 1–9
 (kein Shake für „White"/Index 0 — dafür gibt es im Handbuch keine Zone).
 
+**Live am Gerät bestätigt (2026-08-17):** Die 5 DMX-Werte innerhalb einer
+Shake-Zone sind **keine kontinuierliche Geschwindigkeitsregelung**,
+sondern exakt **5 diskrete, aufsteigende Shake-Geschwindigkeiten**
+(Stufe 1 = langsamstes Wackeln bei `zone_start`, Stufe 5 = schnellstes
+bei `zone_start+4`), fest in der Fixture-Firmware verdrahtet. Per
+manuellem DMX-Sweep über Gobo 1 (CH7=211…215, je 6s gehalten, User
+beobachtete live) verifiziert: „wackelt links rechts aufsteigend speed
+gesteppt, 5 stufen". Der Code nutzt das jetzt direkt (`sgobFX.scratch
+Speed`/`rgobFX.scratchSpeed` als Stufe 1–5, siehe `runStep()` in
+`Moving_Head_Horizon.ino`) — keine Software-seitige Oszillation
+innerhalb der Zone mehr (eine frühere Version tat das versehentlich und
+ließ die Fixture dadurch ständig zwischen ihren 5 eingebauten
+Geschwindigkeiten hin- und herspringen).
+
 ### CH8 — Gobo (rotierend, Rad 2, 6 Gobos + Open)
 | DMX | Funktion |
 |---|---|
@@ -277,5 +291,10 @@ Firmware-Logik.
 - **Shake-Offset-Formel im Code war falsch** (nutzte einen einzigen
   geratenen Konstanten-Offset `+183` für alle Wheel-Typen) — mit den
   jetzt bekannten echten Zonen (`211 + (n-1)×5` für CH7, `226 + (n-1)×5`
-  für CH8) im selben Arbeitsschritt korrigiert, der diese Datei angelegt
-  hat. Siehe `history.md` (2026-08-17) für Details.
+  für CH8) korrigiert, danach per interaktiver Hardware-Kalibrierung
+  (manueller DMX-Sweep, User beobachtete live) bestätigt: die 5 Werte pro
+  Zone sind 5 diskrete, aufsteigende Shake-Geschwindigkeiten (kein
+  kontinuierlicher Bereich) — Software wählt jetzt direkt eine Stufe
+  1–5 statt zu oszillieren. **Gelöst und live verifiziert**, kein offener
+  Punkt mehr. Siehe `history.md` (2026-08-17) für die volle
+  Fund-/Fix-Geschichte.

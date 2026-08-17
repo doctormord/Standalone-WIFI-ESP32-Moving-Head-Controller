@@ -16,13 +16,15 @@ struct StepFX {
     unsigned long lastStepTime = 0;
     int currentIdx = 0;
     bool scratch = false;
-    // Shake oscillation speed (Hz) / amplitude (0-100% of the fixture's narrow shake DMX sub-zone,
-    // see doc/content/mapping_sheds_160w_3in1_gobo.md). Deliberately NOT added to SceneData/NVS --
-    // SceneData is a raw sizeof()-checked binary blob (see backlog.md "Tech Debt"), and growing it
-    // would reset every currently-saved real preset on this device to defaults on next boot. Live-only
-    // for now: takes effect immediately, resets to default on preset/chaser recall or reboot.
-    float scratchSpeed = 2.0f;
-    int scratchRange = 100;
+    // Which of the fixture's 5 built-in shake rates to hold (1=slowest, 5=fastest) within the narrow
+    // shake DMX sub-zone (see doc/content/mapping_sheds_160w_3in1_gobo.md). Confirmed live on hardware
+    // 2026-08-17: the fixture's own firmware steps through exactly 5 discrete, ascending shake speeds
+    // as the DMX value rises through the zone -- it is NOT a continuous range, so this selects one
+    // fixed value and holds it (no oscillation). Deliberately NOT added to SceneData/NVS -- SceneData
+    // is a raw sizeof()-checked binary blob (see backlog.md "Tech Debt"), and growing it would reset
+    // every currently-saved real preset on this device to defaults on next boot. Live-only for now:
+    // takes effect immediately, resets to default on preset/chaser recall or reboot.
+    int scratchSpeed = 3;
 };
 
 // =========================================================

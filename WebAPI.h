@@ -75,8 +75,8 @@ void setupAPI() {
     json += "\"grA\":" + String(gRotFX.active?1:0) + ",\"grSt\":" + String(gRotFX.startVal) + ",\"grEn\":" + String(gRotFX.endVal) + ",\"grMo\":" + String(gRotFX.mode) + ",\"grCu\":" + String(gRotFX.curve) + ",\"grSp\":" + String(gRotFX.speed) + ",\"grTr\":" + String(gRotFX.trigger) + ",\"grSy\":" + String(gRotFX.sync) + ",";
     json += "\"prA\":" + String(pRotFX.active?1:0) + ",\"prSt\":" + String(pRotFX.startVal) + ",\"prEn\":" + String(pRotFX.endVal) + ",\"prMo\":" + String(pRotFX.mode) + ",\"prCu\":" + String(pRotFX.curve) + ",\"prSp\":" + String(pRotFX.speed) + ",\"prTr\":" + String(pRotFX.trigger) + ",\"prSy\":" + String(pRotFX.sync) + ",";
     json += "\"cA\":" + String(colFX.active?1:0) + ",\"cSt\":" + String(colFX.startVal) + ",\"cEn\":" + String(colFX.endVal) + ",\"cHo\":" + String(colFX.holdTime) + ",\"cTr\":" + String(colFX.trigger) + ",\"cSy\":" + String(colFX.sync) + ",";
-    json += "\"sgA\":" + String(sgobFX.active?1:0) + ",\"sgSt\":" + String(sgobFX.startVal) + ",\"sgEn\":" + String(sgobFX.endVal) + ",\"sgHo\":" + String(sgobFX.holdTime) + ",\"sgTr\":" + String(sgobFX.trigger) + ",\"sgSy\":" + String(sgobFX.sync) + ",\"sgSc\":" + String(sgobFX.scratch?1:0) + ",\"sgSp\":" + String(sgobFX.scratchSpeed) + ",\"sgRng\":" + String(sgobFX.scratchRange) + ",";
-    json += "\"rgA\":" + String(rgobFX.active?1:0) + ",\"rgSt\":" + String(rgobFX.startVal) + ",\"rgEn\":" + String(rgobFX.endVal) + ",\"rgHo\":" + String(rgobFX.holdTime) + ",\"rgTr\":" + String(rgobFX.trigger) + ",\"rgSy\":" + String(rgobFX.sync) + ",\"rgSc\":" + String(rgobFX.scratch?1:0) + ",\"rgSp\":" + String(rgobFX.scratchSpeed) + ",\"rgRng\":" + String(rgobFX.scratchRange) + ",";
+    json += "\"sgA\":" + String(sgobFX.active?1:0) + ",\"sgSt\":" + String(sgobFX.startVal) + ",\"sgEn\":" + String(sgobFX.endVal) + ",\"sgHo\":" + String(sgobFX.holdTime) + ",\"sgTr\":" + String(sgobFX.trigger) + ",\"sgSy\":" + String(sgobFX.sync) + ",\"sgSc\":" + String(sgobFX.scratch?1:0) + ",\"sgSp\":" + String(sgobFX.scratchSpeed) + ",";
+    json += "\"rgA\":" + String(rgobFX.active?1:0) + ",\"rgSt\":" + String(rgobFX.startVal) + ",\"rgEn\":" + String(rgobFX.endVal) + ",\"rgHo\":" + String(rgobFX.holdTime) + ",\"rgTr\":" + String(rgobFX.trigger) + ",\"rgSy\":" + String(rgobFX.sync) + ",\"rgSc\":" + String(rgobFX.scratch?1:0) + ",\"rgSp\":" + String(rgobFX.scratchSpeed) + ",";
     json += "\"chSS\":" + String(chaserStartSlot) + ",\"chES\":" + String(chaserEndSlot) + ",\"chF\":" + String(fadeTime) + ",\"chH\":" + String(holdTime) + ",\"chTr\":" + String(chaserTrigger) + ",\"chSy\":" + String(chaserSync) + ",\"chOrd\":" + String(chaserOrder) + ",\"chFTr\":" + String(chaserFadeTrigger) + ",\"chFSy\":" + String(chaserFadeSync);
     json += "}"; server.send(200, "application/json", json);
   });
@@ -281,8 +281,7 @@ void setupAPI() {
       sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = constrain(server.arg("st").toInt(), 0, 9); sgobFX.endVal = constrain(server.arg("en").toInt(), 0, 9);
       if (sgobFX.startVal > sgobFX.endVal) { int t = sgobFX.startVal; sgobFX.startVal = sgobFX.endVal; sgobFX.endVal = t; }
       sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); sgobFX.scratch = (server.arg("sc") == "1");
-      if (server.hasArg("spd")) sgobFX.scratchSpeed = constrain(server.arg("spd").toFloat(), 0.1f, 20.0f);
-      if (server.hasArg("rng")) sgobFX.scratchRange = constrain(server.arg("rng").toInt(), 0, 100);
+      if (server.hasArg("spd")) sgobFX.scratchSpeed = constrain(server.arg("spd").toInt(), 1, 5);
       if(sgobFX.active) { sgobFX.lastStepTime = millis(); sgobFX.currentIdx = sgobFX.startVal; }
       // On stop, land on whatever the Programmer tab's manual CH7 control is currently set to (sent
       // as "mv" alongside a=0) instead of the chaser's own last wheel position -- matches what the
@@ -298,8 +297,7 @@ void setupAPI() {
       rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = constrain(server.arg("st").toInt(), 0, 6); rgobFX.endVal = constrain(server.arg("en").toInt(), 0, 6);
       if (rgobFX.startVal > rgobFX.endVal) { int t = rgobFX.startVal; rgobFX.startVal = rgobFX.endVal; rgobFX.endVal = t; }
       rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); rgobFX.scratch = (server.arg("sc") == "1");
-      if (server.hasArg("spd")) rgobFX.scratchSpeed = constrain(server.arg("spd").toFloat(), 0.1f, 20.0f);
-      if (server.hasArg("rng")) rgobFX.scratchRange = constrain(server.arg("rng").toInt(), 0, 100);
+      if (server.hasArg("spd")) rgobFX.scratchSpeed = constrain(server.arg("spd").toInt(), 1, 5);
       if(rgobFX.active) { rgobFX.lastStepTime = millis(); rgobFX.currentIdx = rgobFX.startVal; }
       // See /sgobfx above: on stop, land on the Programmer tab's manual CH8 value instead of the
       // chaser's own last wheel position, and clear rgWasActive so runStep() doesn't undo it.

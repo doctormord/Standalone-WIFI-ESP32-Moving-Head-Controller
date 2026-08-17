@@ -1867,3 +1867,91 @@ weiterhin `0`. Root Cause bestätigt behoben, nicht nur vermutet.
 
 `pio run` `[SUCCESS]` (nur `.ino`/`.h` geändert, kein `buildfs` nötig).
 Auf dem angeschlossenen echten Gerät per `pio run -t upload` geflasht.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Gobo-Shake-Kalibrierung ausgewertet: Shake ist 5 diskrete Firmware-Stufen, nicht kontinuierlich
+
+Fortsetzung der in der vorigen Runde begonnenen interaktiven
+Hardware-Kalibrierung. Nachdem die 5 Werte der Gobo-1-Shake-Zone (CH7 =
+211, 212, 213, 214, 215, je ~6s gehalten, User beobachtet live am
+Fixture) durchgefahren wurden, meldete der User eine klare, unmissver­
+ständliche Beobachtung: „wackelt links rechts aufsteigend speed gesteppt,
+5 stufen, scheint ok."
+
+### Bedeutung des Befunds
+
+Das ist eine vollständige, eindeutige Antwort auf die Frage, die seit
+zwei Software-Guess-Runden offen war: Die 5 DMX-Werte innerhalb einer
+Shake-Zone sind **keine kontinuierliche Größe** (wie z. B. die
+Rotation-Zonen, wo der Wert die Drehgeschwindigkeit stufenlos
+skaliert), sondern **exakt 5 diskrete, aufsteigende Shake-
+Geschwindigkeiten**, komplett von der Fixture-eigenen Firmware
+gesteuert — Stufe 1 (kleinster Zonenwert) am langsamsten, Stufe 5
+(größter Zonenwert) am schnellsten. Das bestätigt die in der vorigen
+Runde geäußerte Vermutung („plausibel, dass das Fixture die ganze Zone
+nur binär interpretiert... mit fester interner Rate") in einer präziseren
+Form: nicht binär (an/aus), sondern 5-stufig — aber ebenso vollständig
+von der Fixture selbst bestimmt, nicht von irgendeiner Software-seitigen
+zeitlichen Modulation.
+
+Das erklärt **beide vorigen, bis dahin unverstandenen Beschwerden**
+rückwirkend exakt:
+
+- **„Speed scheint invers zu sein":** Das vorige Software-Modell ließ
+  den DMX-Wert kontinuierlich innerhalb der Zone oszillieren (eine
+  Dreieckswelle, deren Frequenz der „Speed"-Parameter steuerte) — dabei
+  durchlief die Fixture ständig alle 5 eingebauten Geschwindigkeiten in
+  wechselnder Reihenfolge, unabhängig davon, in welche Richtung der
+  Slider gedreht wurde. Was der User als „Speed" wahrnahm, war in
+  Wirklichkeit ein chaotisches Springen zwischen allen 5 Firmware-Stufen
+  gleichzeitig — daraus ließ sich keine konsistente Richtung ablesen,
+  was sich wie eine zufällige oder gar inverse Beziehung anfühlen musste.
+- **„Range beeinflusst auch Speed":** Der `range`-Parameter bestimmte die
+  Amplitude der Oszillation (wie weit sie von der langsamsten Stufe aus
+  in Richtung der schnelleren Stufen reicht). Bei niedrigem Range blieb
+  die Oszillation nahe an Stufe 1 (durchgängig langsam), bei hohem Range
+  wurden auch die schnelleren Stufen erreicht (im Mittel spürbar
+  schneller) — Range hatte also durchaus einen echten Effekt auf die
+  wahrgenommene Geschwindigkeit, nur eben nicht den beabsichtigten
+  (Amplitude), sondern einen unbeabsichtigten Nebeneffekt der falschen
+  Grundannahme (Oszillation statt Stufenwahl).
+
+### Neu gebaut: Speed wählt jetzt direkt eine von 5 Firmware-Stufen, Range entfällt komplett
+
+Mit der jetzt gesicherten Datengrundlage vollständig neu implementiert,
+statt weiter am alten Oszillationsmodell zu feilen:
+
+- **`StepFX::scratchSpeed`** (`FX_Engine.h`) ist nicht mehr ein
+  Hz-Wert für eine Oszillation, sondern direkt die gewünschte Stufe
+  (`int`, `1`–`5`, Default `3`).
+- **`runStep()`** (`Moving_Head_Horizon.ino`) berechnet den Shake-Wert
+  jetzt als `shakeBase + (gobo_index - 1) × 5 + (stufe - 1)` — ein
+  einziger, fest gehaltener DMX-Wert, keine `fmodf`/Dreieckswellen-
+  Berechnung mehr, kein Bezug zu `now`/`lastStepTime` für die
+  Shake-Berechnung selbst (die Gobo-Wechsel-Logik über `doStep`/
+  `holdTime` bleibt davon unberührt).
+- **`scratchRange` vollständig entfernt** — als Feld aus `StepFX`, als
+  Query-Parameter `rng` aus `/sgobfx`/`/rgobfx` (`WebAPI.h`), als
+  `sgRng`/`rgRng`-Feld aus dem `/api/get_dmx`-JSON, und als kompletter
+  „Shake range"-Regler samt State/Sync aus dem Frontend (`data/
+  index.html`). Es gibt kein reales Gegenstück mehr dazu, an dem ein
+  Regler etwas Sinnvolles tun könnte.
+- **„Shake speed"-Regler im Frontend** auf `min=1 max=5 step=1`
+  umgestellt (vorher ein 1–100-Regler, der intern durch 10 geteilt eine
+  Hz-Zahl ergab) — zeigt jetzt direkt die Stufe, kein Umrechnungsfaktor
+  mehr nötig (`spd=${s.sgSp}` statt `spd=${(s.sgSp/10).toFixed(1)}`).
+
+### Verifikation
+
+Live per `curl` bestätigt, nicht nur kompiliert: `/sgobfx?...&sc=1&spd=1`
+(Gobo 1 fixiert) → `CH7 == 211` (Stufe 1, exakter Zonenanfang). Danach
+`spd=5` → `CH7 == 215` (Stufe 5, exaktes Zonenende). Beide Werte trafen
+exakt die berechnete Formel.
+
+`mapping_sheds_160w_3in1_gobo.md` (die Fixture-Referenzdatei) wurde direkt
+mit dem bestätigten Befund aktualisiert — der „offener Punkt"-Eintrag zum
+Shake-Verhalten ist jetzt als gelöst markiert, mit dem genauen
+User-Zitat als Beleg. `pio run` und `pio run -t buildfs` beide
+`[SUCCESS]`, auf dem angeschlossenen echten Gerät geflasht (`upload` +
+`uploadfs`).

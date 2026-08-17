@@ -801,3 +801,46 @@ Mit `pio run` verifiziert (`[SUCCESS]`, kein `buildfs` nötig — nur
 per `curl`-Test bestätigt (nicht nur „online", sondern das tatsächliche
 gemeldete Fehlverhalten nachgestellt und als behoben verifiziert). Details
 in `history.md`.
+
+**2026-08-17, Fortsetzung — Gobo-Shake-Kalibrierung ausgewertet, Shake
+komplett neu gebaut. Rückfrage-Punkt aus der vorigen Runde gelöst.** User
+beobachtete beim manuellen DMX-Sweep über Gobo 1s Shake-Zone (CH7=
+211–215, je 6s): „wackelt links rechts aufsteigend speed gesteppt, 5
+stufen, scheint ok".
+
+- **Erkenntnis:** Die Shake-Zone ist **keine kontinuierliche
+  Geschwindigkeitsregelung**, sondern exakt 5 diskrete, aufsteigende
+  Shake-Stufen, fest in der Fixture-Firmware. Damit war klar: mein
+  bisheriges Software-Modell (kontinuierliche Oszillation *innerhalb*
+  der Zone, um „Speed"/„Range" zu simulieren) war grundsätzlich falsch —
+  es ließ die Fixture ständig zwischen ihren 5 eingebauten
+  Geschwindigkeiten hin- und herspringen, statt eine zu halten. Das
+  erklärt rückwirkend beide vorigen Beschwerden exakt: „Speed scheint
+  invers" (die Oszillation lief unabhängig von der Slider-Richtung durch
+  alle 5 Stufen) und „Range beeinflusst Speed" (`range` bestimmte, wie
+  weit die Oszillation in die schnelleren Stufen hineinreicht).
+- **Neu gebaut:** `StepFX::scratchSpeed` ist nicht mehr „Hz für eine
+  Oszillation", sondern direkt die gewünschte Stufe (`1`–`5`, 1=langsamst,
+  5=schnellst) — `runStep()` hält jetzt einen einzigen, festen DMX-Wert
+  innerhalb der Zone (`shakeBase + (gobo-1)×5 + (stufe-1)`), keine
+  Oszillation mehr. `scratchRange` als Feld/Parameter/Regler komplett
+  entfernt (Backend `StepFX`, `/sgobfx`/`/rgobfx`-Query-Param `rng`,
+  `/api/get_dmx`-JSON-Feld, Frontend-State, -Regler, -Sync) — es gab
+  dafür kein reales Gegenstück mehr. „Shake speed"-Regler im Frontend auf
+  `1–5`-Ganzzahlschritte umgestellt.
+- **Live per `curl` verifiziert:** Stufe 1 → CH7 exakt `211`, Stufe 5 →
+  CH7 exakt `215`, wie erwartet.
+- **Referenzdokument aktualisiert:** `mapping_sheds_160w_3in1_gobo.md`
+  trägt jetzt den bestätigten Befund (5 diskrete Stufen statt
+  kontinuierlicher Bereich) direkt bei den Shake-Zonen-Abschnitten von
+  CH7/CH8, der alte „offener Punkt"-Eintrag ist als gelöst markiert.
+
+Damit ist der einzige noch offene Rückfrage-Punkt aus der vorigen Runde
+(Gobo-Shake) gelöst — die zwei anderen (Curve=0-Tap-Distanz war schon
+gefixt, Movement-Stop-mit-Momentum bleibt auf User-Wunsch offen) bereits
+vorher geklärt bzw. bewusst zurückgestellt.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
+auf dem echten Gerät geflasht (`upload` + `uploadfs`) und per `curl`
+sowohl als online als auch mit der neuen Stufen-Logik funktional
+bestätigt. Details in `history.md`.
