@@ -1692,3 +1692,111 @@ weiterer Blindschuss.
 `pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
 angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), danach per
 `curl` als online bestätigt.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Joystick-Commit-Delay, Shake-Kalibrierung begonnen, NVS-Frage geklärt
+
+Antwort auf die drei offenen Rückfragen aus der vorigen Runde. Der User
+bestätigte für den Curve/Momentum-Punkt eine klare, unmissverständliche
+Erwartung: „bei curve=0 muss tap minimal sein, auf jeden fall. eben
+sofort mit speed=was jetzt ist losfahren, und beim loslass event sofort
+hart stoppen (wenn momentum ebenfalls 0)." Für Shake: „da müssen wir mal
+testen mit curl wie du sagst" — explizite Zustimmung zur gemeinsamen
+Hardware-Kalibrierung statt weiterem Software-Raten. Zusätzlich eine neue
+Frage: „werden die werte eigentlich im nvram gespeichert fürs nächste mal
+und zwar für follower separat?" Movement-Stop-mit-Momentum bewusst offen
+gelassen: „lassen wir erstmal offen, scheint iwie anders geworden zu
+sein."
+
+### Kurzer Tastatur-Tap bei Curve/Momentum=0 — Root Cause gefunden und gefixt
+
+Mit der jetzt eindeutigen Erwartung (Halten = sofort volle Geschwindigkeit,
+Tap = minimal) ließ sich die Ursache klar eingrenzen: Bei `joyCurve≈0`
+gibt es laut Design absichtlich keine Rampe mehr (`accelMul` ist immer
+`1.0`) — das bedeutet, die tatsächlich zurückgelegte Strecke ist direkt
+proportional zu der Zeitspanne, in der das Backend `joyInputX != 0` sieht.
+Diese Zeitspanne ist aber NICHT identisch mit der echten
+Tastendruckdauer — sie wird durch reale, aber variable Netzwerk-Latenz
+zwischen „Start-Befehl angekommen" und „Stop-Befehl angekommen"
+aufgebläht. Bei Max Speed 2000 (≈50.000 Einheiten/Sekunde bei
+`(joyMaxSpeed*25)`) reichen schon 20 ms Latenz für spürbare Strecke — und
+20 ms liegen ohne weiteres im Bereich normaler lokaler WLAN-Latenz für
+zwei aufeinanderfolgende HTTP-Requests.
+
+Ohne jede Rampe (die früher, vor der expliziten „curve=0 = sofort"-
+Anforderung, diese Latenz auf natürliche Weise absorbiert hätte) ist das
+Zeitfenster zwischen Start- und Stop-Ankunft die einzige verbleibende
+Bremse gegen ungewollte Kurz-Tap-Strecke — und dieses Fenster war bisher
+komplett unkontrolliert (bestimmt allein durch Netzwerk-Timing, nicht
+durch Software).
+
+**Fix in `useKeyboardJoystick`:** neuer `commitTimerRef`. `startLoop()`
+committet den ersten Bewegungsbefehl jetzt nicht mehr synchron beim
+Tastendruck, sondern verzögert ihn um 15 ms (`setTimeout`). Wird die
+Taste vor Ablauf dieser 15 ms wieder losgelassen, ruft `stopLoop()` den
+Timer ab, **bevor** `apply()` je aufgerufen wurde — es wird also
+überhaupt kein Bewegungsbefehl gesendet, kein Netzwerk-Traffic, keine
+Bewegung. Bei einem echten, absichtlichen Tastendruck (die weit
+überwiegende Mehrheit realer Interaktionen — 15 ms ist deutlich unter der
+für Menschen wahrnehmbaren Reaktionsschwelle) verstreichen die 15 ms
+unbemerkt, danach startet die Bewegung wie gewünscht sofort mit voller,
+unrampter Geschwindigkeit. Betrifft nur den Tastatur-Pfad
+(`useKeyboardJoystick`) — der Maus-/Touch-Joystick (`StickyJoystick`)
+bewegt sich proportional zur tatsächlichen Zeigerposition/Drag-Distanz,
+nicht binär auf/ab, und hat dieses spezifische Problem strukturell nicht.
+
+Der zweite Teil der Anforderung („beim Loslassen bei Momentum=0 sofort
+hart stoppen") war bereits durch die vorigen Runden abgedeckt: `sendJoy`s
+Fastlane-Stop-Pfad liefert den Stop-Befehl ohne Debounce-Verzögerung, und
+`joyMomentum=0` ergibt auf Backend-Seite bereits einen Blend-Faktor von
+`1.0` (Instant-Snap von `joySmoothX` auf `0`, sobald der Stop-Befehl
+ankommt) — keine weitere Änderung nötig, nur bestätigt.
+
+### Gobo-Shake-Kalibrierung mit dem User begonnen
+
+Statt einer dritten Software-Guess-Runde: `sgobFX`/`rgobFX` als inaktiv
+bestätigt (`/api/get_dmx` → `sgA:0`, `rgA:0`), dann CH7 (statisches Gobo)
+per `curl`/`/set_all?c7=N` manuell durch alle fünf möglichen Werte der
+Gobo-1-Shake-Zone gefahren (`211, 212, 213, 214, 215`, je ~4 Sekunden
+Haltezeit), anschließend zurück auf `White` (`c7=0`). User beobachtet
+live am Fixture. Ziel: herausfinden, ob/wie das Fixture unterschiedliche
+Werte innerhalb der schmalen 5-Werte-Zone tatsächlich unterschiedlich
+interpretiert (feste Rate vs. wert-abhängige Rate), um die
+Speed-/Range-Parameter aus der vorigen Runde auf eine echte
+Datengrundlage zu stellen statt auf eine Annahme. **Auswertung der 5
+Werte durch den User steht noch aus** — Fortsetzung in der nächsten
+Session-Runde.
+
+### NVS-Persistenz-Frage geklärt
+
+„werden die werte eigentlich im nvram gespeichert fürs nächste mal und
+zwar für follower separat?" — Antwort: `joySpeed`/`joyCurve`/
+`joyMomentum` werden bereits persistiert (`WebAPI.h`, `/joy_cfg`-Handler,
+`prefs.putInt("j_msp",...)`/`putFloat("j_crv",...)`/`putFloat("j_mom",...)`
+unter dem `"sys"`-Namespace) — das war schon vor dieser Session so.
+**Aber:** es ist ein einziger, globaler Wertesatz, nicht getrennt pro
+Tab. Seit der Joystick-Controls-Vereinheitlichung (frühere Runde
+desselben Tages) zeigen Live-, Programmer- und Followspot-Tab alle
+denselben `JoystickAdvancedControls`-Block, der denselben globalen
+`state.joySpeed`/`joyCurve`/`joyMomentum` liest und schreibt — es gibt
+also faktisch nur ein gemeinsames Profil für alle drei Bewegungsarten,
+kein separates Followspot-Profil. Ein echtes, eigenständiges
+Followspot-Profil (z. B. für langsameres, präziseres Tracking) wäre ein
+neues Feature — eigene Backend-Variablen, eigene NVS-Keys, eine
+API-Unterscheidung, welches Profil gerade gilt — keine kleine Korrektur.
+Bewusst nicht blind gebaut, sondern beim User rückgefragt, ob das
+tatsächlich gewünscht ist.
+
+### Movement-Stop mit Momentum — bewusst offen gelassen
+
+User: „movement-stop lassen wir erstmal offen, scheint iwie anders
+geworden zu sein." Keine Code-Änderung in dieser Runde — explizit
+zurückgestellt auf Wunsch des Users, nicht vergessen.
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Da in dieser Runde
+nur `data/index.html` geändert wurde, genügte `pio run -t uploadfs` (kein
+vollständiger Firmware-Reflash nötig) — auf dem angeschlossenen echten
+Gerät ausgeführt, danach per `curl` als online bestätigt.

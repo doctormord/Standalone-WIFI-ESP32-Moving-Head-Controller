@@ -720,3 +720,49 @@ Shake-Speed/Range-Batch:
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 auf dem echten Gerät geflasht und per `curl` als online bestätigt.
 Details in `history.md`.
+
+**2026-08-17, Fortsetzung — Joystick-Commit-Delay gegen Kurz-Tap-
+Latenzfenster, Shake-Kalibrierung mit User gestartet, NVS-Frage
+beantwortet.** User bestätigte explizit: bei Curve/Momentum=0 muss ein
+kurzer Tap minimal bleiben, echtes Halten aber weiterhin sofort mit
+voller Geschwindigkeit starten.
+
+- **Kurzer Tastatur-Tap bewegte bei Curve/Momentum=0 spürbar zu weit
+  („ca. 11 Steps").** Root Cause: ohne jede Rampe (Curve=0, wie explizit
+  gewünscht) ist die tatsächliche Bewegungsdauer direkt an das
+  Zeitfenster gekoppelt, in dem das Backend `joyInputX != 0` sieht — und
+  dieses Fenster wird durch reale, aber variable Netzwerk-Latenz
+  (Start-Befehl-Ankunft bis Stop-Befehl-Ankunft) aufgebläht, nicht nur
+  durch die tatsächliche Tastendruckdauer. Bei Max Speed 2000 (50.000
+  Einheiten/s) reichen schon 20 ms Latenzfenster für spürbare Strecke.
+  **Fix:** `useKeyboardJoystick` verzögert das Committen des ersten
+  Bewegungsbefehls jetzt um 15 ms (`commitTimerRef`, per `setTimeout`).
+  Wird die Taste vor Ablauf wieder losgelassen (ein echter Kurz-Tap),
+  wird **gar kein** Befehl gesendet — keine Bewegung, kein Netzwerk-
+  Traffic. Bei echtem Halten (die überwältigende Mehrheit realer
+  Tastendrücke, >15 ms) ist die Verzögerung nicht wahrnehmbar, danach
+  startet die Bewegung weiterhin sofort mit voller Geschwindigkeit. Nur
+  der Tastatur-Pfad betroffen — der Maus-/Touch-Joystick bewegt sich
+  proportional zur tatsächlichen Drag-Distanz und hat dieses
+  Binär-Sprung-Problem strukturell nicht.
+- **Gobo-Shake-Kalibrierung mit dem User gestartet statt weiter blind zu
+  raten.** Erster Schritt: `sgobFX`/`rgobFX` beide inaktiv bestätigt,
+  dann CH7 (statisches Gobo) manuell durch die komplette Gobo-1-Shake-
+  Zone (211–215, alle 5 möglichen Werte) gefahren, mit ~4s Haltezeit pro
+  Wert, User beobachtet live am Fixture. Ergebnis/Auswertung noch
+  ausstehend.
+- **NVS-Frage beantwortet:** `joySpeed`/`joyCurve`/`joyMomentum` werden
+  bereits persistiert (`prefs.putInt/putFloat` unter `"sys"`, Keys
+  `j_msp`/`j_crv`/`j_mom`), aber als **ein einziger globaler Satz** —
+  nicht separat pro Tab/für Followspot, obwohl seit der
+  Joystick-Controls-Vereinheitlichung alle drei Tabs (Live/Programmer/
+  Followspot) denselben `JoystickAdvancedControls`-Block zeigen, der
+  denselben globalen State liest/schreibt. Ein echtes,
+  Followspot-eigenes Profil wäre ein neues Feature (eigene Backend-
+  Variablen + NVS-Keys + API-Unterscheidung), keine kleine Korrektur —
+  beim User rückgefragt statt blind gebaut.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
+`uploadfs` auf das echte Gerät gebracht (kein `.ino`/`.h`-Change in
+dieser Runde, daher kein Firmware-Reflash nötig) und per `curl` als
+online bestätigt. Details in `history.md`.

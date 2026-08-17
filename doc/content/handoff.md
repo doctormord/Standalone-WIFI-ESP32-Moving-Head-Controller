@@ -1,49 +1,50 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-17)
-> **Vier weitere Live-Test-Fixes, plus drei Punkte bewusst zur Rückfrage
-> an den User gestellt statt eines dritten Blindschusses.** Details in
-> `history.md` (2026-08-17, letzte Fortsetzung).
+> **Antwort auf die drei Rückfragen aus der vorigen Runde erhalten, zwei
+> davon direkt umgesetzt, Shake-Kalibrierung mit dem User begonnen.**
 >
 > **Gefixt:**
-> 1. „Manual speed"-Regler (Dimmer-/Gobo-Rot-/Prisma-Rot-FX) zeigten
->    irreführend „ms" an obwohl es eine echte 0–10000-Speed-Zahl ist
->    (höher=schneller, nicht länger=langsamer). `TriggerBlock` bekommt
->    einen `holdUnit`-Prop, für die drei Modulator-Stellen jetzt leer.
-> 2. Gobo-Chaser-Stop geht jetzt atomar auf den manuellen Setup-Wert
->    (CH7/8) zurück statt auf die letzte Chaser-Position — neuer
->    `mv`-Parameter an `/sgobfx`/`/rgobfx`.
-> 3. Abstand zwischen „Shake speed"/„Shake range"-Reglern vergrößert.
-> 4. Shake-Oszillation lief vorher an der absoluten Systemzeit gekoppelt
->    unverändert über Gobo-Wechsel hinweg weiter (wirkte wie „eine Rampe
->    über mehrere Changes") — jetzt an `lastStepTime` gekoppelt, jedes
->    Gobo bekommt einen frischen, eigenen Shake-Zyklus.
+> - **Kurzer Tastatur-Tap bei Curve/Momentum=0 bewegte zu weit.** Ohne
+>   Rampe ist die Bewegungsdauer direkt an das Zeitfenster gekoppelt, in
+>   dem das Backend `joyInputX≠0` sieht — und das wird durch reale
+>   Netzwerk-Latenz (Start- bis Stop-Ankunft) aufgebläht, nicht nur durch
+>   die echte Tastendruckdauer. `useKeyboardJoystick` verzögert das
+>   Committen des ersten Bewegungsbefehls jetzt um 15 ms; wird die Taste
+>   vorher losgelassen, wird gar nichts gesendet. Echtes Halten (>15ms)
+>   bleibt unverändert „sofort mit voller Geschwindigkeit".
+> - Der zweite Teil („Loslassen bei Momentum=0 = harter Stopp") war
+>   bereits durch vorige Runden abgedeckt — bestätigt, keine Änderung
+>   nötig.
 >
-> **Bewusst zur Rückfrage gestellt** (nach mehreren erfolglosen
-> Guess-Runden, siehe Chat für die genaue Frage an den User):
-> - Rotating-Gobo-Shake weiterhin „murksig", Range scheint Speed zu
->   beeinflussen — plausibel, dass das Fixture die Shake-Zone nur binär
->   interpretiert (feste interne Rate) und mein Sub-Zonen-Oszillations-
->   Modell am tatsächlichen Fixture-Verhalten vorbeirät. Braucht echte
->   Hardware-Rückmeldung statt weiterem Raten.
-> - Curve/Momentum=0: 1 Keyboard-Tick bei Max Speed 2000 bewegt ~11 Steps
->   — könnte inhärente Konsequenz von „Curve=0 = wirklich sofort" sein
->   (explizit so gewünscht) oder ein eigener Bug.
-> - Movement-Stop mit Momentum stoppt laut User abrupt statt weich zu
->   faden — kein Bug im Code gefunden, evtl. wird der On-Screen-Joystick
->   (eigene, unabhängige Spring-Animation) mit der physischen
->   Fixture-Bewegung verwechselt, oder der jetzt gefixte Release-Burst-Bug
->   hat das vorher überdeckt.
+> **Begonnen, Ergebnis steht noch aus:**
+> - **Gobo-Shake-Kalibrierung:** CH7 (statisches Gobo) manuell durch alle
+>   5 Werte der Gobo-1-Shake-Zone (211–215) gefahren, User beobachtet live
+>   am Fixture. **Auswertung durch den User steht noch aus** — das ist der
+>   wichtigste nächste Schritt in der nächsten Runde, um die
+>   Shake-Speed/-Range-Parameter auf echte Daten statt Annahmen zu
+>   stellen.
 >
-> **Was noch NICHT visuell/physisch verifiziert ist:** alle vier neuen
-> Fixes, plus alles aus den vorigen Runden am selben Tag — siehe die
-> vorigen Handoff-Runden in `history.md`.
+> **Geklärt (keine Code-Änderung, nur Antwort):**
+> - **NVS-Frage:** `joySpeed`/`joyCurve`/`joyMomentum` werden bereits
+>   persistiert, aber als **ein globaler Satz**, nicht separat für
+>   Followspot — alle drei Tabs teilen sich seit der Controls-
+>   Vereinheitlichung denselben State. Ein echtes Followspot-eigenes
+>   Profil wäre ein neues Feature (eigene Backend-Variablen/NVS-Keys),
+>   beim User rückgefragt statt blind gebaut.
+> - **Movement-Stop mit Momentum:** auf expliziten Wunsch des Users
+>   offen gelassen („scheint iwie anders geworden zu sein"), keine
+>   Änderung in dieser Runde.
+>
+> **Was noch NICHT visuell/physisch verifiziert ist:** der neue
+> 15ms-Commit-Delay-Fix, alle Ergebnisse der Shake-Kalibrierungs-Session
+> (steht noch aus), plus alles aus den vorigen Runden am selben Tag.
 >
 > **Bekannter offener Punkt (unverändert):** Der One-Click-Web-Installer
-> (`install.html` → `firmware/manifest.json`) ist kaputt, seit der alte
-> `firmware/`-Ordner beim GitHub-Push entfernt wurde. Layout-Bug bei
-> „MAX"-Reglern in Movement FX weiterhin ungeklärt (braucht Screenshot/
-> genauere Beschreibung vom User).
+> ist kaputt (fehlender `firmware/`-Ordner). Layout-Bug bei „MAX"-Reglern
+> in Movement FX weiterhin ungeklärt. Movement-Stop-mit-Momentum bewusst
+> offen. Followspot-eigenes Joystick-Profil als mögliches neues Feature
+> im Raum, noch nicht bestätigt/beauftragt.
 >
 > **Vier Findings weiterhin bewusst zurückgestellt** (echte
 > Restrukturierungen, siehe `backlog.md` → Tech Debt): `SceneData`-NVS-
@@ -52,42 +53,41 @@
 > Polling-Loops zusammenlegen, der Layout-Bug bei den „MAX"-Reglern.
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Antworten auf die drei offenen Rückfragen (Shake-Design-Richtung,
->    Curve=0-Tap-Erwartung, Momentum-Fade-Reproduktion) — der wichtigste
->    nächste Schritt, damit die letzten drei Punkte gezielt statt blind
->    angegangen werden können.
-> 2. Am Fixture/im Browser die vier neuen Fixes aus dieser Runde
->    nachtesten.
-> 3. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
-> 4. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
-> 5. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
+> 1. **User berichtet, was er bei den 5 Shake-Kalibrierungswerten
+>    (CH7=211–215) beobachtet hat** — daraus die Shake-Speed/-Range-Logik
+>    neu ableiten (echte Daten statt Annahmen). Wichtigster nächster
+>    Schritt.
+> 2. Am Fixture/im Browser den 15ms-Commit-Delay-Fix nachtesten.
+> 3. Klären, ob ein separates Followspot-Joystick-Profil gewünscht ist.
+> 4. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
+> 5. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
+> 6. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
 >    Split, ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder
 >    entfernen, übrige Tech-Debt-Punkte.
 
 ## Aktueller Status
 
-Zwölf Review-/Test-Runden durch (Details siehe `history.md`), inklusive
-eines offiziellen Herstellerdatenblatts als Referenz
+Dreizehn Review-/Test-Runden durch (Details siehe `history.md`),
+inklusive eines offiziellen Herstellerdatenblatts als Referenz
 (`mapping_sheds_160w_3in1_gobo.md`). Zielhardware: **ESP32-C3 Supermini**
 (Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
 lokal als auch auf GitHub (`future`-Branch) git-versioniert und läuft auf
-echter Hardware. Diese Session zeigt weiterhin das Muster: sehr schnelle,
-iterative Fix-Runden auf direktes Live-Feedback funktionieren gut für
-klar diagnostizierbare Bugs, stoßen aber bei Punkten, die von
-undokumentiertem Fixture-internen Verhalten abhängen (Shake-Sub-Zonen),
-an eine Grenze — dort ist eine gezielte Rückfrage inzwischen sinnvoller
-als ein weiterer Blindschuss.
+echter Hardware. Diese Runde zeigt einen Musterwechsel: statt eines
+dritten Blind-Guess-Versuchs beim Gobo-Shake wurde erstmals eine
+gemeinsame, interaktive Hardware-Kalibrierung mit dem User begonnen
+(manueller DMX-Sweep + Live-Beobachtung) — ein Modell, das sich bei
+ähnlich unklaren, undokumentierten Fixture-Verhalten künftig wiederholen
+lässt.
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 17) gemacht wurde
 
-1–11: siehe vorige Handoff-Snapshots / `history.md`.
-12. Sechste Live-Test-Runde: „Manual speed"-Einheit korrigiert
-    (Label-Bug, kein Formel-Bug), Gobo-Chaser-Stop geht jetzt atomar auf
-    den manuellen Setup-Wert zurück, Shake-Slider-Abstand vergrößert,
-    Shake-Phase pro Gobo-Wechsel zurückgesetzt (behebt „Rampe über
-    mehrere Changes"). Drei Punkte (Shake-Sub-Zonen-Verhalten,
-    Curve=0-Tap-Distanz, Momentum-Fade-Abruptheit) bewusst als
-    Rückfrage an den User gestellt statt eines dritten Blindschusses.
+1–12: siehe vorige Handoff-Snapshots / `history.md`.
+13. Siebte Live-Test-Runde: 15ms-Commit-Delay für Tastatur-Joystick
+    (behebt Kurz-Tap-Latenzfenster-Bug bei Curve/Momentum=0), Gobo-
+    Shake-Kalibrierung mit dem User begonnen (manueller DMX-Sweep über
+    `curl`, Ergebnis steht aus), NVS-Persistenz-Frage beantwortet
+    (bereits gespeichert, aber global statt pro-Tab), Movement-Stop-
+    Thema auf User-Wunsch offen gelassen.
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 17).
 
@@ -99,4 +99,5 @@ ersetzen (Banner + Status aktualisieren), nicht anhäufen. `history.md` ist
 Append-only — dort landen abgeschlossene Sessions als neuer, chronologischer
 Eintrag, ohne bestehende Einträge zu verändern.
 `mapping_sheds_160w_3in1_gobo.md` ist die Fixture-DMX-Referenz — kein
-Session-Verlauf, bei Bedarf direkt erweitern/korrigieren.
+Session-Verlauf, bei Bedarf direkt erweitern/korrigieren (z. B. sobald die
+Shake-Kalibrierungsergebnisse feststehen).

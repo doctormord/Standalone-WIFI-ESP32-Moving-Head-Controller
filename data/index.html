@@ -140,6 +140,7 @@ function useKeyboardJoystick(onMove) {
   const precStart = useRef(0);
   const onMoveRef = useRef(onMove);
   const intervalRef = useRef(null);
+  const commitTimerRef = useRef(null);
   
   useEffect(() => { onMoveRef.current = onMove; });
 
@@ -173,11 +174,20 @@ function useKeyboardJoystick(onMove) {
     };
 
     const startLoop = () => {
-      if (intervalRef.current) return;
-      apply();
-      intervalRef.current = setInterval(apply, 40);
+      if (intervalRef.current || commitTimerRef.current) return;
+      // Delay committing the first move by a few ms: a genuinely brief tap (released before this
+      // fires) never sends a move command at all, instead of sending one immediately followed by a
+      // stop a network round-trip later -- that round-trip window was the real source of unwanted
+      // travel on a quick tap (worst with curve/momentum at 0, which intentionally has no ramp left to
+      // absorb it). A real, deliberate hold is unaffected: 15ms is well under normal key-press duration.
+      commitTimerRef.current = setTimeout(() => {
+        commitTimerRef.current = null;
+        apply();
+        intervalRef.current = setInterval(apply, 40);
+      }, 15);
     };
     const stopLoop = () => {
+      if (commitTimerRef.current) { clearTimeout(commitTimerRef.current); commitTimerRef.current = null; }
       if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
       precStart.current = 0;
       // Sicherstellen, dass beim Loslassen ein sauberes 0,0 gesendet wird
@@ -246,6 +256,7 @@ function useKeyboardJoystick(onMove) {
       window.removeEventListener('keyup',   onUp);
       window.removeEventListener('blur',    onBlur);
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
     };
   }, []);
 
