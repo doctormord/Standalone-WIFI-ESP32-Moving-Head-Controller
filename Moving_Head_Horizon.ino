@@ -339,11 +339,11 @@ void updateEngines(unsigned long now) {
       }
   }
 
-  // shakeBase/shakeStep come from the fixture's real DMX chart (doc/content/mapping_sheds_160w_3in1_gobo.md):
-  // CH7 (static gobo) shake zones start at 211, CH8 (rotating gobo) at 226, both 5 DMX units per gobo,
-  // covering gobo indices 1..N (index 0 = White/Open has no shake zone). shakeBase=0 disables shake
+  // shakeBase comes from the fixture's real DMX chart (doc/content/mapping_sheds_160w_3in1_gobo.md):
+  // CH8 (rotating gobo) native shake zone starts at 226, 5 DMX units per gobo, covering gobo indices
+  // 1..N (index 0 = White/Open has no shake zone). shakeBase=0 disables the native-shake fallback
   // entirely (the color wheel, CH6, has no shake function on this fixture per the same chart).
-  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen, int shakeBase, bool &wasActive) {
+  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen, int shakeBase, bool &wasActive, bool rotationPulse) {
     if (fx.active) {
       bool doStep = false;
       if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; }
@@ -356,13 +356,34 @@ void updateEngines(unsigned long now) {
         if (fx.currentIdx > safeEnd || fx.currentIdx < 0 || fx.currentIdx >= mapLen) fx.currentIdx = safeStart;
       }
       byte val;
-      if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0) {
-        // Hold one of the fixture's 5 built-in shake rates steady -- confirmed live on hardware
-        // 2026-08-17 that the shake sub-zone is 5 discrete, ascending speed steps handled entirely by
-        // the fixture's own firmware, not a continuous range. An earlier version of this code
-        // oscillated the DMX value across the zone over time, which just made the fixture rapidly
-        // cycle between its 5 built-in speeds instead of holding one -- that's what read as "janky".
-        int stage = constrain(fx.scratchSpeed, 1, 5);
+      if (fx.scratch && fx.currentIdx > 0 && rotationPulse) {
+        // "Rotation pulse" shake (CH7/static gobo only -- see StepFX::scratchSpeed comment in
+        // FX_Engine.h for why CH8 can't use this). Confirmed live on hardware 2026-08-17: alternating
+        // brief pulses into the fixture's continuous CW (100 slow .. 129 fast) and CCW (135 slow ..
+        // 210 fast) rotation zones -- stop is 130 -- makes the wheel pendulum-swing around the
+        // selected gobo instead of scrolling to neighbors, as long as the plain index value is
+        // re-sent between pulses to re-anchor position and bound drift (the rotation zones are
+        // open-loop speed control, not an absolute position seek like the index zone is).
+        // Cycle: CW pulse -> re-anchor -> CCW pulse -> re-anchor, one quarter-period each.
+        float speedHz = constrain(fx.scratchSpeed, 0.2f, 10.0f);
+        float period = 1.0f / speedHz;
+        float quarter = period / 4.0f;
+        float t = fmodf(now / 1000.0f, period);
+        int intensity = constrain(fx.scratchRange, 0, 100);
+        byte cwVal = (byte)(129 - (intensity * 29) / 100);
+        byte ccwVal = (byte)(135 + (intensity * 75) / 100);
+        byte anchorVal = map[constrain(fx.currentIdx, 0, mapLen - 1)];
+        if (t < quarter) val = cwVal;
+        else if (t < quarter * 2.0f) val = anchorVal;
+        else if (t < quarter * 3.0f) val = ccwVal;
+        else val = anchorVal;
+      } else if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0) {
+        // Fixture-native shake fallback (CH8/rotating gobo): hold one of the fixture's 5 built-in
+        // shake rates steady. Confirmed live on hardware 2026-08-17 that this sub-zone is 5 discrete,
+        // ascending speed steps handled entirely by the fixture's own firmware, not a continuous
+        // range -- a fine-grained software oscillation across it (an earlier version of this code)
+        // just made the fixture rapidly cycle between its 5 built-in speeds, which read as "janky".
+        int stage = constrain((int)roundf(fx.scratchSpeed), 1, 5);
         val = (byte)constrain(shakeBase + (fx.currentIdx - 1) * 5 + (stage - 1), 0, 255);
       } else {
         val = map[constrain(fx.currentIdx, 0, mapLen - 1)];
@@ -371,15 +392,16 @@ void updateEngines(unsigned long now) {
       wasActive = true;
     } else if (wasActive) {
       // Land on the plain, non-shake value for whatever gobo was last selected -- otherwise a stop
-      // caught mid-shake leaves the channel sitting inside the shake zone, and the fixture keeps
-      // shaking on its own (its own onboard firmware, not ours) even though we consider it stopped.
+      // caught mid-shake leaves the channel sitting inside the shake/rotation zone, and the fixture
+      // keeps shaking/spinning on its own (its own onboard firmware, not ours) even though we
+      // consider it stopped.
       dmxData[channel] = map[constrain(fx.currentIdx, 0, mapLen - 1)];
       wasActive = false;
     }
   };
-  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]), 0, colWasActive);
-  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]), 211, sgWasActive);
-  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]), 226, rgWasActive);
+  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]), 0, colWasActive, false);
+  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]), 0, sgWasActive, true);
+  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]), 226, rgWasActive, false);
 
   if (chaserActive && !isDipping) { 
     if (stepStartTime == 0) stepStartTime = now;

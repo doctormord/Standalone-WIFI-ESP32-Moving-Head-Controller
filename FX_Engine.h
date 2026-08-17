@@ -16,15 +16,25 @@ struct StepFX {
     unsigned long lastStepTime = 0;
     int currentIdx = 0;
     bool scratch = false;
-    // Which of the fixture's 5 built-in shake rates to hold (1=slowest, 5=fastest) within the narrow
-    // shake DMX sub-zone (see doc/content/mapping_sheds_160w_3in1_gobo.md). Confirmed live on hardware
-    // 2026-08-17: the fixture's own firmware steps through exactly 5 discrete, ascending shake speeds
-    // as the DMX value rises through the zone -- it is NOT a continuous range, so this selects one
-    // fixed value and holds it (no oscillation). Deliberately NOT added to SceneData/NVS -- SceneData
-    // is a raw sizeof()-checked binary blob (see backlog.md "Tech Debt"), and growing it would reset
-    // every currently-saved real preset on this device to defaults on next boot. Live-only for now:
-    // takes effect immediately, resets to default on preset/chaser recall or reboot.
-    int scratchSpeed = 3;
+    // Shake tuning. Meaning depends on which channel/technique runStep() uses for this StepFX
+    // (see Moving_Head_Horizon.ino):
+    //  - CH7 (static gobo, sgobFX): "rotation pulse" shake -- scratchSpeed is the oscillation rate in
+    //    Hz (continuous), scratchRange is 0-100% intensity (how far into the fixture's continuous CW/
+    //    CCW rotation zones each pulse reaches). Confirmed live on hardware 2026-08-17: alternating
+    //    brief CW/CCW rotation pulses around the currently selected gobo, with the plain index value
+    //    re-sent between pulses to re-anchor position, makes the wheel pendulum-swing in place instead
+    //    of scrolling through neighboring gobos -- a real, continuously adjustable shake instead of the
+    //    fixture's native 5 fixed steps.
+    //  - CH8 (rotating gobo, rgobFX): CH8 has no documented counter-rotation zone (only CH7 does), so
+    //    the rotation-pulse technique isn't available there without hijacking CH9 (which the separate
+    //    Rotation FX already owns). Keeps using the fixture's native 5-stage shake zone instead --
+    //    scratchSpeed here is the stage to hold (int 1-5), scratchRange is unused.
+    // Deliberately NOT added to SceneData/NVS -- SceneData is a raw sizeof()-checked binary blob (see
+    // backlog.md "Tech Debt"), and growing it would reset every currently-saved real preset on this
+    // device to defaults on next boot. Live-only for now: takes effect immediately, resets to default
+    // on preset/chaser recall or reboot.
+    float scratchSpeed = 3.0f;
+    int scratchRange = 40;
 };
 
 // =========================================================

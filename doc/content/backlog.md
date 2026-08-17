@@ -861,3 +861,47 @@ weiterverfolgt**, keine Code-Änderung. In
 `mapping_sheds_160w_3in1_gobo.md` festgehalten, damit diese Idee nicht
 nochmal ohne Grund aufkommt. Der bereits gebaute, fixture-native
 5-Stufen-Shake bleibt der richtige Weg für dieses Gerät.
+
+**2026-08-17, Fortsetzung — Rotation-Pulse-Shake für CH7 doch gebaut:
+User korrigierte die Testtechnik, funktioniert live.** Direkt im
+Anschluss an den obigen „nicht weiterverfolgt"-Eintrag stellte der User
+klar, dass er keine gehaltene Dauerrotation meinte, sondern **kurze,
+abwechselnde Pulse** zwischen CW- und CCW-Zone (nie lange genug in eine
+Richtung, um zum Nachbar-Gobo zu wandern), mit dem Index-Wert
+zwischendurch erneut gesendet, um Positions-Drift zu verhindern. Vor dem
+Bauen nochmal live getestet (diesmal richtig): Gobo 6 fest, CH7
+alterniert zwischen `129`/`135` (jeweils langsamste Stufe beider
+Richtungen, Stop bei `130`), Index `60` zwischendurch — User: „es wackelt
+und pendelt overlaying minimal links/rechts. nicht 100% smooth aber
+geht." Funktioniert.
+
+- **Neu gebaut:** `runStep()` bekommt einen `rotationPulse`-Modus (nur
+  für `sgobFX`/CH7 aktiviert): Vier-Phasen-Zyklus CW-Puls →
+  Index-Re-Anchor → CCW-Puls → Index-Re-Anchor, Timing über
+  `scratchSpeed` (jetzt wieder `float`, Hz, 0,2–10) gesteuert, Intensität
+  (wie weit in die Rotationszone hinein) über `scratchRange` (0–100%,
+  zurückgeholt). CH8 bleibt beim fixture-nativen 5-Stufen-Shake (keine
+  Gegenrichtung auf CH8 selbst verfügbar, CH9-Alternative würde mit
+  Rotation FX kollidieren) — UI zeigt jetzt automatisch die passenden
+  Regler je nach Wheel (Hz+Range für Static Gobo, Stufe 1–5 für Rotating
+  Gobo).
+- **Live verifiziert** (echte Firmware, kein externer curl-Loop mehr
+  nötig für den Effekt selbst): Start → sichtbares Pendeln bestätigt,
+  Stop mit `mv=60` → CH7 bleibt sauber bei Gobo 6, kein Zurückspringen.
+- **Nebenbefund während des Tests:** ein unerwarteter Sync-Konflikt
+  (`sgA` sprang ohne mein Zutun auf `0` zurück) — höchstwahrscheinlich
+  ein offener Browser-Tab mit der Web-UI, der parallel zu meinen
+  curl-Tests lief und das bereits in „Bekannte kleine Issues"
+  dokumentierte Mehrfach-Client-Sync-Problem ausgelöst hat. Kein neuer
+  Bug, nach Schließen aller Browser-Tabs lief der Test sauber durch.
+- **Nächster möglicher Schritt (noch nicht gebaut):** User fragte nach
+  Speed-/Intensitäts-Rampen über die Zeit („wa-wa-wosh", sanft anlaufen,
+  kurz aufdrehen) — technisch gut machbar mit derselben Modulator-Technik
+  wie bei Dimmer-/Rotation-FX, bewusst als separater Folgeschritt
+  zurückgestellt, um die gerade verifizierte Basis nicht durch weitere
+  Komplexität zu gefährden, bevor sie dokumentiert/committet ist.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
+auf dem echten Gerät geflasht (`upload` + `uploadfs`) und live per `curl`
+funktional bestätigt (Start, laufender Zustand, sauberer Stop). Details
+in `history.md`.

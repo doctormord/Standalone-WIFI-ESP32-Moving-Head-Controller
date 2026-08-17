@@ -158,21 +158,33 @@ innerhalb der Zone mehr (eine frühere Version tat das versehentlich und
 ließ die Fixture dadurch ständig zwischen ihren 5 eingebauten
 Geschwindigkeiten hin- und herspringen).
 
-**Rotation/Scroll-Zone (100–210) ist KEIN Ersatz für Shake — live
-widerlegt (2026-08-17).** Idee war, einen eigenen, stufenlosen Shake
-selbst zu bauen, indem man schnell zwischen einem kleinen CW- und
-CCW-Rotationswert hin- und herschaltet (beide Zonen sind laut Handbuch
-stufenlos geschwindigkeits-gemappt, anders als die 5-stufige
-Shake-Zone). Live getestet: Gobo 1 ausgewählt, dann auf einen niedrigen
-CW-Rotationswert (CH7=105) gewechselt. User-Beobachtung: „ist nur
-durchgelaufen... ansonsten constant speed" — die Zone dreht das
-**gesamte Rad kontinuierlich durch verschiedene Gobo-Motive**, sie
-wackelt NICHT das aktuell gewählte einzelne Gobo an Ort und Stelle. Ein
-selbstgebauter Shake über CW/CCW-Alternation auf dieser Zone würde daher
-wie ein wildes Vor-und-Zurück-Spinnen durch mehrere Motive aussehen,
-nicht wie ein sauberes Wackeln — die 5-stufige Shake-Zone bleibt der
-einzige Weg zu einem echten, sauberen Einzel-Gobo-Wackeln auf diesem
-Fixture. Nicht weiterverfolgt.
+**Rotation/Scroll-Zone (100–210) als selbstgebauter, stufenloser Shake —
+zwei Live-Tests, gegensätzliches Ergebnis, korrekte Technik gefunden
+(2026-08-17).** Erster Test (sustained rotation, Gobo 1 fest auf einen
+niedrigen CW-Wert wie `CH7=105` für 6+ Sekunden gehalten): „ist nur
+durchgelaufen... ansonsten constant speed" — bei einer **gehaltenen**
+Dauerrotation dreht das gesamte Rad kontinuierlich durch verschiedene
+Gobo-Motive, kein Wackeln an Ort und Stelle. Das ist aber nicht die
+richtige Technik — der eigentliche Vorschlag war, **kurze, abwechselnde
+Pulse** zwischen CW- und CCW-Zone zu senden (nie eine Richtung lange
+genug halten, um zum Nachbar-Gobo zu wandern), mit dem Index-Wert
+zwischendurch erneut gesendet, um die Position zu verankern und Drift zu
+verhindern (keine Rückkopplungs-/Positionsregelung in der
+Rotations-Zone, nur offene Geschwindigkeitssteuerung). Zweiter Test mit
+dieser korrigierten Technik (Gobo 6 fest, `CH7` alterniert zwischen
+`129` [langsamste CW] und `135` [langsamste CCW], Index `60` zwischen
+den Pulsen erneut gesendet): „es wackelt und pendelt overlaying minimal
+links/rechts. nicht 100% smooth aber geht" — funktioniert wie erwartet.
+**Jetzt fest implementiert** als „Rotation-Pulse-Shake" für CH7
+(`runStep()` in `Moving_Head_Horizon.ino`, `rotationPulse=true` nur für
+`sgobFX`) — echte, kontinuierlich einstellbare Speed (Hz) und Range
+(Intensität) statt der 5 festen Fixture-Stufen. Zonen-Referenz: CW
+100(langsam)–129(schnell), Stop 130–134, CCW 135(langsam)–210(schnell).
+CH8 (rotierendes Gobo) hat keine dokumentierte Gegenrichtung auf sich
+selbst und bleibt daher beim fixture-nativen 5-Stufen-Shake (siehe
+`StepFX::scratchSpeed`-Kommentar in `FX_Engine.h` für die genaue
+Begründung inkl. der CH9/Rotation-FX-Kollision, die eine CH9-basierte
+Alternative verhindert).
 
 ### CH8 — Gobo (rotierend, Rad 2, 6 Gobos + Open)
 | DMX | Funktion |

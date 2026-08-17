@@ -1064,15 +1064,26 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   }
 
   function ChaserFx({ title, dotKey, accent, state, setState, type }) {
-    const lookup = { col: { list: COLOR_STEPS, sKey: 'colSt', eKey: 'colEn', hKey: 'colHo', tKey: 'colTr', syKey: 'colSy', running: 'colFxRunning' }, sg: { list: SGOBOS, sKey: 'sgSt', eKey: 'sgEn', hKey: 'sgHo', tKey: 'sgTr', syKey: 'sgSy', running: 'sgFxRunning', scKey: 'sgSc', spKey: 'sgSp' }, rg: { list: RGOBOS, sKey: 'rgSt', eKey: 'rgEn', hKey: 'rgHo', tKey: 'rgTr', syKey: 'rgSy', running: 'rgFxRunning', scKey: 'rgSc', spKey: 'rgSp' } };
+    const lookup = { col: { list: COLOR_STEPS, sKey: 'colSt', eKey: 'colEn', hKey: 'colHo', tKey: 'colTr', syKey: 'colSy', running: 'colFxRunning' }, sg: { list: SGOBOS, sKey: 'sgSt', eKey: 'sgEn', hKey: 'sgHo', tKey: 'sgTr', syKey: 'sgSy', running: 'sgFxRunning', scKey: 'sgSc', spKey: 'sgSp', rngKey: 'sgRng' }, rg: { list: RGOBOS, sKey: 'rgSt', eKey: 'rgEn', hKey: 'rgHo', tKey: 'rgTr', syKey: 'rgSy', running: 'rgFxRunning', scKey: 'rgSc', spKey: 'rgSp' } };
     const cfg = lookup[type];
     return (
       <Accordion title={title} dot={FX_HUE[dotKey]} badge={state[cfg.running] ? 'RUN' : null}>
         {cfg.scKey && <div style={{ marginBottom: 6 }}><Dropdown value={state[cfg.scKey]} onChange={(v) => setState((s) => ({ ...s, [cfg.scKey]: parseInt(v) }))} options={[[0, 'Effect · Snap'], [1, 'Effect · Shake (Wobble)']]} accent={accent} dense /></div>}
-        {cfg.scKey && state[cfg.scKey] === 1 && (
+        {cfg.scKey && state[cfg.scKey] === 1 && cfg.rngKey && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 6 }}>
+            {/* Custom "rotation pulse" shake (CH7/static gobo only) -- rocks the wheel between the
+                fixture's continuous CW/CCW rotation zones instead of using its 5 fixed native steps,
+                confirmed live on hardware 2026-08-17 to pendulum-swing in place rather than scroll to
+                neighboring gobos. Speed = oscillation rate, Range = how far each pulse reaches. */}
+            <LabeledSlider label="Shake speed" value={state[cfg.spKey]} onChange={(v) => setState((s) => ({ ...s, [cfg.spKey]: v }))} min={2} max={100} accent={accent} compact />
+            <LabeledSlider label="Shake range" value={state[cfg.rngKey]} onChange={(v) => setState((s) => ({ ...s, [cfg.rngKey]: v }))} min={0} max={100} unit="%" accent={accent} compact />
+          </div>
+        )}
+        {cfg.scKey && state[cfg.scKey] === 1 && !cfg.rngKey && (
           <div style={{ marginBottom: 6 }}>
             {/* The fixture's shake zone is 5 discrete, ascending built-in speeds (confirmed live on
-                hardware 2026-08-17), not a continuous range -- this picks one and holds it. */}
+                hardware 2026-08-17), not a continuous range -- this picks one and holds it. CH8 lacks
+                the counter-rotation zone CH7 has, so it can't use the rotation-pulse technique. */}
             <LabeledSlider label="Shake speed" value={state[cfg.spKey]} onChange={(v) => setState((s) => ({ ...s, [cfg.spKey]: v }))} min={1} max={5} step={1} accent={accent} compact />
           </div>
         )}
@@ -1468,7 +1479,7 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'PATCH'];
       grFxRunning: false, grSt: 135, grEn: 190, grMo: 0, grCu: 3, grSp: 2000, grTr: 0, grSy: 3,
       prFxRunning: false, prSt: 193, prEn: 255, prMo: 0, prCu: 3, prSp: 2000, prTr: 0, prSy: 3,
       colFxRunning: false, colSt: 0, colEn: 19, colHo: 2000, colTr: 0, colSy: 3,
-      sgFxRunning: false, sgSt: 0, sgEn: 9, sgHo: 2000, sgTr: 0, sgSy: 3, sgSc: 0, sgSp: 3,
+      sgFxRunning: false, sgSt: 0, sgEn: 9, sgHo: 2000, sgTr: 0, sgSy: 3, sgSc: 0, sgSp: 30, sgRng: 40,
       rgFxRunning: false, rgSt: 0, rgEn: 6, rgHo: 2000, rgTr: 0, rgSy: 3, rgSc: 0, rgSp: 3,
       damping: 50, fadeTime: 2000, fadeCurve: 3,
       mapPoints: [{x:0.1,y:0.1,pan:32767,tilt:32767},{x:0.9,y:0.1,pan:32767,tilt:32767},{x:0.9,y:0.9,pan:32767,tilt:32767},{x:0.1,y:0.9,pan:32767,tilt:32767}],
@@ -1511,7 +1522,7 @@ const isReceiving = useRef(false);
               next.grFxRunning = isLocalDirty('grFxRunning') ? prev.grFxRunning : !!d.grA; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
               next.prFxRunning = isLocalDirty('prFxRunning') ? prev.prFxRunning : !!d.prA; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
               next.colFxRunning = isLocalDirty('colFxRunning') ? prev.colFxRunning : !!d.cA; next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy;
-              next.sgFxRunning = isLocalDirty('sgFxRunning') ? prev.sgFxRunning : !!d.sgA; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp ?? prev.sgSp;
+              next.sgFxRunning = isLocalDirty('sgFxRunning') ? prev.sgFxRunning : !!d.sgA; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp != null ? Math.round(d.sgSp * 10) : prev.sgSp; next.sgRng = d.sgRng ?? prev.sgRng;
               next.rgFxRunning = isLocalDirty('rgFxRunning') ? prev.rgFxRunning : !!d.rgA; next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc; next.rgSp = d.rgSp ?? prev.rgSp;
               next.showRunning = isLocalDirty('showRunning') ? prev.showRunning : !!d.chA; next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; next.transMode = d.dip ?? prev.transMode;
             }
@@ -1569,7 +1580,7 @@ const isReceiving = useRef(false);
       if (p.grFxState !== JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy])) { p.grFxState = JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy]); if(!isReceiving.current) { dirtyUntilRef.current.grFxRunning = Date.now() + 2500; tFetch(`/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}`, 'mfx_gr'); } }
       if (p.prFxState !== JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy])) { p.prFxState = JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy]); if(!isReceiving.current) { dirtyUntilRef.current.prFxRunning = Date.now() + 2500; tFetch(`/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}`, 'mfx_pr'); } }
       if (p.colFxState !== JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy])) { p.colFxState = JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy]); if(!isReceiving.current) { dirtyUntilRef.current.colFxRunning = Date.now() + 2500; tFetch(`/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}`, 'cfx'); } }
-      if (p.sgFxState !== JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc, s.sgSp])) { p.sgFxState = JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc, s.sgSp]); if(!isReceiving.current) { dirtyUntilRef.current.sgFxRunning = Date.now() + 2500; tFetch(`/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}&spd=${s.sgSp}&mv=${s.sgoboBase + s.sgoboOff}`, 'sgfx'); } }
+      if (p.sgFxState !== JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc, s.sgSp, s.sgRng])) { p.sgFxState = JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc, s.sgSp, s.sgRng]); if(!isReceiving.current) { dirtyUntilRef.current.sgFxRunning = Date.now() + 2500; tFetch(`/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}&spd=${(s.sgSp/10).toFixed(1)}&rng=${s.sgRng}&mv=${s.sgoboBase + s.sgoboOff}`, 'sgfx'); } }
       if (p.rgFxState !== JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc, s.rgSp])) { p.rgFxState = JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc, s.rgSp]); if(!isReceiving.current) { dirtyUntilRef.current.rgFxRunning = Date.now() + 2500; tFetch(`/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}&spd=${s.rgSp}&mv=${s.rgoboBase + s.rgoboOff}`, 'rgfx'); } }
       if (p.chaserState !== JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync])) { p.chaserState = JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync]); if(!isReceiving.current) { dirtyUntilRef.current.showRunning = Date.now() + 2500; tFetch(`/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog'); } }
       

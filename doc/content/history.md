@@ -2014,3 +2014,125 @@ die eine potenziell aufwendige Fehlimplementierung verhindert hat. In
 `mapping_sheds_160w_3in1_gobo.md` festgehalten (neuer Abschnitt direkt
 bei der CH7-Shake-Dokumentation), damit die Idee nicht ohne Grund erneut
 aufkommt.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Rotation-Pulse-Shake für CH7 doch gebaut: die Testtechnik war falsch, nicht die Idee
+
+Direkt im Anschluss an das „nicht weiterverfolgt"-Fazit widersprach der
+User berechtigt: „ne, du musst quasi ein wert aus 100-129 und 135-210
+abwechselnd senden, dann hast du dein shake. 135 ist langsam eine
+richtung, aufsteigend schneller, 129 ist langsam andere richtung,
+absteigend schneller. keine drehung ist 130... idealerweise müssten wir
+auf dem gobo mittig bleiben und shaken." Der vorige Test hatte eine
+**gehaltene Dauerrotation** geprüft (6+ Sekunden auf einem festen
+Rotationswert) — das ist etwas fundamental anderes als **kurze,
+abwechselnde Pulse** zwischen beiden Richtungen, die nie lange genug in
+eine Richtung laufen, um das Nachbar-Gobo zu erreichen. Die ursprüngliche
+Idee war also nicht falsch, nur der erste Test hatte die falsche
+Technik geprüft.
+
+### Zonen-Verständnis korrigiert
+
+Wichtige Präzisierung vom User zur Geschwindigkeitsrichtung innerhalb
+der Zonen: `130` = keine Drehung (Stop), `129` = langsamste
+Uhrzeigersinn-Drehung (Geschwindigkeit steigt, je weiter man sich in
+Richtung `100` von `130` entfernt), `135` = langsamste
+Gegen-Uhrzeigersinn-Drehung (Geschwindigkeit steigt Richtung `210`).
+Also: Geschwindigkeit nimmt mit dem **Abstand vom Stop-Wert** zu, nicht
+mit dem absoluten DMX-Wert selbst — sinnvoll, da der Stop-Bereich
+(`130–134`) mittig zwischen beiden Rotationszonen liegt.
+
+### Korrigierter Live-Test vor dem Bauen
+
+Statt sofort loszubauen, erst die richtige Technik verifiziert: Gobo 6
+fest ausgewählt (`CH7=60`), dann `CH7` alternierend zwischen `129`
+(langsamste CW) und `135` (langsamste CCW) gesetzt, ~150ms pro Richtung,
+über ~6 Sekunden. User beobachtete live: „wackelt links rechts
+aufsteigend..." (erste Iteration, bevor der Test versehentlich als
+Dauerrotation missverstanden wurde) — nach Klarstellung der Technik im
+zweiten Anlauf mit Re-Anchor zwischen den Pulsen: „gobo scheibe pendelt
+links rechts langsam" — die Technik funktioniert, das Gobo pendelt an
+Ort und Stelle statt zum Nachbarn zu wandern.
+
+Der curl-basierte Test selbst lief deutlich langsamer als erwartet (der
+User bemerkte: „es läuft schon seit ewigkeiten") — das lag ausschließlich
+an der Testmethode selbst (jeder curl-Aufruf ist ein einzelner externer
+HTTP-Roundtrip übers WLAN, nicht an der eigentlichen Technik), nicht an
+einem Problem der späteren Firmware-Implementierung, die intern ohne
+Netzwerk-Overhead läuft.
+
+### Implementierung
+
+`StepFX` (`FX_Engine.h`) bekommt `scratchRange` zurück (war in der
+vorigen Runde entfernt worden, jetzt mit neuer, echter Bedeutung:
+0–100% Intensität für CH7) und `scratchSpeed` wechselt von einem
+diskreten 1–5-Stufenwert zurück zu einem kontinuierlichen Hz-Float
+(0,2–10,0) — beide Felder haben jetzt, abhängig vom Kanal, zwei
+unterschiedliche, dokumentierte Bedeutungen (siehe ausführlicher
+Kommentar direkt am Feld).
+
+`runStep()` (`Moving_Head_Horizon.ino`) bekommt einen neuen
+`rotationPulse`-Parameter. Wenn aktiv (nur `sgobFX`/CH7): Vier-Phasen-
+Zyklus über eine volle Periode (`1/scratchSpeed` Sekunden, per
+`fmodf(now/1000.0f, period)` bestimmt) — CW-Puls → Index-Re-Anchor →
+CCW-Puls → Index-Re-Anchor, je ein Viertel der Periode. CW-/CCW-Werte
+werden aus `scratchRange` berechnet: `129 - intensity*29/100` (CW, näher
+an `100` bei hoher Intensität) bzw. `135 + intensity*75/100` (CCW, näher
+an `210` bei hoher Intensität). Der Index-Re-Anchor-Wert ist einfach
+`map[currentIdx]` — der reguläre, gerade gewählte Gobo-Wert, exakt wie
+vom User vorgeschlagen. `rgobFX`/CH8 bleibt unverändert beim
+fixture-nativen 5-Stufen-Shake aus der vorigen Runde (`rotationPulse=
+false`) — CH8 hat laut Handbuch keine dokumentierte Gegenrichtung auf
+sich selbst, eine CH9-basierte Alternative würde mit der bereits
+existierenden Rotation FX kollidieren (beide würden denselben Kanal
+beschreiben wollen). Ausführlich im `StepFX::scratchSpeed`-Kommentar in
+`FX_Engine.h` begründet.
+
+Frontend (`data/index.html`): `ChaserFx` zeigt jetzt je nach Wheel
+unterschiedliche Regler — „Shake speed" (Hz) + „Shake range" (%) für
+Static Gobo, nur „Shake speed" (Stufe 1–5) für Rotating Gobo, gesteuert
+über `cfg.rngKey` (nur bei `sg` gesetzt). `/sgobfx` bekommt einen neuen
+`rng`-Parameter, `/api/get_dmx` exponiert `sgRng` wieder.
+
+### Verifikation — echte Firmware, kein externer curl-Loop mehr für den Effekt
+
+Nach dem Flash Start/Stop direkt gegen die echte Firmware getestet (der
+Shake-Zyklus selbst läuft jetzt intern in `updateEngines()`, keine
+externen curl-Aufrufe pro Puls mehr nötig): `/sgobfx?a=1&st=6&en=6&sc=1&
+spd=3.0&rng=40` gestartet, User bestätigte live: „es wackelt und pendelt
+overlaying minimal links/rechts. nicht 100% smooth aber geht" — die
+leichte Unrundheit ist plausibel durch die Index-Re-Anchor-Phasen erklärt
+(der Motor muss zwischen Rotations-Kommando und Index-Seek-Kommando
+kurz „umschalten"), aber die Kernfunktion (Pendeln statt Wandern) ist
+bestätigt. Stop mit `mv=60`: `sgA` wird `0`, CH7 bleibt sauber bei `60`
+(Gobo 6), kein Zurückspringen auf White.
+
+### Nebenbefund während des Live-Tests: Mehrfach-Client-Sync-Konflikt
+
+Während des Tests sprang `sgA` einmal unerwartet auf `0` zurück, ohne
+dass ein Stop-Kommando gesendet wurde — dabei blieben `sgSp`/`sgRng`
+korrekt auf den gesetzten Werten (`3.00`/`40`), was gegen einen
+Geräte-Reboot spricht (ein Reboot hätte auch `dmxData[1]` (Dimmer) auf
+den Boot-Default `0` zurückgesetzt, tatsächlich stand dort aber ein
+realer, von-Null-verschiedener Wert). Wahrscheinlichste Erklärung: ein
+parallel offener Browser-Tab mit der Web-UI, dessen eigener, noch nicht
+aktualisierter React-State (`sgFxRunning`) beim nächsten Sync-Zyklus
+einen `a=0`-Befehl gesendet hat — genau das bereits in `backlog.md`
+unter „Bekannte kleine Issues" dokumentierte Mehrfach-Client-Sync-
+Problem, kein neuer Bug. Nach Schließen aller Browser-Tabs lief der
+zweite Testdurchlauf ohne dieses Symptom durch.
+
+### Nächster möglicher Schritt, bewusst zurückgestellt
+
+User fragte direkt im Anschluss, ob jetzt auch Speed-/Intensitäts-Rampen
+über die Zeit möglich wären („wa-wa-wosh", sanftes Anlaufen, kurzes
+Aufdrehen, bissi Shake und dann Superspeed-Wechsel). Technisch gut
+machbar mit derselben Modulator-Technik, die bereits bei Dimmer-FX und
+Rotation FX für Mode/Curve/Speed verwendet wird — bewusst nicht in
+derselben Runde zusätzlich gebaut, um die gerade frisch verifizierte
+Basis (Start/Stop/Pendeln) erst zu dokumentieren und zu sichern, bevor
+eine weitere Komplexitätsschicht draufkommt.
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
+angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`).
