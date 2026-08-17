@@ -31,21 +31,30 @@ void setupAPI() {
   server.on("/vendor/react.js", []() {
     File f = LittleFS.open("/vendor/react.production.min.js.gz", "r");
     if (!f) { server.send(404, "text/plain", "not found"); return; }
-    server.sendHeader("Content-Encoding", "gzip");
+    // streamFile() detects the ".gz" filename itself and adds the
+    // Content-Encoding header automatically — an explicit sendHeader() call
+    // here would duplicate it (seen live: "Content-Encoding: gzip, gzip",
+    // which makes browsers attempt to gunzip the body twice and fail).
     server.streamFile(f, "application/javascript");
     f.close();
   });
   server.on("/vendor/react-dom.js", []() {
     File f = LittleFS.open("/vendor/react-dom.production.min.js.gz", "r");
     if (!f) { server.send(404, "text/plain", "not found"); return; }
-    server.sendHeader("Content-Encoding", "gzip");
+    // streamFile() detects the ".gz" filename itself and adds the
+    // Content-Encoding header automatically — an explicit sendHeader() call
+    // here would duplicate it (seen live: "Content-Encoding: gzip, gzip",
+    // which makes browsers attempt to gunzip the body twice and fail).
     server.streamFile(f, "application/javascript");
     f.close();
   });
   server.on("/vendor/babel.js", []() {
     File f = LittleFS.open("/vendor/babel.min.js.gz", "r");
     if (!f) { server.send(404, "text/plain", "not found"); return; }
-    server.sendHeader("Content-Encoding", "gzip");
+    // streamFile() detects the ".gz" filename itself and adds the
+    // Content-Encoding header automatically — an explicit sendHeader() call
+    // here would duplicate it (seen live: "Content-Encoding: gzip, gzip",
+    // which makes browsers attempt to gunzip the body twice and fail).
     server.streamFile(f, "application/javascript");
     f.close();
   });

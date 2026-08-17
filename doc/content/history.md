@@ -844,3 +844,72 @@ gefixt". Mit `pio run` und `pio run -t buildfs` verifiziert, beides
 Browser-Test — insbesondere Finding 1 (FX-Panel-Verdrahtung) verdient
 einen echten Hardware-/Browser-Test, sobald möglich, da es UI-Verhalten
 betrifft, das sich per Compile-Check nicht beobachten lässt.
+
+---
+
+## 2026-08-17 — Erster echter Hardware-Test: geflasht, live geprüft, ein neuer Bug gefunden und gefixt
+
+User: „ich schließe das device an und du machst das." Gerät via USB
+verbunden, als `/dev/cu.usbmodem1101` erkannt (VID:PID `303A:1001` =
+Espressif natives USB-JTAG/Serial, passend zum ESP32-C3 Supermini).
+
+**Geflasht:** `pio run -t upload --upload-port /dev/cu.usbmodem1101`
+(Firmware) und `pio run -t uploadfs --upload-port /dev/cu.usbmodem1101`
+(LittleFS/`data/`) — beide `[SUCCESS]`, Hash-Verifikation bestanden.
+
+**Boot-Log per pyserial mitgeschnitten** (DTR/RTS-Reset-Sequenz ausgelöst,
+dann 15s Serial gelesen, da `pio device monitor` sich mit `timeout` nicht
+sauber begrenzen ließ — macOS hat kein `timeout`/`gtimeout` vorinstalliert).
+ROM-Bootlog sauber (`ESP-ROM:esp32c3-api1-20210207`). Fünf
+`nvs_open failed: NOT_FOUND`-Zeilen von `Preferences.cpp` — zunächst
+unklar, dann durch `/api/state` erklärt: exakt die 5 ungenutzten
+Preset-Slots (`sc6`–`sc10`, nie gespeichert) schlagen beim
+Read-Only-`prefs.begin()` fehl, die 5 echten Presets (sc1–sc5, u. a.
+„Skybeams slow", „discomover BS") öffnen anstandslos — kein Bug, exakt
+das erwartete Verhalten für teilweise befüllte Preset-Slots.
+
+**Gerät bereits im Heimnetz** (nicht im AP-Fallback!): `ping
+movinghead.local` beantwortet unter `192.168.8.113` — die WLAN-
+Zugangsdaten waren schon vor dem Flash in der `"sys"`-NVS-Namespace
+gespeichert und blieben unangetastet, da `pio run -t upload`/`uploadfs`
+nur die App- bzw. LittleFS-Partition schreiben, nicht die separate
+NVS-Partition. Damit war Live-Testen per `curl` gegen die echte API
+möglich, ohne die WLAN-Verbindung des Testrechners anzufassen.
+
+**Live-Verifikation (nur lesende Endpunkte, keine Schreibzugriffe auf
+echte gespeicherte Show-Daten):** `/` liefert die React-UI (130.671 Bytes,
+`200 OK`), `/api/state` und `/api/get_dmx` liefern plausible, konsistente
+JSON-Antworten (reale Presets, 8 gepatchte Fixtures unter `/api/patch` mit
+Adressen 1/19/36/53/70/87/104/121 — passend zum 18-Kanal-Profil).
+
+**Dabei ein neuer, bis dahin unbekannter Bug live gefunden:**
+`/vendor/react.js`/`react-dom.js`/`babel.js` sendeten `Content-Encoding:
+gzip` **zweimal** (`curl -D -` zeigte den Header doppelt). Ursache:
+`WebServer::_streamFileCore()` (Framework-Quellcode nachgelesen,
+`~/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/
+src/WebServer.cpp:792`) erkennt selbst, wenn der übergebene Dateiname auf
+`.gz` endet, und setzt dann automatisch `Content-Encoding: gzip` —
+zusätzlich zum eigenen manuellen `server.sendHeader(...)`-Aufruf davor.
+Laut HTTP-Semantik (RFC 7230 §3.2.2) sind zwei gleichnamige Header
+äquivalent zu einer kommagetrennten Liste (`gzip, gzip`), was Browser dazu
+bringen kann, den Body fälschlich zweimal zu entgzippen und zu scheitern
+— hätte die gesamte Offline-Bündelung vom 2026-08-15 im Browser
+unbrauchbar machen können, obwohl `pio run -t buildfs` (reine
+Größenprüfung) das nie hätte auffangen können. **Gefixt:** die drei
+manuellen `sendHeader`-Aufrufe entfernt. Mit `curl --compressed`
+(dekomprimiert wie ein Browser) verifiziert: Body dekodiert jetzt sauber
+zu echtem React-Quellcode (`/**\n * @license React...`). Neu geflasht
+(nur Firmware, kein `uploadfs` nötig) und den Header-Fix am echten Gerät
+nochmal per `curl -D -` bestätigt (nur noch ein `Content-Encoding: gzip`).
+
+**Fazit:** Dieser Fund ist ein gutes Beispiel dafür, warum „kompiliert
+und Größe passt" nicht dasselbe ist wie „funktioniert wirklich" — der Bug
+war für `pio run`/`pio run -t buildfs` unsichtbar (beide prüfen nur
+Kompilierbarkeit bzw. Dateigröße, nicht HTTP-Verhalten), wurde aber beim
+ersten echten `curl`-Request gegen das Gerät sofort sichtbar.
+
+**Noch nicht geprüft:** die UI selbst im Browser (visuell), die 4 frisch
+reparierten FX-Panels tatsächlich am Fixture, der Blackout-Panic-Button,
+der Chaser-Restart-Fix — all das braucht entweder einen Browser-Test oder
+direkte Beobachtung des Fixtures, was in dieser (CLI-basierten) Session
+nicht möglich war.

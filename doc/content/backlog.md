@@ -353,3 +353,17 @@ Findings gefixt.** Alle selbst am Code verifiziert, bevor gefixt:
 
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`.
 Details in `history.md`.
+
+**2026-08-17, erster echter Hardware-Test — ein neuer Bug live gefunden
+und gefixt.** `/vendor/react.js`/`react-dom.js`/`babel.js` sendeten
+`Content-Encoding: gzip` **doppelt**: `WebServer::streamFile()` erkennt
+`.gz`-Dateinamen selbst und setzt den Header automatisch, das eigene
+`server.sendHeader("Content-Encoding", "gzip")` davor kam also zusätzlich
+oben drauf. Per `curl -D -` am echten Gerät gesehen (`Content-Encoding:
+gzip` zweimal) — laut HTTP-Semantik äquivalent zu `gzip, gzip`, was
+Browser dazu bringen kann, den Body fälschlich zweimal zu entgzippen und
+zu scheitern. Fix: die drei manuellen `sendHeader`-Aufrufe entfernt,
+`streamFile()` übernimmt das für `.gz`-Dateien allein. Mit `curl
+--compressed` (dekodiert wie ein Browser) verifiziert: Body dekodiert
+jetzt sauber zu echtem React-Quellcode. Kein `pio run -t buildfs` nötig
+(nur `WebAPI.h`, kein Dateisystem-Inhalt geändert).
