@@ -1,105 +1,93 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-17)
-> **Shake bekommt echte Speed-/Range-Parameter, plus ein eigener
-> Folgefehler aus der vorigen Runde gefunden und gefixt.** Noch am selben
-> Tag wie die Joystick-Curve-v3-Runde kam weiteres Live-Test-Feedback:
-> der Gobo-Chaser-Shake läuft mit korrektem Delay, aber Speed/Range lassen
-> sich nicht einstellen; nach dem Stoppen schüttelt das Gobo-Rad
-> eigenständig weiter; nach dem Stoppen des Gobo-Rot-Chasers bringt die
-> Auswahl von „White(0)" im Programmer-Tab nichts, erst ein anderer Wert
-> und dann zurück auf 0 funktioniert; Movement-FX „Size" bei 0 sollte
-> geklammert werden; ein Layout-Bug bei zwei „MAX"-Reglern (noch offen).
+> **Vier weitere Live-Test-Fixes, plus drei Punkte bewusst zur Rückfrage
+> an den User gestellt statt eines dritten Blindschusses.** Details in
+> `history.md` (2026-08-17, letzte Fortsetzung).
 >
-> **Gefixt (Details in `history.md`, 2026-08-17 vierte Fortsetzung):**
-> 1. **Shake ist jetzt eine echte, einstellbare Ramp** statt eines reinen
->    An/Aus auf einen fixen Wert: neue `scratchSpeed`/`scratchRange`-
->    Parameter, kontinuierliche Dreieckswellen-Oszillation innerhalb der
->    5-DMX-breiten Shake-Zone (jeden Frame neu berechnet). Neue UI-Regler
->    „Shake speed"/„Shake range" in `ChaserFx`. **Bewusst nicht in
->    `SceneData`/NVS persistiert** (würde die Größe des Preset-Blobs
->    ändern und echte gespeicherte Presets auf diesem Gerät zurücksetzen)
->    — live-only, resettet bei Preset-Recall/Neustart auf Default.
-> 2. **Shake lief nach dem Stoppen weiter** — gleiches Muster wie der
->    CH9-Bug: `runStep()` schrieb den Kanal nur bei jedem Chase-Schritt,
->    nie beim Stoppen. Landete der Kanal gerade in der Shake-Zone, schüttelt
->    das Fixture mit seiner EIGENEN Firmware weiter. Jetzt schreibt
->    `runStep()` beim Stoppen einmalig den regulären (nicht-shakenden)
->    Wert des zuletzt gewählten Gobos, für alle drei Wheel-Chaser
->    (Color/Static-Gobo/Rot-Gobo).
-> 3. **Eigener Folgefehler:** der `track()`-Skip-Fix aus der vorigen Runde
->    hielt die Vergleichs-Baseline still auf dem unveränderten manuellen
->    Wert synchron — traf der erste manuelle Wert nach dem Stoppen
->    zufällig damit zusammen (meist: beide „0"), erkannte `track()`
->    fälschlich „keine Änderung" und sendete nichts. Jetzt erzwingt der
->    erste Aufruf nach Skip-Ende immer einen Resend, unabhängig vom
->    Baseline-Vergleich.
-> 4. **Movement-FX „Size" jetzt auch serverseitig auf 1–100 geklammert**
->    (`/fx` und der Preset-Ladepfad) — vorher nur im Frontend, ein
->    gespeichertes `size=0` hätte die Bewegung unsichtbar kollabieren
->    lassen, während die FX weiter „läuft" gemeldet wird.
+> **Gefixt:**
+> 1. „Manual speed"-Regler (Dimmer-/Gobo-Rot-/Prisma-Rot-FX) zeigten
+>    irreführend „ms" an obwohl es eine echte 0–10000-Speed-Zahl ist
+>    (höher=schneller, nicht länger=langsamer). `TriggerBlock` bekommt
+>    einen `holdUnit`-Prop, für die drei Modulator-Stellen jetzt leer.
+> 2. Gobo-Chaser-Stop geht jetzt atomar auf den manuellen Setup-Wert
+>    (CH7/8) zurück statt auf die letzte Chaser-Position — neuer
+>    `mv`-Parameter an `/sgobfx`/`/rgobfx`.
+> 3. Abstand zwischen „Shake speed"/„Shake range"-Reglern vergrößert.
+> 4. Shake-Oszillation lief vorher an der absoluten Systemzeit gekoppelt
+>    unverändert über Gobo-Wechsel hinweg weiter (wirkte wie „eine Rampe
+>    über mehrere Changes") — jetzt an `lastStepTime` gekoppelt, jedes
+>    Gobo bekommt einen frischen, eigenen Shake-Zyklus.
 >
-> **Bewusst zurückgestellt, nicht geraten:** „Die beiden Slider für MAX
-> in Movement FX sind größer als das Layout initial" — ohne Browser-
-> Zugriff nicht sicher genug lokalisierbar (welche zwei Regler genau?
-> Speed/Size End in Movement FX, oder der neue „Max Speed"-Regler im
-> Joystick-Block?). Braucht eine genauere Beschreibung oder einen
-> Screenshot vom User, statt blind an der falschen Stelle zu suchen.
+> **Bewusst zur Rückfrage gestellt** (nach mehreren erfolglosen
+> Guess-Runden, siehe Chat für die genaue Frage an den User):
+> - Rotating-Gobo-Shake weiterhin „murksig", Range scheint Speed zu
+>   beeinflussen — plausibel, dass das Fixture die Shake-Zone nur binär
+>   interpretiert (feste interne Rate) und mein Sub-Zonen-Oszillations-
+>   Modell am tatsächlichen Fixture-Verhalten vorbeirät. Braucht echte
+>   Hardware-Rückmeldung statt weiterem Raten.
+> - Curve/Momentum=0: 1 Keyboard-Tick bei Max Speed 2000 bewegt ~11 Steps
+>   — könnte inhärente Konsequenz von „Curve=0 = wirklich sofort" sein
+>   (explizit so gewünscht) oder ein eigener Bug.
+> - Movement-Stop mit Momentum stoppt laut User abrupt statt weich zu
+>   faden — kein Bug im Code gefunden, evtl. wird der On-Screen-Joystick
+>   (eigene, unabhängige Spring-Animation) mit der physischen
+>   Fixture-Bewegung verwechselt, oder der jetzt gefixte Release-Burst-Bug
+>   hat das vorher überdeckt.
 >
-> **Was noch NICHT visuell/physisch verifiziert ist:** ob sich Shake jetzt
-> wie eine echte Ramp anfühlt und Speed/Range wirken, ob Shake nach dem
-> Stoppen wirklich aufhört, ob „White(0) nach Stop" jetzt sofort
-> funktioniert. Plus alles aus den vorigen Runden am selben Tag (Motor-
-> Stop, Modulator-Speed, Joystick-Curve v3, Fixture-Datenblatt) —
-> siehe die vorigen Handoff-Runden in `history.md`.
+> **Was noch NICHT visuell/physisch verifiziert ist:** alle vier neuen
+> Fixes, plus alles aus den vorigen Runden am selben Tag — siehe die
+> vorigen Handoff-Runden in `history.md`.
 >
 > **Bekannter offener Punkt (unverändert):** Der One-Click-Web-Installer
 > (`install.html` → `firmware/manifest.json`) ist kaputt, seit der alte
-> `firmware/`-Ordner beim GitHub-Push entfernt wurde.
+> `firmware/`-Ordner beim GitHub-Push entfernt wurde. Layout-Bug bei
+> „MAX"-Reglern in Movement FX weiterhin ungeklärt (braucht Screenshot/
+> genauere Beschreibung vom User).
 >
 > **Vier Findings weiterhin bewusst zurückgestellt** (echte
 > Restrukturierungen, siehe `backlog.md` → Tech Debt): `SceneData`-NVS-
-> Format-Versionierung (jetzt auch relevant für die neuen
-> Shake-Parameter, falls die live-only-Einschränkung mal stört),
-> `/api/get_dmx`s JSON-String-Bau auf `snprintf`/ArduinoJson umstellen,
-> die zwei unsynchronisierten Frontend-Polling-Loops zusammenlegen, der
-> Layout-Bug bei den „MAX"-Reglern (braucht erst mehr Info).
+> Format-Versionierung, `/api/get_dmx`s JSON-String-Bau auf
+> `snprintf`/ArduinoJson umstellen, die zwei unsynchronisierten Frontend-
+> Polling-Loops zusammenlegen, der Layout-Bug bei den „MAX"-Reglern.
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Am Fixture/im Browser nachtesten — insbesondere Shake-Speed/Range,
->    Shake-Stop-Verhalten, und den „White(0) nach Stop"-Fix. Wichtigster
->    nächster Schritt, den nur der User erledigen kann.
-> 2. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug
->    liefern, damit er gezielt gefixt werden kann.
-> 3. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
-> 4. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
+> 1. Antworten auf die drei offenen Rückfragen (Shake-Design-Richtung,
+>    Curve=0-Tap-Erwartung, Momentum-Fade-Reproduktion) — der wichtigste
+>    nächste Schritt, damit die letzten drei Punkte gezielt statt blind
+>    angegangen werden können.
+> 2. Am Fixture/im Browser die vier neuen Fixes aus dieser Runde
+>    nachtesten.
+> 3. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
+> 4. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
+> 5. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
 >    Split, ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder
 >    entfernen, übrige Tech-Debt-Punkte.
 
 ## Aktueller Status
 
-Elf Review-/Test-Runden durch (Details siehe `history.md`), inklusive
+Zwölf Review-/Test-Runden durch (Details siehe `history.md`), inklusive
 eines offiziellen Herstellerdatenblatts als Referenz
 (`mapping_sheds_160w_3in1_gobo.md`). Zielhardware: **ESP32-C3 Supermini**
 (Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
 lokal als auch auf GitHub (`future`-Branch) git-versioniert und läuft auf
-echter Hardware. Diese Session zeigt inzwischen ein wiederkehrendes
-Muster: sehr schnelle, iterative Fix-Runden auf direktes Live-Feedback
-hin führen gelegentlich selbst zu neuen, subtilen Bugs (siehe die
-Curve-Snap-Regression und den Track-Force-Resend-Folgefehler) — beide
-wurden nur gefunden, weil der User konsequent nach jedem Fix weiter live
-am Gerät testet, nicht durch eigene Vorab-Verifikation.
+echter Hardware. Diese Session zeigt weiterhin das Muster: sehr schnelle,
+iterative Fix-Runden auf direktes Live-Feedback funktionieren gut für
+klar diagnostizierbare Bugs, stoßen aber bei Punkten, die von
+undokumentiertem Fixture-internen Verhalten abhängen (Shake-Sub-Zonen),
+an eine Grenze — dort ist eine gezielte Rückfrage inzwischen sinnvoller
+als ein weiterer Blindschuss.
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 17) gemacht wurde
 
-1–10: siehe vorige Handoff-Snapshots / `history.md`.
-11. Fünfte Live-Test-Runde: Gobo-Chaser-Shake von reinem An/Aus zu
-    echten Speed-/Range-Parametern ausgebaut (bewusst live-only, nicht
-    NVS-persistiert); Shake-Weiterlaufen nach Stop gefixt (gleiches
-    Muster wie CH9); eigenen Folgefehler im `track()`-Skip-Mechanismus
-    gefunden und mit einem Force-Resend-Flag gefixt; Movement-FX-Size
-    serverseitig auf 1–100 geklammert; ein Layout-Bug bewusst
-    zurückgestellt statt blind geraten.
+1–11: siehe vorige Handoff-Snapshots / `history.md`.
+12. Sechste Live-Test-Runde: „Manual speed"-Einheit korrigiert
+    (Label-Bug, kein Formel-Bug), Gobo-Chaser-Stop geht jetzt atomar auf
+    den manuellen Setup-Wert zurück, Shake-Slider-Abstand vergrößert,
+    Shake-Phase pro Gobo-Wechsel zurückgesetzt (behebt „Rampe über
+    mehrere Changes"). Drei Punkte (Shake-Sub-Zonen-Verhalten,
+    Curve=0-Tap-Distanz, Momentum-Fade-Abruptheit) bewusst als
+    Rückfrage an den User gestellt statt eines dritten Blindschusses.
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 17).
 

@@ -657,3 +657,66 @@ Joystick-Block?). Rückfrage beim User nötig statt Rätselraten.
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 auf dem echten Gerät geflasht und per `curl` als online bestätigt.
 Details in `history.md`.
+
+**2026-08-17, Fortsetzung — vier weitere Punkte gefixt, drei bewusst zur
+Rückfrage gestellt statt weiter geraten.** Nutzer-Feedback nach dem
+Shake-Speed/Range-Batch:
+
+- **„Manual speed" bei Dimmer-/Gobo-Rot-/Prisma-Rot-FX zeigte die Einheit
+  „ms" — bei einer echten Speed-Zahl (höher = schneller) irreführend, las
+  sich wie eine Zeitdauer (höher = langsamer).** `TriggerBlock` nutzte
+  hartcodiert `unit="ms"`, obwohl die Komponente für zwei verschiedene
+  Semantiken wiederverwendet wird: echte Hold-Time in ms (StepFX-Chaser,
+  `unit="ms"` bleibt dort korrekt) und eine abstrakte 0–10000-„Speed"-Zahl
+  (Modulatoren). Neuer `holdUnit`-Prop, für die drei Modulator-Stellen
+  jetzt leer statt „ms".
+- **Gobo-Chaser (statisch + rotierend) stoppen sollte auf den manuellen
+  Setup-Wert (CH7/8) zurückgehen, nicht auf die letzte Chaser-Position.**
+  `/sgobfx`/`/rgobfx` akzeptieren jetzt einen `mv`-Parameter (der
+  aktuelle `sgoboBase+sgoboOff`/`rgoboBase+rgoboOff`-Wert), der beim
+  Stoppen (`a=0`) direkt und atomar auf den Kanal geschrieben wird —
+  kein zweistufiges „erst Chaser-Position, dann kurz danach per
+  `/set_all` korrigiert" mehr. `runStep()`s eigener Stop-Reset (regulärer
+  Gobo-Wert) bleibt als Fallback für Stop-Pfade ohne `mv` (z. B.
+  `/kill_fx`).
+- **Zu wenig Abstand zwischen „Shake speed"/„Shake range"-Reglern.**
+  Grid-Gap von 6 auf 16 erhöht.
+- **Shake schien „eine Rampe über mehrere Gobo-Changes hinweg" zu
+  machen.** Die Oszillationsphase war an die absolute Systemzeit
+  (`now`) gekoppelt, nicht an den jeweiligen Chase-Schritt — bei
+  niedriger Shake-Speed lief die Welle unverändert über Gobo-Wechsel
+  hinweg weiter, statt bei jedem neuen Gobo frisch zu beginnen. Jetzt an
+  `lastStepTime` gekoppelt (wird bei jedem Chase-Schritt zurückgesetzt),
+  jedes Gobo bekommt einen konsistenten, bei 0 startenden Shake-Zyklus.
+
+**Bewusst zur Rückfrage gestellt statt ein drittes Mal blind geraten**
+(siehe Chat/nächste Nachricht an den User):
+- „Rotating gobo shake funktioniert nicht so gut, für Speed und Range,
+  das ist irgendwie murksig" + „shake range scheint auch den speed zu
+  beeinflussen". Nach zwei Guess-Runden (fixer Offset → einstellbare
+  Oszillation → Phasen-Fix) weiterhin unbefriedigend. Das Handbuch
+  dokumentiert die Shake-Zonen nur als flache 5-Werte-Blöcke ohne
+  Sub-Zonen-Beschreibung (anders als die Rotation-Zonen, die explizit als
+  geschwindigkeits-gemappt beschrieben sind) — plausibel, dass das
+  Fixture die ganze Zone nur als binäres „Shake an, feste interne Rate"
+  interpretiert und mein Modell (feine Sub-DMX-Oszillation) am
+  Fixture-Verhalten vorbeirät. Weiteres Raten ohne echte Hardware-Daten
+  hat abnehmenden Grenznutzen.
+- „Mit curve/momentum 0 fährt der Fixture mit 1 Tick per Keyboard ca. 11
+  Steps bei Max Speed 2000" — könnte eine inhärente Konsequenz von
+  „Curve=0 heißt wirklich sofort volle Geschwindigkeit" sein (explizit so
+  gewünscht in einer vorigen Runde) kombiniert mit einer hohen Max-Speed,
+  oder ein eigenständiger Bug. Ohne genauere Reproduktion nicht sicher
+  unterscheidbar.
+- „Der Stop beim Movement mit Momentum faded nicht sauber auf 0, sondern
+  stoppt abrupt." Codeanalyse findet keinen offensichtlichen Bug in der
+  Momentum-Blend-Formel (unverändert seit dieser Session); denkbar, dass
+  vorher der jetzt gefixte Release-Burst-Bug (siehe oben, vorige Runde)
+  diese Beobachtung überdeckt hat, oder dass hier tatsächlich der
+  On-Screen-Joystick (der per eigener, unabhängiger Spring-Animation
+  sofort zurückspringt) mit der physischen Fixture-Bewegung verwechselt
+  wird. Braucht mehr Kontext.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
+auf dem echten Gerät geflasht und per `curl` als online bestätigt.
+Details in `history.md`.

@@ -355,8 +355,12 @@ void updateEngines(unsigned long now) {
         // Continuously oscillate within the gobo's narrow (5-DMX-unit) fixture-internal shake zone,
         // written every frame (not just on doStep) so Speed/Range are actually audible/visible instead
         // of holding one fixed value for the whole hold interval.
+        // Phased from lastStepTime (reset on every doStep), not raw `now` -- otherwise the oscillation
+        // is a single continuous wave that runs straight through gobo/step boundaries, which reads as
+        // a slow drift ("ramp") spanning several chase steps instead of each gobo getting its own,
+        // consistent shake starting from the same point every time.
         float speedHz = constrain(fx.scratchSpeed, 0.1f, 20.0f);
-        float phase = fmodf((now / 1000.0f) * speedHz, 1.0f);
+        float phase = fmodf(((now - fx.lastStepTime) / 1000.0f) * speedHz, 1.0f);
         float tri = phase < 0.5f ? phase * 2.0f : 2.0f - phase * 2.0f; // 0..1..0 triangle wave
         int width = constrain(fx.scratchRange, 0, 100) * 4 / 100; // 0..4 within the 5-wide zone
         val = (byte)constrain(shakeBase + (fx.currentIdx - 1) * 5 + (int)roundf(tri * width), 0, 255);

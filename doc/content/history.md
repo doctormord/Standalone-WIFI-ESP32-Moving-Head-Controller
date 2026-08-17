@@ -1598,3 +1598,97 @@ angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), danach per
 einstellbare Ramp anfühlt, ob er nach dem Stoppen wirklich aufhört, und
 ob der Track-Force-Resend-Fix das gemeldete Verhalten behebt, kann nur
 der User am echten Gerät bestätigen.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Vier weitere Fixes, drei Punkte bewusst zur Rückfrage gestellt
+
+Nächste Runde Live-Feedback, noch am selben Tag. Diesmal enthielt die
+Nachricht sowohl klar diagnostizierbare Bugs als auch Punkte, bei denen
+nach mehreren vorigen Guess-Runden eine Rückfrage sinnvoller war als ein
+weiterer Blindschuss.
+
+### Gefixt
+
+1. **„Manual speed" zeigte irreführend „ms" an.** `dimSp`/`grSp`/`prSp`
+   sind abstrakte 0–10000-Speed-Werte (höher = schneller), aber
+   `TriggerBlock` (gemeinsam mit den echten Hold-Time-Reglern der
+   StepFX-Chaser genutzt) hatte die Einheit `unit="ms"` hartcodiert — las
+   sich wie eine Zeitdauer (höher = langsamer), also genau andersherum
+   als die tatsächliche Bedeutung. Kein Formel-Bug, nur ein irreführendes
+   Label. Neuer `holdUnit`-Prop (Default `"ms"`, für die drei
+   Modulator-Stellen jetzt leer).
+2. **Gobo-Chaser-Stop sollte auf den manuellen Setup-Wert zurückgehen,
+   nicht auf die letzte Chaser-Position.** „wenn man die beiden gobo
+   chaser stoppt, sollten die beiden wieder zurück gehen auf das was
+   beim setup für ch 7 8 9 eingestellt ist." Der vorige Stop-Fix
+   (`runStep()`s `wasActive`-Reset) landet auf `map[currentIdx]` — einem
+   sicheren, aber für den User falschen Wert, wenn der manuelle Slider
+   etwas anderes zeigt (z. B. „Open"). Neuer `mv`-Parameter an
+   `/sgobfx`/`/rgobfx`: der Frontend sendet beim Stoppen den aktuellen
+   `sgoboBase+sgoboOff`/`rgoboBase+rgoboOff`-Wert mit, das Backend
+   schreibt ihn atomar in derselben Anfrage auf den Kanal — kein
+   zweistufiges „erst falsch, dann kurz danach korrigiert" mehr.
+   `runStep()`s eigener Fallback bleibt für Stop-Pfade ohne `mv`
+   (z. B. `/kill_fx`) bestehen.
+3. **Zu wenig Abstand zwischen den neuen Shake-Speed/-Range-Reglern.**
+   Grid-Gap 6→16.
+4. **Shake wirkte wie „eine Rampe über mehrere Gobo-Changes hinweg".**
+   Die Oszillationsphase (`fmodf(now/1000 * speedHz, 1.0)`) war an die
+   absolute Systemzeit gekoppelt statt an den jeweiligen Chase-Schritt —
+   bei niedriger Speed war eine Schwingungsperiode länger als ein
+   Hold-Intervall, wodurch die Welle unverändert über mehrere
+   Gobo-Wechsel hinweg weiterlief, statt bei jedem neuen Gobo frisch (bei
+   Phase 0) zu beginnen. Jetzt an `(now - fx.lastStepTime)` gekoppelt —
+   `lastStepTime` wird bei jedem `doStep` zurückgesetzt, jedes Gobo
+   bekommt einen konsistenten, eigenen Shake-Zyklus.
+
+### Bewusst zur Rückfrage gestellt statt ein drittes Mal geraten
+
+- **„Rotating gobo shake funktioniert nicht so gut, für speed und range,
+  das ist irgendwie murksig" + „shake range scheint auch den speed zu
+  beeinflussen".** Nach zwei Iterationen (fixer Offset in einer früheren
+  Runde → einstellbare Sub-Zonen-Oszillation → jetzt der Phasen-Fix)
+  weiterhin unbefriedigend. Das offizielle Handbuch
+  (`mapping_sheds_160w_3in1_gobo.md`) beschreibt die Shake-Zonen nur als
+  flache, unstrukturierte 5-DMX-Werte-Blöcke — anders als die
+  Rotation-Zonen, die explizit als geschwindigkeits-gemappt beschrieben
+  sind. Plausible Erklärung: das Fixture interpretiert die ganze
+  Shake-Zone nur binär („Shake an", mit fester interner Rate), und jede
+  Sub-Zonen-Variation, die meine Software sendet, hat am eigentlichen
+  Fixture-Verhalten keinen dokumentierten, vorhersagbaren Effekt — mein
+  Oszillationsmodell wäre dann grundsätzlich an der Realität vorbei
+  geraten, nicht nur falsch kalibriert. Weiteres Feintuning ohne echte
+  Hardware-Rückmeldung (z. B. ein manueller DMX-Sweep durch die Zone mit
+  Beobachtung am Gerät) hat abnehmenden Grenznutzen — deshalb als
+  Rückfrage an den User gestellt statt eines dritten Blindschusses.
+- **„Mit curve/momentum 0 fährt der Fixture mit 1 Tick per Keyboard ca.
+  11 Steps bei Max Speed 2000, so soll das nicht sein."** Bei
+  `joyCurve≈0` ist `accelMul` laut Design immer `1.0` (keine Rampe,
+  „sofort volle Geschwindigkeit" — explizit so von dieser Person in einer
+  vorigen Runde gewünscht). Bei `joyMomentum=0` ist der Blend ebenfalls
+  sofort `1.0` (Instant-Tracking). Ob 11 Steps bei einem sehr kurzen Tap
+  und Max Speed 2000 eine inhärente, erwartete Konsequenz dieser
+  „wirklich sofort, keine Bremse"-Kombination ist (ein Tap ist nie kürzer
+  als ein Netzwerk-Roundtrip, und bei hoher Geschwindigkeit legt selbst
+  ein kurzes Zeitfenster real messbare Strecke zurück) oder ein
+  eigenständiger Bug, ließ sich aus dem Code allein nicht sicher
+  unterscheiden.
+- **„Der Stop beim Movement mit Momentum faded nicht sauber auf 0,
+  sondern stoppt abrupt, so geht das nicht."** Die Momentum-Blend-Formel
+  selbst (`blend = 1 - pow(1-smoothFactor, dt*30)`) ist seit dieser
+  Session unverändert und mathematisch weiterhin plausibel (hohe
+  Momentum-Werte ergeben langsame Konvergenz). Kein offensichtlicher
+  Bug im Code gefunden. Zwei denkbare, nicht codeseitig unterscheidbare
+  Erklärungen: (a) der jetzt gefixte Release-Burst-Bug aus einer
+  vorigen Runde hat diese Beobachtung bisher überdeckt, oder (b) der
+  User beobachtet den On-Screen-Joystick-Punkt (der über eine eigene,
+  unabhängige ~180ms-Spring-Animation sofort auf die Mitte zurückspringt,
+  unabhängig vom physischen Momentum-Wert) statt der tatsächlichen
+  physischen Fixture-Bewegung. Braucht mehr Kontext vom User.
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
+angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), danach per
+`curl` als online bestätigt.

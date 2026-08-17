@@ -284,6 +284,12 @@ void setupAPI() {
       if (server.hasArg("spd")) sgobFX.scratchSpeed = constrain(server.arg("spd").toFloat(), 0.1f, 20.0f);
       if (server.hasArg("rng")) sgobFX.scratchRange = constrain(server.arg("rng").toInt(), 0, 100);
       if(sgobFX.active) { sgobFX.lastStepTime = millis(); sgobFX.currentIdx = sgobFX.startVal; }
+      // On stop, land on whatever the Programmer tab's manual CH7 control is currently set to (sent
+      // as "mv" alongside a=0) instead of the chaser's own last wheel position -- matches what the
+      // user expects to see once the chaser hands control back to the manual slider. runStep()'s own
+      // stop-reset (the plain, non-shake gobo value) still runs as a fallback for stop paths that
+      // don't know a manual value (e.g. /kill_fx).
+      if (!sgobFX.active && server.hasArg("mv")) dmxData[CH_GOBO] = (byte)constrain(server.arg("mv").toInt(), 0, 255);
       server.send(200, "OK");
   });
 
@@ -294,6 +300,9 @@ void setupAPI() {
       if (server.hasArg("spd")) rgobFX.scratchSpeed = constrain(server.arg("spd").toFloat(), 0.1f, 20.0f);
       if (server.hasArg("rng")) rgobFX.scratchRange = constrain(server.arg("rng").toInt(), 0, 100);
       if(rgobFX.active) { rgobFX.lastStepTime = millis(); rgobFX.currentIdx = rgobFX.startVal; }
+      // See /sgobfx above: on stop, land on the Programmer tab's manual CH8 value instead of the
+      // chaser's own last wheel position.
+      if (!rgobFX.active && server.hasArg("mv")) dmxData[CH_GOBO_ROT] = (byte)constrain(server.arg("mv").toInt(), 0, 255);
       server.send(200, "OK");
   });
 
