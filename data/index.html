@@ -439,7 +439,7 @@ function StickyJoystick({
 }
 
 function RangeSlider({
-  value = 0, min = 0, max = 255, onChange,
+  value = 0, min = 0, max = 255, onChange, onRelease,
   height = 8, accent = '#22d3ee', track = 'rgba(255,255,255,0.08)',
   thumb = '#fff', thumbSize = 22, glow = true, vertical = false,
 }) {
@@ -465,6 +465,7 @@ function RangeSlider({
   const handleUp = (e) => {
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
     setDragging(false);
+    onRelease?.();
   };
 
   const k = (value - min) / (max - min || 1);
@@ -746,9 +747,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9.5, color: 'rgba(255,255,255,0.4)', letterSpacing: 1.2, fontWeight: 600, marginBottom: 4, fontFamily: '"JetBrains Mono", monospace' }}>
           <span>◂ PULL</span><span style={{ color: Math.abs(value) > 5 ? accent : 'rgba(255,255,255,0.4)' }}>JOG · {value > 0 ? '+' : ''}{value}</span><span>PUSH ▸</span>
         </div>
-        <RangeSlider value={value} min={-100} max={100} onChange={onChange} accent={accent} track="rgba(255,255,255,0.06)" thumb="#fff" thumbSize={16} height={4} />
+        <RangeSlider value={value} min={-100} max={100} onChange={onChange} onRelease={onRelease} accent={accent} track="rgba(255,255,255,0.06)" thumb="#fff" thumbSize={16} height={4} />
         <div style={{ position: 'relative', height: 2, marginTop: -10, pointerEvents: 'none' }}><span style={{ position: 'absolute', left: '50%', top: -8, width: 1, height: 12, background: 'rgba(255,255,255,0.18)', transform: 'translateX(-50%)' }} /></div>
-        <div style={{ height: 0 }}><input type="range" style={{ display: 'none' }} onMouseUp={() => onRelease?.()} onTouchEnd={() => onRelease?.()} /></div>
       </div>
     );
   }
@@ -995,7 +995,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   function DimmerFx({ accent, state, setState }) {
     return (
       <Accordion title="Dimmer FX" dot={FX_HUE.dimmer} badge={state.dimFxRunning ? 'RUN' : null}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.dimMode} onChange={(v) => setState((s) => ({ ...s, dimMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.dimCurve} onChange={(v) => setState((s) => ({ ...s, dimCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.dimMo} onChange={(v) => setState((s) => ({ ...s, dimMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.dimCu} onChange={(v) => setState((s) => ({ ...s, dimCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
         <TriggerBlock trigger={state.dimTr} setTrigger={(v) => setState((s) => ({ ...s, dimTr: v }))} sync={state.dimSy} setSync={(v) => setState((s) => ({ ...s, dimSy: v }))} hold={state.dimSp} setHold={(v) => setState((s) => ({ ...s, dimSp: v }))} holdLabel="Manual speed" accent={accent} />
         <div style={{ marginTop: 6 }}><LabeledSlider label="Start value" value={state.dimSt} onChange={(v) => setState((s) => ({ ...s, dimSt: v }))} accent={accent} compact /><LabeledSlider label="End value" value={state.dimEn} onChange={(v) => setState((s) => ({ ...s, dimEn: v }))} accent={accent} compact /></div>
         <FxButton running={state.dimFxRunning} label="DIMMER FX" onClick={() => setState((s) => ({ ...s, dimFxRunning: !s.dimFxRunning }))} />
@@ -1007,14 +1007,14 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     return (
       <Accordion title="Rotation FX · gobo + prism" dot={FX_HUE.rotation} badge={state.grFxRunning || state.prFxRunning ? 'RUN' : null}>
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Gobo rotation · CH9</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.grMode} onChange={(v) => setState((s) => ({ ...s, grMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.grCurve} onChange={(v) => setState((s) => ({ ...s, grCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.grMo} onChange={(v) => setState((s) => ({ ...s, grMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.grCu} onChange={(v) => setState((s) => ({ ...s, grCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
         <TriggerBlock trigger={state.grTr} setTrigger={(v) => setState((s) => ({ ...s, grTr: v }))} sync={state.grSy} setSync={(v) => setState((s) => ({ ...s, grSy: v }))} hold={state.grSp} setHold={(v) => setState((s) => ({ ...s, grSp: v }))} holdLabel="Manual speed" accent={accent} />
         <LabeledSlider label="Start DMX" value={state.grSt} onChange={(v) => setState((s) => ({ ...s, grSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.grEn} onChange={(v) => setState((s) => ({ ...s, grEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.grFxRunning} label="GOBO ROT" onClick={() => setState((s) => ({ ...s, grFxRunning: !s.grFxRunning }))} />
 
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 }}>Prism rotation · CH11</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.prMode} onChange={(v) => setState((s) => ({ ...s, prMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.prCurve} onChange={(v) => setState((s) => ({ ...s, prCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.prMo} onChange={(v) => setState((s) => ({ ...s, prMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.prCu} onChange={(v) => setState((s) => ({ ...s, prCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
         <TriggerBlock trigger={state.prTr} setTrigger={(v) => setState((s) => ({ ...s, prTr: v }))} sync={state.prSy} setSync={(v) => setState((s) => ({ ...s, prSy: v }))} hold={state.prSp} setHold={(v) => setState((s) => ({ ...s, prSp: v }))} holdLabel="Manual speed" accent={accent} />
         <LabeledSlider label="Start DMX" value={state.prSt} onChange={(v) => setState((s) => ({ ...s, prSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.prEn} onChange={(v) => setState((s) => ({ ...s, prEn: v }))} min={135} max={255} accent={accent} compact />
@@ -1432,6 +1432,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
 
 const isReceiving = useRef(false);
     const prevRef = useRef({});
+    const dirtyUntilRef = useRef({});
+    const isLocalDirty = (f) => (dirtyUntilRef.current[f] || 0) > Date.now();
 
     useEffect(() => {
       const sync = async () => {
@@ -1450,14 +1452,14 @@ const isReceiving = useRef(false);
             if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
             if (d.dSm !== undefined) next.damping = d.dSm;
             if (d.fA !== undefined) {
-              next.fxRunning = !!d.fA; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS;
-              next.dimFxRunning = !!d.dA; next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy;
-              next.grFxRunning = !!d.grA; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
-              next.prFxRunning = !!d.prA; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
-              next.colFxRunning = !!d.cA; next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy;
-              next.sgFxRunning = !!d.sgA; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc;
-              next.rgFxRunning = !!d.rgA; next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc;
-              next.showRunning = !!d.chA; next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; next.transMode = d.dip ?? prev.transMode;
+              next.fxRunning = isLocalDirty('fxRunning') ? prev.fxRunning : !!d.fA; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS;
+              next.dimFxRunning = isLocalDirty('dimFxRunning') ? prev.dimFxRunning : !!d.dA; next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy;
+              next.grFxRunning = isLocalDirty('grFxRunning') ? prev.grFxRunning : !!d.grA; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
+              next.prFxRunning = isLocalDirty('prFxRunning') ? prev.prFxRunning : !!d.prA; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
+              next.colFxRunning = isLocalDirty('colFxRunning') ? prev.colFxRunning : !!d.cA; next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy;
+              next.sgFxRunning = isLocalDirty('sgFxRunning') ? prev.sgFxRunning : !!d.sgA; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc;
+              next.rgFxRunning = isLocalDirty('rgFxRunning') ? prev.rgFxRunning : !!d.rgA; next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc;
+              next.showRunning = isLocalDirty('showRunning') ? prev.showRunning : !!d.chA; next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; next.transMode = d.dip ?? prev.transMode;
             }
             if (d.fO !== undefined) { const nowMuted = d.fO === 1; setMuted(nowMuted); }
             if (d.hwA !== undefined) setMicOn(d.hwA === 1);
@@ -1490,14 +1492,14 @@ const isReceiving = useRef(false);
       
       if (Object.keys(batch).length > 0) { const params = new URLSearchParams(); Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v)); fetch('/set_all?' + params.toString()).catch(() => {}); }
       
-      if (p.fxState !== JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy])) { p.fxState = JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy]); if(!isReceiving.current) tFetch(`/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}`, 'fx'); }
-      if (p.dimFxState !== JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy])) { p.dimFxState = JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy]); if(!isReceiving.current) tFetch(`/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}`, 'mfx_dim'); }
-      if (p.grFxState !== JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy])) { p.grFxState = JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy]); if(!isReceiving.current) tFetch(`/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}`, 'mfx_gr'); }
-      if (p.prFxState !== JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy])) { p.prFxState = JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy]); if(!isReceiving.current) tFetch(`/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}`, 'mfx_pr'); }
-      if (p.colFxState !== JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy])) { p.colFxState = JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy]); if(!isReceiving.current) tFetch(`/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}`, 'cfx'); }
-      if (p.sgFxState !== JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc])) { p.sgFxState = JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc]); if(!isReceiving.current) tFetch(`/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}`, 'sgfx'); }
-      if (p.rgFxState !== JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc])) { p.rgFxState = JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc]); if(!isReceiving.current) tFetch(`/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}`, 'rgfx'); }
-      if (p.chaserState !== JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync])) { p.chaserState = JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync]); if(!isReceiving.current) tFetch(`/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog'); }
+      if (p.fxState !== JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy])) { p.fxState = JSON.stringify([s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy]); if(!isReceiving.current) { dirtyUntilRef.current.fxRunning = Date.now() + 2500; tFetch(`/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}`, 'fx'); } }
+      if (p.dimFxState !== JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy])) { p.dimFxState = JSON.stringify([s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy]); if(!isReceiving.current) { dirtyUntilRef.current.dimFxRunning = Date.now() + 2500; tFetch(`/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}`, 'mfx_dim'); } }
+      if (p.grFxState !== JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy])) { p.grFxState = JSON.stringify([s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy]); if(!isReceiving.current) { dirtyUntilRef.current.grFxRunning = Date.now() + 2500; tFetch(`/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}`, 'mfx_gr'); } }
+      if (p.prFxState !== JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy])) { p.prFxState = JSON.stringify([s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy]); if(!isReceiving.current) { dirtyUntilRef.current.prFxRunning = Date.now() + 2500; tFetch(`/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}`, 'mfx_pr'); } }
+      if (p.colFxState !== JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy])) { p.colFxState = JSON.stringify([s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy]); if(!isReceiving.current) { dirtyUntilRef.current.colFxRunning = Date.now() + 2500; tFetch(`/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}`, 'cfx'); } }
+      if (p.sgFxState !== JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc])) { p.sgFxState = JSON.stringify([s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc]); if(!isReceiving.current) { dirtyUntilRef.current.sgFxRunning = Date.now() + 2500; tFetch(`/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}`, 'sgfx'); } }
+      if (p.rgFxState !== JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc])) { p.rgFxState = JSON.stringify([s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc]); if(!isReceiving.current) { dirtyUntilRef.current.rgFxRunning = Date.now() + 2500; tFetch(`/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}`, 'rgfx'); } }
+      if (p.chaserState !== JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync])) { p.chaserState = JSON.stringify([s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync]); if(!isReceiving.current) { dirtyUntilRef.current.showRunning = Date.now() + 2500; tFetch(`/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog'); } }
       
       if (p.transMode !== s.transMode) { p.transMode = s.transMode; if(!isReceiving.current) tFetch('/trans?dip=' + s.transMode, 'trans'); }
       if (p.master !== s.master) { p.master = s.master; if(!isReceiving.current) tFetch(`/masterdim?v=${s.master}`, 'master'); }

@@ -62,8 +62,8 @@ public:
         lastUpdate = now;
         if(dt <= 0 || dt > 1.0f) dt = 0.02f; 
 
-        if (trigger == 0 || trigger >= 2) { 
-            phase += (speed / 100.0f) * dt * 2.0f; 
+        if (trigger == 0 || trigger >= 2) {
+            phase += (speed / 2000.0f) * dt * 2.0f;
         } else if (trigger == 1) {
             int safeSync = constrain(sync, 0, 6);
             unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];

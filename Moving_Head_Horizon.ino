@@ -256,11 +256,13 @@ void updateEngines(unsigned long now) {
 
   if (joyInputX != 0.0f || joyInputY != 0.0f || fabsf(joySmoothX) > 0.001f || fabsf(joySmoothY) > 0.001f) {
       mapIsMoving = false;
-      float curveX = powf(fabsf(joyInputX), joyCurve) * (joyInputX < 0 ? -1.0f : 1.0f); float curveY = powf(fabsf(joyInputY), joyCurve) * (joyInputY < 0 ? -1.0f : 1.0f);
       float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 30.0f);
-      joySmoothX += (curveX - joySmoothX) * blend; joySmoothY += (curveY - joySmoothY) * blend;
+      joySmoothX += (joyInputX - joySmoothX) * blend; joySmoothY += (joyInputY - joySmoothY) * blend;
       if (fabsf(joySmoothX) < 0.001f && joyInputX == 0.0f) joySmoothX = 0.0f; if (fabsf(joySmoothY) < 0.001f && joyInputY == 0.0f) joySmoothY = 0.0f;
-      float pD = joySmoothX * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * (joyMaxSpeed * 25.0f) * dt;
+      // Curve shapes the ramped value (not the raw input), so it produces a visible accel/decel feel
+      // even for keyboard input, which is always a saturated unit vector (pow(1, curve) would be a no-op there).
+      float curveX = powf(fabsf(joySmoothX), joyCurve) * (joySmoothX < 0 ? -1.0f : 1.0f); float curveY = powf(fabsf(joySmoothY), joyCurve) * (joySmoothY < 0 ? -1.0f : 1.0f);
+      float pD = curveX * (joyMaxSpeed * 25.0f) * dt; float tD = curveY * (joyMaxSpeed * 25.0f) * dt;
       
       exactPan += (joyPanRev ? pD : -pD); exactTilt += (joyTiltRev ? -tD : tD);
       exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
@@ -288,8 +290,14 @@ void updateEngines(unsigned long now) {
   if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
 
   if (moveFX.active) moveFX.process(now, masterSyncTime, globalBPM, syncBeats);
-  if (gRotFX.active) { float t; gRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[9] = (byte)t; }
-  if (pRotFX.active) { float t; pRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[11] = (byte)t; }
+
+  static bool gRotWasActive = false;
+  if (gRotFX.active) { float t; gRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[9] = (byte)t; gRotWasActive = true; }
+  else if (gRotWasActive) { dmxData[9] = 0; gRotWasActive = false; }
+
+  static bool pRotWasActive = false;
+  if (pRotFX.active) { float t; pRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[11] = (byte)t; pRotWasActive = true; }
+  else if (pRotWasActive) { dmxData[11] = 0; pRotWasActive = false; }
 
   if (dimFX.active) { dimFX.process(now, masterSyncTime, globalBPM, syncBeats, dimSmoothTarget); dimSmoothCurrent = dimSmoothTarget; } 
   else { if (dimSmoothVal > 0) { float sensitivity = (100.0f - dimSmoothVal) * 0.1f; dimSmoothCurrent += (dimSmoothTarget - dimSmoothCurrent) * sensitivity * dt * 10.0f; } else { dimSmoothCurrent = dimSmoothTarget; } }

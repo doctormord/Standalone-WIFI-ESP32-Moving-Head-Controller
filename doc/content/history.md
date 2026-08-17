@@ -913,3 +913,188 @@ reparierten FX-Panels tatsächlich am Fixture, der Blackout-Panic-Button,
 der Chaser-Restart-Fix — all das braucht entweder einen Browser-Test oder
 direkte Beobachtung des Fixtures, was in dieser (CLI-basierten) Session
 nicht möglich war.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Echter Hands-on-Hardware-Test, 7 gemeldete Bugs
+
+User hat das Gerät tatsächlich in Betrieb genommen (Fixture live beobachtet,
+nicht nur `curl`) und einen konkreten, ungefilterten Fehlerbericht geliefert
+(wörtlich, mit Tippfehlern): „kill all fx stopt nicht das prismrad
+(mindestens). static, rotating gogo stimmen offensichtlich die numbers
+nicht, z.b. gobo 6 static kommt nicht. da stimmen wohl die zahlen nicht, da
+ging früher immer. dimmer fx scheint kaputt, schaltet sich manchmal selbst
+aus, updated master dimmer slider, times stimmen iwie nicht, curves haben
+keine funktion. gobo rotation laufen auf internal timer extrem ruckelig,
+wenn andere zeiten als 1ms eingestellt sind. selbe bei prism rotation. das
+ging alles schon mal. wenn ich prism rotation ausschalte, läuft es einfach
+weiter ob wohl es vorher aus war. color chaser auch, läuft manchmal weiter
+nach stop oder geht selbst wieder an. offentlich ein sync problem web api.
+gobo chaser auf shake läuft einfach durch." Mitten in der Untersuchung kam
+ein Nachtrag dazu: der Curve-Parameter des Movement-Joysticks (virtuell und
+Pfeiltasten) habe ebenfalls keine Wirkung, und der „Jog"-Regler im Live-Tab
+snappe nach Loslassen nicht auf Mitte zurück.
+
+**Untersuchungsmethode:** Jeder Punkt wurde einzeln am Code nachvollzogen
+(nicht pauschal „gefixt"), inklusive `git log`-Checks, um zwischen echten
+Regressionen und alten, schon immer so gewesenen Verhaltensweisen zu
+unterscheiden.
+
+### Root-caused und gefixt (5 von 7 Kernpunkten + beide Nachträge)
+
+1. **„kill all fx stopt nicht das prismrad" / Gobo-Rotation-Motor läuft
+   nach Stop weiter.** `updateEngines()` (`Moving_Head_Horizon.ino`) schrieb
+   `dmxData[9]` (Gobo-Index/Rotation) und `dmxData[11]` (Prisma-Rotation)
+   nur innerhalb von `if (gRotFX.active)`/`if (pRotFX.active)` — sobald
+   `.active` durch `/kill_fx` oder `/modfx?...&a=0` auf `false` wechselte,
+   wurde der Kanal schlicht nie wieder beschrieben und blieb für immer auf
+   dem letzten FX-Wert eingefroren stehen. Der physische Motor lief also
+   sichtbar weiter, obwohl die Firmware sich selbst als „gestoppt" ansah.
+   **Fix:** zwei neue `static bool gRotWasActive`/`pRotWasActive` erkennen
+   die Flanke aktiv→inaktiv und schreiben in genau diesem einen Frame
+   einmalig `0` auf den jeweiligen Kanal — danach bleibt der Kanal wieder
+   unangetastet, damit eine anschließende manuelle Steuerung (z. B.
+   `/set_all`) nicht laufend überschrieben wird. Bewusst NICHT auf
+   `colFX`/`sgobFX`/`rgobFX` (Farb-/Gobo-Wheel-Position) angewendet — dort
+   ist „an der zuletzt gewählten Position stehenbleiben" beim Stoppen
+   erwartetes, unproblematisches Verhalten (kein Motor, keine
+   Dauerbewegung), anders als bei einem echten Rotationskanal.
+
+2. **„gobo rotation laufen auf internal timer extrem ruckelig... selbe bei
+   prism rotation" — und indirekt Teil von „dimmer fx scheint kaputt".**
+   `Modulator::process()` (`FX_Engine.h`) berechnet die Phasengeschwindigkeit
+   als `phase += (speed / 100.0f) * dt * 2.0f`. Die Frontend-Defaults für
+   `dimSp`/`grSp`/`prSp` sind alle `2000` (`data/index.html`) — bei diesem
+   Divisor ergibt das eine volle Zykluszeit von nur ~25 ms (40 Hz), also
+   eine viel zu schnelle, für einen mechanischen Motor unmögliche
+   Zielwert-Oszillation, die sich als Rucklen/Zittern äußert statt als
+   sanfte Rotation. Zum Vergleich: `MovementEngine::process()` nutzt exakt
+   dieselbe Formel (`modSp / 100.0f`), aber mit eigenem Default `10.0f` (der
+   frontend-seitige `fxMS`-Default ist `100`) — das ergibt dort eine
+   nachweislich funktionierende Zykluszeit von 0,5s. Die beiden „Speed"-
+   Wertebereiche waren also nie aufeinander abgestimmt, obwohl sie dieselbe
+   Formel teilen. **Fix:** Divisor in `Modulator::process()` von `100.0f`
+   auf `2000.0f` angehoben — dasselbe Divisor/Default-Verhältnis wie bei
+   `MovementEngine`, ergibt beim Default-Speed (2000) jetzt ebenfalls eine
+   0,5s-Zykluszeit. `MovementEngine::process()` bewusst nicht angefasst
+   (eigene, bereits korrekt kalibrierte Werte).
+
+3. **„dimmer fx scheint kaputt, schaltet sich manchmal selbst aus" /
+   „color chaser... läuft manchmal weiter nach stop oder geht selbst wieder
+   an" — User-Diagnose „offensichtlich ein sync problem web api" war
+   korrekt.** Root Cause: Race Condition zwischen dem 2-Sekunden-Poll
+   (`/api/get_dmx`) und einem gerade erst lokal umgeschalteten
+   Running-Flag (`dimFxRunning`, `colFxRunning`, `grFxRunning`,
+   `prFxRunning`, `sgFxRunning`, `rgFxRunning`, `fxRunning`,
+   `showRunning`). Ablauf: User klickt „Stop", lokaler State wird
+   sofort `false`, ein `/modfx`-Request geht raus — falls aber zu diesem
+   Zeitpunkt schon eine ÄLTERE Poll-Antwort unterwegs war (die das Gerät
+   noch VOR dem Stop-Klick beantwortet hatte, also noch `true` meldet),
+   überschreibt die kurz danach eintreffende Poll-Antwort den gerade erst
+   gesetzten `false` wieder mit `true` — der Toggle „springt selbst
+   wieder an". Der existierende `isReceiving`-Mechanismus schützte nur
+   ausgehende Sends während eines Polls, nicht eingehende Poll-Daten vor
+   einem kurz zuvor lokal geänderten Feld. **Fix:** neuer
+   `dirtyUntilRef`-Ref (`data/index.html`) — im selben Moment, in dem der
+   Outbound-Sync-Effekt eine Running-Flag-Änderung tatsächlich sendet,
+   wird das betroffene Feld für 2,5 Sekunden (mehr als ein voller
+   Poll-Zyklus) als „lokal frisch" markiert; der Poll-Merge-Block
+   überspringt in diesem Fenster den eingehenden Wert für genau dieses
+   Feld und behält den lokalen. Nach Ablauf des Fensters vertraut die UI
+   dem Poll wieder normal. Betrifft alle 8 Running-Flags gleichermaßen,
+   nicht nur Dimmer/Color.
+
+4. **„curves haben keine funktion" (Dimmer-/Gobo-Rot-/Prisma-Rot-FX).**
+   Separater, schon in der letzten `/ultrareview`-Runde (2026-08-16)
+   teilweise gefixter Bug-Typ war hier nochmal aufgetreten: `DimmerFx`/
+   `RotationFx` (Gobo- und Prisma-Sektion) banden ihre Mode-/Curve-Dropdowns
+   an `state.dimMode`/`dimCurve`/`grMode`/`grCurve`/`prMode`/`prCurve` —
+   Langform-Keys, die im tatsächlich gesendeten/empfangenen State nirgends
+   existieren (der echte Sync läuft über `dimMo`/`dimCu`/`grMo`/`grCu`/
+   `prMo`/`prCu`). Die vorherige Runde hatte exakt dieses Muster bereits
+   für Trigger/Sync/Speed gefixt, aber Mode/Curve dabei übersehen — hätte
+   mit derselben systematischen Cross-Referenz-Prüfung (State-Key-Liste
+   gegen Outbound-Sync-„ground truth") schon damals mit auffallen können.
+   **Fix:** alle 6 betroffenen Bindings auf die korrekten Kurzform-Keys
+   umgestellt, per Python-Script exhaustiv gegen die Outbound-Sync-Ground-
+   Truth verifiziert (keine verwaisten Keys mehr in den FX-Panels).
+
+5. **Nachtrag — „jog" im Live-Tab snappt nach Loslassen nicht auf Mitte
+   zurück.** `JogDial` (`data/index.html`) rief `onRelease` über ein
+   komplett unsichtbares (`display:'none'`), separates
+   `<input type="range">`-Dummy-Element auf, das mit dem tatsächlich
+   sichtbaren, per Pointer-Events gesteuerten `RangeSlider`-Custom-Element
+   gar nichts zu tun hatte — unsichtbare Elemente erhalten in Browsern
+   grundsätzlich keine echten Maus-/Touch-Events, der Handler feuerte also
+   nie. Der echte `RangeSlider` besaß bis dahin überhaupt kein
+   `onRelease`-Prop. **Fix:** `RangeSlider` bekommt ein echtes
+   `onRelease`-Prop, ruft es am Ende von `handleUp` (Pointer-Up/-Cancel)
+   auf; `JogDial` reicht `onRelease` jetzt an den echten Regler durch, das
+   tote Dummy-Element entfernt. Wichtig für den User: `jogBend` selbst
+   bewegt weiterhin keine DMX-Kanäle (separates, schon vor dieser Session
+   in `backlog.md`/`README.md` bekanntes „toter Code"-Thema) — dieser Fix
+   behebt nur das visuelle Zurückspringen des Reglers, nicht die fehlende
+   physische Wirkung von Jog.
+
+6. **Nachtrag — Movement-„Curve"-Regler (virtueller Joystick/Pfeiltasten)
+   ohne sichtbare Wirkung, User fragte „das war ja normal die initial
+   beschleunigung, oder?".** Root Cause in `updateEngines()`
+   (`Moving_Head_Horizon.ino`): `joyInputX`/`joyInputY` sind bei
+   Tastatur-Input (`useKeyboardJoystick`, normalisiert `x/=dist; y/=dist`)
+   und bei voll ausgelenktem virtuellem Joystick (Drag bis an den
+   Rand) strukturell immer ein Einheitsvektor — Betrag exakt `1` (außer
+   bei diagonalen Tasten-Kombinationen oder partiellem Maus-Drag). Die
+   bisherige Formel `powf(fabsf(joyInputX), joyCurve)` liefert für
+   `|x|==1` unabhängig vom `joyCurve`-Wert immer `1` (`1^n == 1`) — die
+   Kurve konnte also in den beiden häufigsten Bedienarten (Tastatur, voll
+   ausgelenkter Joystick) strukturell nie etwas bewirken. Per `git log`
+   verifiziert: keine Regression dieser Session, die Formel war seit der
+   initialen Code-Konsolidierung unverändert. **Fix:** Die Kurve wird
+   jetzt auf `joySmoothX`/`joySmoothY` angewendet (den bereits
+   momentum-geglätteten Rampen-Wert, der bei jeder Eingabemethode beim
+   Loslegen erst von 0 Richtung Zielwert hochläuft und dabei alle
+   Zwischenwerte durchläuft) statt auf den rohen `joyInputX`/`joyInputY`.
+   Das ergibt eine echte, sichtbare Anfangsbeschleunigung/-Kurve
+   unabhängig von der Eingabemethode, ohne die von `joyMomentum`
+   gesteuerte Ramp-Geschwindigkeit selbst zu verändern (reine
+   Verschiebung, wo im Signalpfad die Kurve angewendet wird, keine neue
+   Zeitkonstante).
+
+### Bewusst nicht blind gefixt (2 von 7 Kernpunkten)
+
+- **„static, rotating gogo stimmen offensichtlich die numbers nicht, z.b.
+  gobo 6 static kommt nicht".** `SGOBOS`/`RGOBOS` (`data/index.html`) und
+  `sGoboMap`/`rGoboMap` (`Moving_Head_Horizon.ino`) wurden per `git log -p`
+  geprüft: seit der allerersten Einführung im Rahmen der Code-
+  Konsolidierung unverändert, und intern konsistent (Frontend-Wert für
+  „Gobo 6" == Backend-Map-Wert an Index 6 == `CH.GOBO`/`CH_GOBO` beide
+  `7`). Kein Code-Bug auffindbar — die plausibelste Erklärung ist eine
+  Diskrepanz zwischen den hier hinterlegten DMX-Werten und der tatsächlichen
+  Gobo-Wheel-Personality des physischen Fixtures (Pro Beam 280), die ohne
+  Datenblatt oder einen manuellen DMX-Sweep (CH7 langsam 0–255 durchfahren,
+  echte Gobo-Wechsel am Gerät notieren) nicht sicher zu kalibrieren ist.
+  In `backlog.md` festgehalten statt geraten.
+- **„gobo chaser auf shake läuft einfach durch".** `runStep()`s
+  Scratch/Shake-Zweig (`if (fx.scratch) val = constrain(val +
+  STEPFX_SCRATCH_OFFSET, 0, 255);`) addiert nur eine Konstante (`183`) auf
+  den jeweils aktuellen Wheel-Schritt-Wert, im selben Hold-Time-Takt wie
+  normales Chasen — das erzeugt keinen echten Shake (schnelles Zittern
+  innerhalb eines Hold-Intervalls), sondern verschiebt die Chase-Sequenz
+  nur in eine andere DMX-Zone, was sich wie „normales Weiterlaufen"
+  anfühlt. `STEPFX_SCRATCH_OFFSET = 183` wurde am 2026-08-16 selbst nur
+  benannt (vorher eine unbenannte Magic Number mit demselben Wert), nie
+  gegen echte Hardware verifiziert — dieser Fund zeigt jetzt, dass der
+  geratene Wert/Mechanismus so nicht funktioniert. Ohne Fixture-Datenblatt
+  oder Hardware-Sweep nicht seriös neu zu raten. In `backlog.md`
+  festgehalten statt eines zweiten Blindschusses.
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]` nach allen Änderungen.
+Auf dem angeschlossenen echten Gerät geflasht (`pio run -t upload` +
+`-t uploadfs`, Port `/dev/cu.usbmodem1101`). Nach dem Flash per `curl`
+bestätigt: Gerät wieder erreichbar (`/api/get_dmx` liefert `200`, reale
+Preset-Namen intakt). Die eigentlichen Verhaltensänderungen (Motor stoppt
+wirklich, Rotation läuft ruckelfrei, FX-Toggle bleibt stabil, Jog snappt
+zurück, Joystick-Kurve fühlbar) sind visuell/physisch am Fixture zu
+bestätigen — das kann nur der User mit Augen auf UI und Lampe, nicht CLI.

@@ -42,9 +42,13 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   nächsten Refactor, wenn jemand die Guards kopiert statt neu herleitet.
   Vereinheitlichen wäre ein reiner Architektur-Cleanup, kein Bugfix mehr.
 - **`jogBend` ist toter Code.** In `/jog` gesetzt (`WebAPI.h`), nirgends
-  in `FX_Engine.h` oder der DMX-Ausgabe gelesen. Jog-Wheel hat aktuell keine
-  sichtbare Wirkung (auch in `README.md` als offener Punkt vermerkt).
-  Entweder Feature fertigbauen oder Endpunkt + UI entfernen.
+  in `FX_Engine.h` oder der DMX-Ausgabe gelesen. Der Jog-Regler bewegt das
+  Fixture aktuell **nicht** (auch in `README.md` als offener Punkt
+  vermerkt). Seit 2026-08-17 snappt der UI-Regler nach Loslassen wieder
+  sichtbar auf Mitte zurück (siehe „Kürzlich geklärt" — war ein separater
+  UI-Bug, kein Hinweis auf die fehlende DMX-Wirkung). Weiterhin offen:
+  Entweder Feature fertigbauen (`jogBend` tatsächlich in `updateEngines()`
+  als Pan/Tilt-Offset verrechnen) oder Endpunkt + UI entfernen.
 - **`fadeDuration` global geteilt** zwischen Mute-Fade (`/autofade`) und
   Dip-to-Black-Load (`triggerLoad` überschreibt mit `currentFadeTime/2`).
   Fragile Kopplung, entkoppeln (z. B. getrennte Variable für Dip-Fades).
@@ -114,6 +118,29 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   `WiFi.setAutoReconnect(true)` manchmal träge.
 - **UI State Sync:** Zwei gleichzeitig offene Browser-Fenster überschreiben
   sich beim Auto-Sync (Polling) teilweise gegenseitig.
+- **Statische Gobo-/Rotating-Gobo-Nummern stimmen laut Hardware-Test nicht.**
+  User-Report 2026-08-17: „Gobo 6 static kommt nicht". `SGOBOS`/`sGoboMap`
+  (`data/index.html`, `Moving_Head_Horizon.ino`) sind seit Einführung
+  unverändert und intern konsistent (Frontend CH7-Wert == Backend-Map-Wert,
+  per `git log` verifiziert) — das ist also keine Code-Regression, sondern
+  vermutlich eine Diskrepanz zur echten DMX-Personality des Fixtures
+  (Pro Beam 280). Braucht entweder das Fixture-Datenblatt oder einen
+  manuellen DMX-Sweep auf CH7 (0–255 langsam durchfahren, echte
+  Gobo-Wechsel-Grenzen live am Gerät notieren), um `SGOBOS`/`RGOBOS`/
+  `sGoboMap`/`rGoboMap` korrekt zu kalibrieren. Nicht blind fixbar.
+- **Chaser-„Shake" (`STEPFX_SCRATCH_OFFSET = 183`) erzeugt laut Hardware-
+  Test keinen sichtbaren Shake-Effekt, läuft „einfach durch".** Der Wert
+  183 wurde am 2026-08-16 selbst als Platzhalter benannt (vorher unbenannte
+  Magic Number `183, // fixture-specific`), nie gegen echte Hardware
+  verifiziert. `runStep()` addiert ihn aktuell nur als Konstante auf den
+  jeweiligen Wheel-Schritt-Wert (`map[idx] + 183`, im selben Hold-Time-Takt
+  wie normales Chasen) — das erzeugt keinen echten Shake (schnelles Zittern
+  innerhalb eines Hold-Intervalls), sondern verschiebt die Chase-Sequenz
+  nur in eine andere DMX-Zone. Die statische „Shake"-Option in
+  `SGOBO_BASES`/`RGOBO_BASES` (Werte 211+/193+) ist vermutlich näher an der
+  echten Fixture-Shake-Zone, aber ob/wie sich das mit laufendem Chasing
+  kombinieren lässt, ist ohne Fixture-Datenblatt oder Hardware-Sweep nicht
+  sicher zu sagen. Nicht blind fixbar.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
@@ -367,3 +394,69 @@ zu scheitern. Fix: die drei manuellen `sendHeader`-Aufrufe entfernt,
 --compressed` (dekodiert wie ein Browser) verifiziert: Body dekodiert
 jetzt sauber zu echtem React-Quellcode. Kein `pio run -t buildfs` nötig
 (nur `WebAPI.h`, kein Dateisystem-Inhalt geändert).
+
+**2026-08-17, Fortsetzung — 5 Bugs aus echtem Hands-on-Test gefixt.** User
+hat live am Fixture getestet (nicht nur `curl`) und einen konkreten
+Fehlerbericht mit 7 Punkten geliefert plus 2 Nachträge. Fünf davon
+root-caused und gefixt:
+
+- **`kill_fx`/FX-Stop bewegte Gobo-Rotation/Prisma-Rotation nicht auf 0.**
+  `updateEngines()` schrieb `dmxData[9]`/`dmxData[11]` nur, solange
+  `gRotFX.active`/`pRotFX.active` true war — beim Stoppen blieb der letzte
+  FX-Wert einfach eingefroren stehen, der Motor lief sichtbar weiter.
+  Gefixt: einmaliger Reset auf 0 exakt bei der Flanke aktiv→inaktiv
+  (`gRotWasActive`/`pRotWasActive`), damit manuelle Steuerung danach nicht
+  blockiert wird.
+- **Dimmer-/Gobo-Rot-/Prisma-Rot-FX „extrem ruckelig" bei Zeiten ≠ 1 ms.**
+  `Modulator::process()`s Phasenformel (`speed / 100.0f`) war für die
+  Frontend-Defaults (2000) nicht kalibriert — ergab bei Default-Speed eine
+  Zykluszeit von ~25 ms (40 Hz), viel zu schnell für einen Motor. Divisor
+  auf `2000.0f` angehoben (gleiches Divisor/Default-Verhältnis wie bei der
+  strukturell identischen, nachweislich funktionierenden
+  `MovementEngine::process()`, die mit Divisor 100 und Default 100 eine
+  saubere 0,5s-Zykluszeit ergibt) — Default-Speed liefert jetzt ebenfalls
+  0,5s. `MovementEngine::process()` bewusst nicht angefasst.
+- **Dimmer-FX „schaltet sich manchmal selbst aus", Color-Chaser „läuft
+  manchmal weiter nach Stop oder geht selbst wieder an" — Sync-Race mit
+  dem `/api/get_dmx`-Poll (User-Diagnose war korrekt).** Der 2s-Poll konnte
+  eine gerade lokal umgeschaltete Running-Flag (`dimFxRunning`,
+  `colFxRunning`, …) mit einer noch älteren, vom Gerät noch nicht
+  aktualisierten Antwort überschreiben. `isReceiving` schützte bisher nur
+  ausgehende Sends, nicht eingehende Poll-Werte. Gefixt: neuer
+  `dirtyUntilRef`-Mechanismus — beim tatsächlichen Senden einer
+  Running-Flag-Änderung wird das Feld für 2,5s (mehr als ein Poll-Zyklus)
+  als „lokal frisch" markiert, der Poll überschreibt es in diesem Fenster
+  nicht. Betrifft alle 8 Running-Flags (`fxRunning`, `dimFxRunning`,
+  `grFxRunning`, `prFxRunning`, `colFxRunning`, `sgFxRunning`,
+  `rgFxRunning`, `showRunning`).
+- **Jog-Regler (Live-Tab) snappte nach Loslassen nicht auf Mitte zurück.**
+  `JogDial` rief `onRelease` über ein komplett unsichtbares
+  (`display:'none'`), separates `<input type="range">`-Dummy-Element auf —
+  das nie echte Maus-/Touch-Events bekommt, weil unsichtbare Elemente vom
+  Browser gar nicht erst interaktiv sind. Der eigentliche, sichtbare
+  `RangeSlider` hatte gar keinen `onRelease`-Callback. Gefixt: `RangeSlider`
+  bekommt ein echtes `onRelease`-Prop (ruft in `handleUp` auf), `JogDial`
+  reicht es jetzt an den echten Regler durch, das tote Dummy-Element
+  entfernt. (Wichtig: `jogBend` selbst bewegt weiterhin keine DMX-Kanäle —
+  siehe „Tech Debt" oben, separates, schon vorher bekanntes Thema.)
+- **Movement-„Curve"-Regler (virtueller Joystick/Pfeiltasten) ohne
+  sichtbare Wirkung.** Root Cause: `joyInputX`/`joyInputY` sind bei
+  Tastatur-Input und bei voll ausgelenktem virtuellem Joystick strukturell
+  immer ein normalisierter Einheitsvektor (Betrag exakt 1) —
+  `powf(1, curve)` ist für jeden Kurven-Wert 1, die Kurve konnte also nur
+  bei diagonalen Tasten-Kombos oder partiellem Maus-Drag überhaupt etwas
+  bewirken. Keine Regression (Formel seit Code-Konsolidierung unverändert,
+  per `git log` verifiziert), sondern ein grundlegendes Vorher-Problem.
+  Gefixt: Kurve wird jetzt auf den geglätteten Rampen-Wert (`joySmoothX/Y`,
+  läuft bei jeder Eingabemethode durch alle Werte zwischen 0 und ±1)
+  angewendet statt auf den rohen Input — ergibt eine echte, sichtbare
+  Anfangsbeschleunigung unabhängig von Maus/Tastatur, ohne die
+  Momentum-gesteuerte Ramp-Geschwindigkeit selbst zu verändern.
+
+Zwei Punkte aus demselben Test bewusst **nicht** blind gefixt (Fixture-DMX-
+Personality-Daten, nicht am Code verifizierbar) — siehe „Bekannte kleine
+Issues" oben: Gobo-Nummerierung, Chaser-Shake-Offset.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`, auf
+dem echten angeschlossenen Gerät geflasht (`pio run -t upload` +
+`-t uploadfs`) und per `curl` als online bestätigt. Details in `history.md`.
