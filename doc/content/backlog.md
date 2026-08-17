@@ -460,3 +460,49 @@ Issues" oben: Gobo-Nummerierung, Chaser-Shake-Offset.
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`, auf
 dem echten angeschlossenen Gerät geflasht (`pio run -t upload` +
 `-t uploadfs`) und per `curl` als online bestätigt. Details in `history.md`.
+
+**2026-08-17, Fortsetzung — Joystick-Controls vereinheitlicht, Curve neu
+gebaut, zwei UI-Bugs gefixt.** Direktes User-Feedback nach dem vorigen
+Fix-Batch, noch am selben Tag:
+
+- **Joystick-Kurve funktionierte laut User immer noch nicht spürbar**
+  („movement beschleunigt nicht von 0 aus wenn ich max aussteuer"). Die
+  vorige Session-Änderung (Curve auf `joySmoothX`/`joySmoothY` statt auf
+  den rohen Input angewendet) war technisch korrekt, aber praktisch
+  unsichtbar: der Momentum-Blend erreicht den Zielwert in ~150ms, viel zu
+  kurz, um eine pow()-Reshape darüber wahrzunehmen. Komplett neu gebaut:
+  Curve steuert jetzt eine eigene, zeitbasierte Rampe (`joyHoldTime`,
+  0→1 über feste 2 Sekunden, per `powf(rampT, joyCurve)` geformt), die
+  unabhängig vom Momentum-Blend nur beim aktiven Halten der Auslenkung
+  greift (`accelMul`) — Loslassen/Abbremsen läuft weiterhin exakt über
+  die bestehende, unveränderte Momentum-Rampe. Dadurch jetzt eine klar
+  spürbare 2-Sekunden-Beschleunigung von 0 auf Zielgeschwindigkeit, deren
+  Steilheit Curve direkt bestimmt.
+- **Joystick-Speed/Curve/Momentum-Regler fehlten im Programmer- und
+  Followspot-Tab**, obwohl beide Tabs eigene Joysticks haben. In eine neue
+  gemeinsame Komponente `JoystickAdvancedControls` extrahiert (vorher nur
+  inline im Live-Tab) und in alle drei Tabs eingebaut.
+- **Followspot-Tab hatte einen toten „Curve"-Button** (`<Pill>Curve</Pill>`
+  ganz ohne `onClick`/Funktion) — entfernt, durch den echten,
+  funktionierenden `JoystickAdvancedControls`-Block ersetzt. Die
+  bestehenden Pan/Tilt-Constraints direkt darunter bewusst unverändert
+  gelassen.
+- **„Advanced Motors"-Accordion im Programmer-Tab entfernt** (Motor Speed
+  CH5 / Pan Fine CH15 / Tilt Fine CH16 manuelle Regler), wie vom User
+  gewünscht, da mit dem neuen gemeinsamen Joystick-Block redundant. Die
+  zugehörigen State-Felder/`track()`-Aufrufe bleiben bestehen (weiterhin
+  synchronisiert, nur ohne eigene UI-Regler in diesem Tab).
+- **Followspot-Joystick zeigte manchmal einen „eingefrorenen" gestrichelten
+  Kreis.** Der `externalPos`-Marker (zeigt die reale, vom ~2s-Gerätepoll
+  gemeldete Fixture-Position) sprang bisher bei jedem Poll-Tick abrupt auf
+  die neue Position und stand dazwischen still — wirkte wie ein
+  unbeweglicher Fremdkörper im Joystick-Feld. Jetzt geglättet (kleine
+  `requestAnimationFrame`-Ease-Schleife in `StickyJoystick`, 12%/Frame
+  Annäherung an das Ziel), bewegt sich jetzt sichtbar statt zu springen.
+- **F5/Reload landete immer im Live-Tab.** `tab`-State wird jetzt wie
+  `night`/`accent` in `localStorage` gespiegelt (`hz_tab`), Reload öffnet
+  wieder den zuletzt aktiven Tab.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`, auf
+dem echten Gerät geflasht und per `curl` als online bestätigt. Details in
+`history.md`.

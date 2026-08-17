@@ -259,10 +259,17 @@ void updateEngines(unsigned long now) {
       float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 30.0f);
       joySmoothX += (joyInputX - joySmoothX) * blend; joySmoothY += (joyInputY - joySmoothY) * blend;
       if (fabsf(joySmoothX) < 0.001f && joyInputX == 0.0f) joySmoothX = 0.0f; if (fabsf(joySmoothY) < 0.001f && joyInputY == 0.0f) joySmoothY = 0.0f;
-      // Curve shapes the ramped value (not the raw input), so it produces a visible accel/decel feel
-      // even for keyboard input, which is always a saturated unit vector (pow(1, curve) would be a no-op there).
-      float curveX = powf(fabsf(joySmoothX), joyCurve) * (joySmoothX < 0 ? -1.0f : 1.0f); float curveY = powf(fabsf(joySmoothY), joyCurve) * (joySmoothY < 0 ? -1.0f : 1.0f);
-      float pD = curveX * (joyMaxSpeed * 25.0f) * dt; float tD = curveY * (joyMaxSpeed * 25.0f) * dt;
+      // Curve shapes a time-based accel ramp while the stick is actively held, decoupled from the
+      // momentum blend above (which converges in ~150ms and would make any curve reshaping of its
+      // output imperceptible). Ramps from a standstill over JOY_ACCEL_TIME seconds, shaped by joyCurve;
+      // release is untouched (accelMul is 1.0 whenever the stick isn't held), so deceleration still
+      // relies purely on joySmoothX's own momentum-driven decay, unchanged from before.
+      const float JOY_ACCEL_TIME = 2.0f;
+      static float joyHoldTime = 0.0f;
+      bool joyHeld = (fabsf(joyInputX) > 0.001f || fabsf(joyInputY) > 0.001f);
+      if (joyHeld) joyHoldTime += dt; else joyHoldTime = 0.0f;
+      float accelMul = joyHeld ? powf(constrain(joyHoldTime / JOY_ACCEL_TIME, 0.0f, 1.0f), joyCurve) : 1.0f;
+      float pD = joySmoothX * accelMul * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * accelMul * (joyMaxSpeed * 25.0f) * dt;
       
       exactPan += (joyPanRev ? pD : -pD); exactTilt += (joyTiltRev ? -tD : tD);
       exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);

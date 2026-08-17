@@ -262,6 +262,26 @@ function StickyJoystick({
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const visualPosRef = useRef({ x: 0, y: 0 });
   const activeRef = useRef(false);
+
+  // externalPos (e.g. the followspot's actual fixture position from the ~2s device poll) only changes
+  // in discrete jumps, which read as a marker "teleporting then freezing" instead of tracking smoothly.
+  // Ease the rendered marker toward each new target instead of snapping straight to it.
+  const [extVisual, setExtVisual] = useState(externalPos || { x: 0, y: 0 });
+  const extVisualRef = useRef(extVisual);
+  useEffect(() => {
+    if (!externalPos) return;
+    let raf;
+    const tick = () => {
+      const cur = extVisualRef.current;
+      const nx = cur.x + (externalPos.x - cur.x) * 0.12;
+      const ny = cur.y + (externalPos.y - cur.y) * 0.12;
+      extVisualRef.current = { x: nx, y: ny };
+      setExtVisual({ x: nx, y: ny });
+      if (Math.abs(externalPos.x - nx) > 0.001 || Math.abs(externalPos.y - ny) > 0.001) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [externalPos && externalPos.x, externalPos && externalPos.y]);
   const springRef = useRef(null);
   
   const mods = useRef({ shift: false, alt: false, ctrl: false, meta: false });
@@ -418,8 +438,8 @@ function StickyJoystick({
         )}
         {externalPos && (
           <circle
-            cx={size/2 + externalPos.x * maxR}
-            cy={size/2 + externalPos.y * maxR}
+            cx={size/2 + extVisual.x * maxR}
+            cy={size/2 + extVisual.y * maxR}
             r={thumbPx/2 - 2}
             fill="none" stroke={thumbColor} strokeWidth={1.5} opacity={0.45}
             strokeDasharray="3 3"
@@ -753,6 +773,26 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     );
   }
 
+  // Shared joystick response controls (Max Speed / Curve / Momentum -> /joy_cfg),
+  // used by Live, Programmer and Followspot so all three tabs stay in sync.
+  function JoystickAdvancedControls({ accent, state, setState }) {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button onClick={() => setOpen(!open)} style={{ marginTop: 8, width: '100%', padding: '7px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 600, letterSpacing: 1, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>SPEED · CURVE · MOMENTUM</span><span style={{ transform: open ? 'rotate(180deg)' : '', transition: 'transform .15s' }}>⌄</span></button>
+        {open && (
+          <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <LabeledSlider label="Max Speed" value={state.joySpeed} onChange={(v) => setState((s) => ({ ...s, joySpeed: v }))} min={100} max={5000} accent={accent} compact />
+              <LabeledSlider label="Curve" value={state.joyCurve} onChange={(v) => setState((s) => ({ ...s, joyCurve: v }))} min={10} max={30} step={1} accent={accent} compact />
+              <LabeledSlider label="Momentum" value={state.joyMomentum} onChange={(v) => setState((s) => ({ ...s, joyMomentum: v }))} min={0} max={95} step={5} unit="%" accent={accent} compact />
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
   const ACCENT_SWATCHES = [
     { key: 'rose',   hex: '#f43f5e' }, { key: 'cyan',   hex: '#22d3ee' }, { key: 'amber',  hex: '#fbbf24' },
     { key: 'green',  hex: '#22c55e' }, { key: 'violet', hex: '#a78bfa' }, { key: 'orange', hex: '#fb923c' },
@@ -848,15 +888,13 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     );
   }
 
-  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, FX_HUE });
+  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, FX_HUE });
 })();
 </script>
 <script type="text/babel">
 // horizon-live.jsx
 (function () {
-  const { useState } = React;
   function LiveTab({ accent, joystickSize, state, setState, bpm, tap, muted, onUnmute, keyJoyRef, onJog, onJogRelease, onKillAll, onHardSync, onMicToggle, micOn, hwSens, setHwSens, onPresetRecall, onPresetSave, onBlackout, onJoystick }) {
-    const [joyAdvOpen, setJoyAdvOpen] = useState(false);
     const presetNames = state.presetNames; const presetActive = state.presetActive;
     return (
       <div className="live-grid">
@@ -891,18 +929,9 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
                   <Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill>
                   <Pill onClick={() => setState((s) => ({ ...s, tiltRev: !s.tiltRev }))} active={state.tiltRev}>Tilt Rev</Pill>
                 </div>
-                <button onClick={() => setJoyAdvOpen(!joyAdvOpen)} style={{ width: '100%', padding: '6px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 600, letterSpacing: 1, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>SPEED · CURVE · MOMENTUM</span><span style={{ transform: joyAdvOpen ? 'rotate(180deg)' : '', transition: 'transform .15s' }}>⌄</span></button>
               </div>
             </div>
-            {joyAdvOpen && (
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                  <LabeledSlider label="Max Speed" value={state.joySpeed} onChange={(v) => setState((s) => ({ ...s, joySpeed: v }))} min={100} max={5000} accent={accent} compact />
-                  <LabeledSlider label="Curve" value={state.joyCurve} onChange={(v) => setState((s) => ({ ...s, joyCurve: v }))} min={10} max={30} step={1} accent={accent} compact />
-                  <LabeledSlider label="Momentum" value={state.joyMomentum} onChange={(v) => setState((s) => ({ ...s, joyMomentum: v }))} min={0} max={95} step={5} unit="%" accent={accent} compact />
-                </div>
-              </div>
-            )}
+            <JoystickAdvancedControls accent={accent} state={state} setState={setState} />
             <div style={{ marginTop: 10 }}>
               <LabeledSlider label="Master Brightness (Boost)" value={state.master} onChange={(v) => setState((s) => ({ ...s, master: v }))} min={0} max={200} unit="%" accent={accent} compact />
             </div>
@@ -1070,7 +1099,6 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   }
 
   function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick }) {
-    const [advMotorsOpen, setAdvMotorsOpen] = useState(false);
     return (
       <div className="prog-grid">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1102,8 +1130,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
               <Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill>
               <Pill onClick={() => setState((s) => ({ ...s, tiltRev: !s.tiltRev }))} active={state.tiltRev}>Tilt Rev</Pill>
             </div>
-            <button onClick={() => setAdvMotorsOpen(!advMotorsOpen)} style={{ marginTop: 8, width: '100%', padding: '7px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 600, letterSpacing: 1, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>ADVANCED MOTORS · CH5 · 15 · 16</span><span style={{ transform: advMotorsOpen ? 'rotate(180deg)' : '', transition: 'transform .15s' }}>⌄</span></button>
-            {advMotorsOpen && <div style={{ marginTop: 8 }}><LabeledSlider label="Motor speed · CH5" value={state.motorSpeed} onChange={(v) => setState((s) => ({ ...s, motorSpeed: v }))} accent={accent} compact /><LabeledSlider label="Pan fine · CH15" value={state.panFine} onChange={(v) => setState((s) => ({ ...s, panFine: v }))} accent={accent} compact /><LabeledSlider label="Tilt fine · CH16" value={state.tiltFine} onChange={(v) => setState((s) => ({ ...s, tiltFine: v }))} accent={accent} compact /></div>}
+            <JoystickAdvancedControls accent={accent} state={state} setState={setState} />
           </Panel>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1217,7 +1244,8 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
           <Panel title="Tracking joystick" padding={12}>
             <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}><StickyJoystick size={joystickSize + 20} thumbColor={accent} showCross keyboardPosRef={keyJoyRef} externalPos={{ x: (state.pan / 127.5) - 1, y: (state.tilt / 127.5) - 1 }} onChange={(v) => { onJoystick(v); }} /></div>
             <div style={{ padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: 9, display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'rgba(255,255,255,0.55)', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace', marginTop: 10, marginBottom: 8 }}><span>P <b style={{ color: accent }}>{state.pan}</b> · T <b style={{ color: accent }}>{state.tilt}</b></span><span>SMOOTHING {state.damping}%</span></div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 5 }}><Pill onClick={() => setState((s) => ({ ...s, panRev: !s.panRev }))} active={state.panRev}>Pan Rev</Pill><Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill><Pill onClick={() => setState((s) => ({ ...s, tiltRev: !s.tiltRev }))} active={state.tiltRev}>Tilt Rev</Pill><Pill>Curve</Pill></div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr 1fr', gap: 5 }}><Pill onClick={() => setState((s) => ({ ...s, panRev: !s.panRev }))} active={state.panRev}>Pan Rev</Pill><Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill><Pill onClick={() => setState((s) => ({ ...s, tiltRev: !s.tiltRev }))} active={state.tiltRev}>Tilt Rev</Pill></div>
+            <JoystickAdvancedControls accent={accent} state={state} setState={setState} />
             <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
               <div style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.45)', letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 8 }}>Constraints · Pan / Tilt limits</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}><LabeledSlider label="Pan Min" value={state.panMin} onChange={(v) => setState((s) => ({ ...s, panMin: v }))} accent={accent} compact /><LabeledSlider label="Pan Max" value={state.panMax} onChange={(v) => setState((s) => ({ ...s, panMax: v }))} accent={accent} compact /><LabeledSlider label="Tilt Min" value={state.tiltMin} onChange={(v) => setState((s) => ({ ...s, tiltMin: v }))} accent={accent} compact /><LabeledSlider label="Tilt Max" value={state.tiltMax} onChange={(v) => setState((s) => ({ ...s, tiltMax: v }))} accent={accent} compact /></div>
@@ -1388,8 +1416,10 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
   const CH = { DIMMER:1, STROBE:2, PAN:3, TILT:4, SPEED:5, COLOR:6, GOBO:7, GOBO_ROT:8, GOBO_IDX:9, PRISM:10, PRISM_ROT:11, FROST:12, FOCUS:13, ZOOM:14, PAN_FINE:15, TILT_FINE:16, MACRO:17 };
   const COLORS = [{n:'White',v:0},{n:'W/R',v:50},{n:'Red',v:5},{n:'R/Y',v:55},{n:'Yellow',v:10},{n:'Y/B',v:60},{n:'Blue',v:15},{n:'B/G',v:65},{n:'Green',v:20},{n:'G/P',v:70},{n:'Purple',v:25},{n:'P/A',v:75},{n:'Amber',v:30},{n:'A/C',v:80},{n:'Cyan',v:35},{n:'C/E',v:85},{n:'Emerald',v:40},{n:'E/O',v:90},{n:'Orange',v:45},{n:'O/W',v:95}];
 
+const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'PATCH'];
  function App() {
-    const [tab, setTab] = useState('LIVE');
+    const [tab, setTabState] = useState(() => { const saved = localStorage.getItem('hz_tab'); return VALID_TABS.includes(saved) ? saved : 'LIVE'; });
+    const setTab = useCallback((t) => { setTabState(t); try { localStorage.setItem('hz_tab', t); } catch(e) {} }, []);
     const [night, setNight] = useState(() => localStorage.getItem('hz_night') === '1');
     
     // The correctly renamed variable

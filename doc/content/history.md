@@ -1098,3 +1098,124 @@ Preset-Namen intakt). Die eigentlichen Verhaltensänderungen (Motor stoppt
 wirklich, Rotation läuft ruckelfrei, FX-Toggle bleibt stabil, Jog snappt
 zurück, Joystick-Kurve fühlbar) sind visuell/physisch am Fixture zu
 bestätigen — das kann nur der User mit Augen auf UI und Lampe, nicht CLI.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Direktes Nutzer-Feedback zum Joystick-Fix, 5 weitere Punkte
+
+Unmittelbar nach dem vorigen Fix-Batch (Motor-Stop, Modulator-Speed,
+Poll-Race, Mode/Curve, Jog-Snapback, Joystick-Curve v1) kam noch am selben
+Tag konkretes Feedback zurück, wörtlich: „die controls für den joystick
+die ich im livetab habe fehlen mir im programmer und im follower tab. auch
+habe ich das gefühl, dass curve für den joystick immer noch keine
+hinreichende funktion hat weil der movement nicht von 0 aus beschleunigt
+wenn ich z.b. max aussteuer. also keine fkt. ich möchte diesen control
+block für die anderen tabs auch weil zum einen fehlt es da und zum anderen
+gibt es im follower tab einen button "curve" der aber nichts macht. den
+advanced motors block im programmer brauchen wir ja nicht, wenn wir den
+anderen block aus dem live haben. die constraints im follower tab möchten
+wir erhalten natürlich. im follower tab joystick feld wird manchmal ein
+dotted kreis gezeichnet iwo im feld der sich nicht bewegt. wenn ich f5 im
+browser drücke komme ich immer im livetab an, nicht dort wo ich vorher
+war."
+
+### 1. Joystick-Curve grundlegend neu gebaut (v1 aus derselben Session war unzureichend)
+
+Die vorherige Änderung in diesem Chat (Curve auf den momentum-geglätteten
+Rampen-Wert `joySmoothX`/`joySmoothY` statt auf den rohen Input anwenden)
+war am Code technisch korrekt begründet, aber praktisch zu schwach: der
+Momentum-Blend (`blend = 1 - pow(1-smoothFactor, dt*30)`) erreicht seinen
+Zielwert bei Default-Momentum in ca. 7 Frames (~144ms bei 50Hz) — jede
+`pow()`-Umformung dieses fast augenblicklich konvergierenden Werts bleibt
+für das menschliche Auge am Fixture praktisch unsichtbar, insbesondere bei
+mechanischer Trägheit des Motors selbst. Der User hatte also recht: „keine
+fkt" traf weiterhin zu, trotz der vorherigen, in sich korrekten Analyse.
+
+**Neuer Ansatz:** Curve ist jetzt vollständig vom Momentum-Blend
+entkoppelt. Ein neuer, zeitbasierter Tracker (`static float joyHoldTime`)
+zählt hoch, solange der Stick in irgendeine Richtung ausgelenkt ist
+(`joyHeld`), und wird bei Loslassen sofort auf 0 zurückgesetzt. Daraus:
+`rampT = constrain(joyHoldTime / 2.0f, 0, 1)` — eine feste, klar
+wahrnehmbare 2-Sekunden-Rampe, unabhängig von Momentum. `accelMul =
+powf(rampT, joyCurve)` formt diese Rampe: bei `joyCurve=1` (Minimum)
+linear über 2s, bei höheren Werten (Default 2.0, Maximum 3.0) bleibt die
+Geschwindigkeit länger niedrig und steigt erst spät steil an — spürbar
+mehr „Anlaufzeit". `accelMul` multipliziert die tatsächliche
+Geschwindigkeit (`pD`/`tD`), aber **nur während der Stick aktiv gehalten
+wird** (`joyHeld ? ... : 1.0f`) — beim Loslassen bleibt `accelMul` sofort
+bei `1.0`, sodass die bestehende, unveränderte Momentum-Abbremsung
+(`joySmoothX`s natürlicher Zerfall) exakt wie vorher weiterläuft. Dadurch
+bleibt „Loslassen bremst weich ab" unangetastet, während „Reindrücken
+beschleunigt sichtbar von 0" jetzt neu und robust funktioniert.
+
+### 2. Joystick-Kontrollblock in Programmer- und Followspot-Tab nachgerüstet
+
+Der komplette „SPEED · CURVE · MOMENTUM"-Regelblock (Max Speed / Curve /
+Momentum → `/joy_cfg`) existierte bisher nur im Live-Tab, inline definiert
+innerhalb von `LiveTab` selbst — Programmer- und Followspot-Tab hatten
+eigene Joysticks, aber keinen Zugriff auf diese Parameter. In eine neue
+gemeinsame Komponente `JoystickAdvancedControls` extrahiert (definiert im
+gemeinsamen Widgets-Scope `horizon-primitives.jsx`, über
+`Object.assign(window, {...})` exportiert, wie die anderen geteilten
+Bausteine `Pill`/`JogDial`/etc. — nötig, weil jeder
+`<script type="text/babel">`-Block sein eigener JS-Scope ist). Jetzt in
+allen drei Tabs (Live/Programmer/Followspot) eingebunden, ein einziger,
+konsistenter Regelsatz statt einer isolierten Kopie.
+
+### 3. Toter „Curve"-Button im Followspot-Tab gefunden und ersetzt
+
+Der User erwähnte „gibt es im follower tab einen button curve der aber
+nichts macht" — Ursache: `<Pill>Curve</Pill>` in der Pills-Reihe
+(Pan Rev/Center/Tilt Rev/Curve) hatte überhaupt kein `onClick` und keinen
+`active`-State, ein reines Deko-Element ohne jede Funktion. Entfernt und
+durch den neuen, echten `JoystickAdvancedControls`-Block ersetzt (der
+Curve jetzt tatsächlich implementiert). Die Pills-Reihe ist dadurch wieder
+3-spaltig wie in Live/Programmer statt 4-spaltig mit totem Slot.
+
+### 4. „Advanced Motors"-Accordion im Programmer-Tab entfernt
+
+Auf expliziten Wunsch des Users („den advanced motors block im programmer
+brauchen wir ja nicht, wenn wir den anderen block aus dem live haben") —
+die manuellen Regler für Motor Speed (CH5), Pan Fine (CH15) und Tilt Fine
+(CH16) sind mit dem neuen gemeinsamen Joystick-Block redundant genug, um
+sie zu entfernen. Die zugehörigen State-Felder (`motorSpeed`, `panFine`,
+`tiltFine`) und ihre `track()`-Aufrufe im Outbound-Sync-Effekt bleiben
+unverändert bestehen — nur die UI-Regler in diesem Tab sind weg, die
+Werte werden weiterhin normal synchronisiert.
+
+### 5. Gestrichelter Marker im Followspot-Joystick wirkte „eingefroren"
+
+„im follower tab joystick feld wird manchmal ein dotted kreis gezeichnet
+iwo im feld der sich nicht bewegt" — das ist der `externalPos`-Marker in
+`StickyJoystick` (gestrichelter Ring, zeigt die reale, vom Gerät gemeldete
+Fixture-Position, getrennt vom eigentlichen Joystick-Thumb). Er wird aus
+`state.pan`/`state.tilt` berechnet, die nur alle ~2s vom `/api/get_dmx`-
+Poll aktualisiert werden — dadurch sprang der Marker bisher bei jedem
+Poll-Tick abrupt an eine neue Position und stand die meiste Zeit
+regungslos irgendwo im Feld, was sich exakt wie ein eingefrorener
+Fremdkörper liest statt wie eine Positionsanzeige. **Fix:** eine kleine
+Ease-Schleife (`requestAnimationFrame`, 12% Annäherung pro Frame) glättet
+den gerenderten Marker jetzt kontinuierlich in Richtung des jeweils
+neuesten Poll-Werts, statt zu springen — bewegt sich jetzt sichtbar
+statt zu „kleben". Keine Änderung an der zugrundeliegenden ~2s-Poll-
+Kadenz selbst (das ist ein bekanntes, bereits in `backlog.md` unter Tech
+Debt vermerktes größeres Thema).
+
+### 6. Tab-Wahl übersteht jetzt F5/Reload
+
+„wenn ich f5 im browser drücke komme ich immer im livetab an, nicht dort
+wo ich vorher war" — `tab`-State war ein reiner In-Memory-`useState`.
+Gefixt nach demselben, bereits etablierten Muster wie `night`/`accent`
+(`localStorage`): neuer Key `hz_tab`, beim Tab-Wechsel geschrieben, beim
+Start gelesen (mit Validierung gegen die vier bekannten Tab-Namen,
+Fallback `LIVE` bei fehlendem/ungültigem Wert).
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
+angeschlossenen echten Gerät geflasht (`pio run -t upload` +
+`-t uploadfs`), danach per `curl` als online bestätigt (`/` liefert `200`,
+`/api/get_dmx` liefert reale Preset-Namen). Wie beim vorigen Fix-Batch
+gilt: das neue Beschleunigungsverhalten, die drei Tabs mit identischen
+Joystick-Reglern und der geglättete Followspot-Marker sind visuell im
+Browser/am Fixture zu bestätigen, nicht per CLI verifizierbar.

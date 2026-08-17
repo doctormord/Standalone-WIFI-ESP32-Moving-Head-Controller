@@ -1,100 +1,94 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-17)
-> **Zweite Runde echter Hands-on-Hardware-Tests** — User hat das Gerät
-> tatsächlich in Betrieb genommen (Fixture live beobachtet, nicht nur
-> `curl`) und einen konkreten Fehlerbericht mit 7 Punkten geliefert, plus 2
-> Nachträge zum Movement-Joystick/Jog. 5 von 7 Kernpunkten + beide
-> Nachträge root-caused und gefixt, 2 bewusst nicht blind gefixt (Details
-> unten). Neu geflasht (Firmware + LittleFS) und per `curl` als online
-> bestätigt (reale Preset-Namen intakt).
+> **Dritte Runde direktes Nutzer-Feedback, noch am selben Tag wie der
+> zweite Hands-on-Test.** User hatte die 6 Fixes aus der vorigen Runde
+> (Motor-Stop, Modulator-Speed, Poll-Race, Mode/Curve, Jog-Snapback,
+> Joystick-Curve v1) getestet und meldete: die Joystick-Curve wirkt
+> immer noch nicht spürbar, der Speed/Curve/Momentum-Kontrollblock fehlt
+> im Programmer- und Followspot-Tab, ein toter „Curve"-Button im
+> Followspot-Tab, der „Advanced Motors"-Block im Programmer-Tab sei jetzt
+> redundant, ein optisch „eingefrorener" gestrichelter Marker im
+> Followspot-Joystick, und F5/Reload springt immer zurück ins Live-Tab.
+> Alle 6 Punkte bearbeitet, neu geflasht, per `curl` als online bestätigt.
 >
-> **Gefixt (Details in `history.md`, 2026-08-17 Fortsetzung):**
-> 1. `kill_fx`/FX-Stop bewegte Gobo-Rotation/Prisma-Rotation nicht auf 0
->    (Motor lief nach Stop sichtbar weiter) — `updateEngines()` schrieb die
->    DMX-Kanäle nur bei aktivem FX, jetzt einmaliger Reset auf 0 bei der
->    aktiv→inaktiv-Flanke.
-> 2. Dimmer-/Gobo-Rot-/Prisma-Rot-FX „extrem ruckelig" — `Modulator::
->    process()`s Speed-Divisor war nicht auf die Frontend-Defaults
->    kalibriert (~25ms statt ~0,5s Zykluszeit). Divisor 100→2000 angehoben.
-> 3. Dimmer-FX „schaltet sich selbst aus" / Color-Chaser „läuft nach Stop
->    weiter oder geht selbst wieder an" — echte Race Condition zwischen
->    2s-Poll und lokalem Toggle (User-Diagnose „sync problem" war richtig).
->    Neuer `dirtyUntilRef`-Mechanismus schützt frisch geänderte
->    Running-Flags 2,5s vor überschreibenden Poll-Antworten.
-> 4. „Curves haben keine Funktion" (Dimmer/Gobo-Rot/Prisma-Rot) — noch ein
->    Fall des Mode/Curve-Dropdown-Key-Mismatch-Musters aus der letzten
->    Runde (Langform- statt Kurzform-State-Keys), das damals bei
->    Trigger/Sync/Speed gefixt, bei Mode/Curve aber übersehen wurde.
-> 5. Jog-Regler (Live-Tab) snappte nach Loslassen nicht auf Mitte zurück —
->    `onRelease` hing an einem toten, unsichtbaren Dummy-Element statt am
->    echten `RangeSlider`. **Wichtig:** `jogBend` selbst bewegt weiterhin
->    keine DMX-Kanäle (separates, älteres „toter Code"-Thema, siehe
->    `backlog.md`) — dieser Fix betrifft nur das visuelle Zurückspringen.
-> 6. Movement-„Curve"-Regler (virtueller Joystick/Pfeiltasten) ohne
->    Wirkung — Tastatur-/Volldeflection-Input ist strukturell immer ein
->    Einheitsvektor (`pow(1, curve) == 1`), Kurve wirkte nie. Jetzt auf den
->    geglätteten Rampen-Wert statt auf den rohen Input angewendet.
+> **Gefixt (Details in `history.md`, 2026-08-17 zweite Fortsetzung):**
+> 1. **Joystick-Curve komplett neu gebaut** (v1 aus der vorigen Runde war
+>    technisch korrekt, aber praktisch unsichtbar, weil der
+>    Momentum-Blend in ~150ms konvergiert — jede Kurven-Umformung darüber
+>    ist zu kurz, um wahrgenommen zu werden). Jetzt eine eigene,
+>    zeitbasierte 2-Sekunden-Rampe (`joyHoldTime`/`accelMul`), komplett
+>    entkoppelt vom Momentum-Blend, die NUR beim aktiven Halten der
+>    Auslenkung greift — Loslassen/Abbremsen bleibt exakt wie vorher
+>    (unverändertes Momentum-Verhalten).
+> 2. **Neue gemeinsame Komponente `JoystickAdvancedControls`** (Max
+>    Speed/Curve/Momentum), jetzt in Live-, Programmer- UND
+>    Followspot-Tab eingebunden (vorher nur inline im Live-Tab).
+> 3. **Toter „Curve"-Button im Followspot-Tab entfernt** (war ein
+>    `<Pill>` ganz ohne `onClick`), ersetzt durch den echten,
+>    funktionierenden Kontrollblock.
+> 4. **„Advanced Motors"-Accordion im Programmer-Tab entfernt** (Motor
+>    Speed CH5/Pan Fine CH15/Tilt Fine CH16 manuelle Regler) — auf
+>    expliziten Wunsch, da mit dem neuen gemeinsamen Block redundant.
+>    State/Sync dieser Felder bleibt bestehen, nur die UI-Regler sind weg.
+> 5. **Followspot-Joystick-Marker geglättet** — der gestrichelte
+>    „reale Position"-Ring sprang bisher nur alle ~2s (Poll-Kadenz) und
+>    stand dazwischen still, wirkte wie ein eingefrorener Fremdkörper.
+>    Jetzt per kleiner `requestAnimationFrame`-Ease-Schleife kontinuierlich
+>    geglättet.
+> 6. **Tab-Wahl übersteht jetzt F5/Reload** (`localStorage`, Key `hz_tab`,
+>    gleiches Muster wie `night`/`accent`).
 >
-> **Bewusst nicht blind gefixt** (Fixture-DMX-Personality-Daten, nicht am
-> Code verifizierbar, in `backlog.md` unter „Bekannte kleine Issues"
-> festgehalten):
-> - „Gobo 6 static kommt nicht" — `SGOBOS`/`sGoboMap` sind seit Einführung
->   unverändert und intern konsistent (per `git log` verifiziert), also
->   vermutlich eine Diskrepanz zur echten Fixture-Personality. Braucht
->   Datenblatt oder manuellen DMX-Sweep auf CH7.
-> - „Gobo chaser auf shake läuft einfach durch" — `STEPFX_SCRATCH_OFFSET
->   (183)` war selbst ein ungeprüfter Platzhalter aus der letzten Runde,
->   erzeugt nachweislich keinen echten Shake. Braucht Fixture-Datenblatt
->   oder Hardware-Sweep, kein zweiter Blindschuss.
+> **Was noch NICHT visuell/physisch verifiziert ist** (alle 6 Punkte nur
+> am Code + durch Kompilieren/Flashen bestätigt):
+> - Joystick-Curve fühlt sich jetzt tatsächlich wie eine 2s-Beschleunigung
+>   an (nicht nur theoretisch berechnet).
+> - Alle drei Tabs zeigen den Speed/Curve/Momentum-Block konsistent.
+> - Followspot-Marker bewegt sich jetzt sichtbar statt zu „kleben".
+> - F5 im Browser öffnet wieder den zuletzt aktiven Tab.
+> - Weiterhin unverifiziert aus der vorigen Runde: Motor stoppt wirklich,
+>   Rotation läuft ruckelfrei, FX-Toggle bleibt stabil, Jog snappt zurück.
+> - Aus früheren Runden weiterhin offen: 4 FX-Panels, Blackout-Panic-
+>   Button, Chaser-Restart-Verhalten, Stage-Map-Kalibrierung im Browser.
 >
-> **Was noch NICHT visuell/physisch verifiziert ist** (alle Fixes wurden
-> nur am Code + durch Kompilieren/Flashen bestätigt, nicht am laufenden
-> Fixture beobachtet):
-> - Motor stoppt wirklich bei Gobo-Rot/Prisma-Rot-FX-Stop und `kill_fx`.
-> - Rotation läuft jetzt ruckelfrei bei Zeiten ≠ 1ms.
-> - FX-Running-Toggle bleibt stabil (kein Selbst-An/Aus mehr).
-> - Mode/Curve-Regler bei Dimmer-/Gobo-Rot-/Prisma-Rot-FX wirken sich aus.
-> - Jog snappt visuell auf Mitte zurück.
-> - Movement-Curve fühlt sich wie eine echte Anfangsbeschleunigung an.
-> - Aus der vorherigen Runde weiterhin offen: UI im Browser, 4 FX-Panels,
->   Blackout-Panic-Button, Chaser-Restart-Verhalten, Stage-Map-Kalibrierung.
+> **Bewusst nicht blind gefixt (unverändert, Fixture-DMX-Personality-
+> Daten, siehe `backlog.md` → „Bekannte kleine Issues"):** Gobo-6-static-
+> Nummerierung, Gobo-Chaser-Shake-Offset (`STEPFX_SCRATCH_OFFSET`).
 >
 > **Bekannter offener Punkt (unverändert):** Der One-Click-Web-Installer
 > (`install.html` → `firmware/manifest.json`) ist kaputt, seit der alte
-> `firmware/`-Ordner beim GitHub-Push entfernt wurde. Braucht einen frisch
-> gebauten `firmware/`-Ordner.
+> `firmware/`-Ordner beim GitHub-Push entfernt wurde.
 >
 > **Drei Findings weiterhin bewusst zurückgestellt** (echte
 > Restrukturierungen, siehe `backlog.md` → Tech Debt): `SceneData`-NVS-
 > Format-Versionierung, `/api/get_dmx`s JSON-String-Bau auf
 > `snprintf`/ArduinoJson umstellen, die zwei unsynchronisierten Frontend-
-> Polling-Loops zusammenlegen.
+> Polling-Loops zusammenlegen (relevant für den geglätteten Followspot-
+> Marker — eine echte Merge würde die zugrundeliegende ~2s-Sprunghaftigkeit
+> an der Quelle beheben statt sie nur clientseitig zu kaschieren).
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Am Fixture nachtesten, ob die 6 obigen Fixes tatsächlich wie erwartet
->    wirken — das ist der wichtigste nächste Schritt, den nur der User
->    (Augen auf UI + Lampe) erledigen kann.
-> 2. Falls noch nötig: DMX-Sweep für Gobo-Nummerierung und Shake-Zone
->    (CH7/CH8, 0–255 langsam durchfahren, echte Werte notieren) — Basis für
->    einen zweiten, diesmal datengestützten Fix-Versuch.
-> 3. `firmware/`-Ordner neu aufbauen, damit der One-Click-Installer wieder
->    funktioniert.
-> 4. Danach frei: die drei zurückgestellten Restrukturierungen, Preset-
->    Engine-Split, ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder
->    entfernen, oder die übrigen Tech-Debt-Punkte in `backlog.md`.
+> 1. Am Fixture/im Browser nachtesten, ob alle Fixes aus dieser UND der
+>    vorigen Runde tatsächlich wie erwartet wirken — das ist der
+>    wichtigste nächste Schritt, den nur der User erledigen kann.
+> 2. Falls noch nötig: DMX-Sweep für Gobo-Nummerierung und Shake-Zone.
+> 3. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
+> 4. Danach frei: die zurückgestellten Restrukturierungen (inkl.
+>    Polling-Loop-Merge), Preset-Engine-Split, ADS1115-Hardware-Joystick,
+>    `jogBend` fertigbauen oder entfernen, übrige Tech-Debt-Punkte.
 
 ## Aktueller Status
 
-Sieben Review-/Test-Runden durch: `/code-review max` (15 Findings),
+Acht Review-/Test-Runden durch: `/code-review max` (15 Findings),
 `/code-review` Vollcodebase (9 Findings), `/ultrareview` teilweise (18
 gemeldet, 15 gefixt) + vollständig nachgeholt (8 Findings, alle gefixt),
-erster echter Hardware-Test (1 Bug gefunden+gefixt), zweiter echter
-Hands-on-Test (7 gemeldete Punkte, 5+2 gefixt, 2 bewusst zurückgestellt).
-Zielhardware: **ESP32-C3 Supermini**. Repository ist sowohl lokal als auch
-auf GitHub (`future`-Branch) git-versioniert und läuft auf echter Hardware.
-Verbleibender Blocker: die gerade gefixten Verhaltensänderungen sind noch
-nicht am laufenden Fixture bestätigt.
+erster echter Hardware-Test (1 Bug), zweiter echter Hands-on-Test (7
+gemeldete Punkte, 5+2 gefixt, 2 zurückgestellt), dritte Runde direktes
+Feedback zum Joystick (6 weitere Punkte, alle gefixt). Zielhardware:
+**ESP32-C3 Supermini**. Repository ist sowohl lokal als auch auf GitHub
+(`future`-Branch) git-versioniert und läuft auf echter Hardware.
+Verbleibender Blocker: die zuletzt gefixten Verhaltensänderungen sind noch
+nicht am laufenden Gerät/im Browser bestätigt.
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 17) gemacht wurde
 
@@ -113,9 +107,14 @@ nicht am laufenden Fixture bestätigt.
 8. Zweiter echter Hands-on-Test: 7 vom User live am Fixture beobachtete
    Bugs plus 2 Nachträge — 5+2 root-caused und gefixt (FX-Stop-Reset,
    Modulator-Speed-Skalierung, Poll/Toggle-Race, Mode/Curve-Key-Mismatch,
-   Jog-Snapback, Joystick-Curve), 2 bewusst nicht blind gefixt
-   (Gobo-Nummerierung, Chaser-Shake — beides Fixture-DMX-Personality-Daten
-   ohne Datenblatt nicht verifizierbar).
+   Jog-Snapback, Joystick-Curve v1), 2 bewusst nicht blind gefixt
+   (Gobo-Nummerierung, Chaser-Shake).
+9. Dritte Runde, direktes Feedback zum Joystick: Curve v1 reichte nicht
+   (neu gebaut, zeitbasierte 2s-Rampe statt pow-Reshape), gemeinsame
+   `JoystickAdvancedControls`-Komponente in alle drei Bewegungs-Tabs
+   eingebaut, toter Curve-Button im Followspot-Tab entfernt, „Advanced
+   Motors"-Accordion im Programmer-Tab entfernt, Followspot-Positions-
+   Marker geglättet, Tab-Wahl übersteht jetzt F5/Reload.
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 17).
 
