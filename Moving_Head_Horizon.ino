@@ -30,7 +30,6 @@
 const byte wheelMap[20] = {0, 50, 5, 55, 10, 60, 15, 65, 20, 70, 25, 75, 30, 80, 35, 85, 40, 90, 45, 95};
 const byte sGoboMap[10] = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90}; 
 const byte rGoboMap[7]  = {0, 10, 20, 30, 40, 50, 60};
-#define STEPFX_SCRATCH_OFFSET 183 // fixture-specific: shifts a static gobo/rotating-gobo wheel value into its "shake" range
 
 const char* ap_ssid = "Moving_Head_Ctrl";   
 const char* ap_password = "12345678";  
@@ -325,7 +324,11 @@ void updateEngines(unsigned long now) {
       }
   }
 
-  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen) {
+  // shakeBase/shakeStep come from the fixture's real DMX chart (doc/content/mapping_sheds_160w_3in1_gobo.md):
+  // CH7 (static gobo) shake zones start at 211, CH8 (rotating gobo) at 226, both 5 DMX units per gobo,
+  // covering gobo indices 1..N (index 0 = White/Open has no shake zone). shakeBase=0 disables shake
+  // entirely (the color wheel, CH6, has no shake function on this fixture per the same chart).
+  auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen, int shakeBase) {
     if (fx.active) {
       bool doStep = false;
       if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; }
@@ -336,13 +339,16 @@ void updateEngines(unsigned long now) {
         int safeEnd = constrain(fx.endVal, 0, mapLen - 1);
         int safeStart = constrain(fx.startVal, 0, mapLen - 1);
         if (fx.currentIdx > safeEnd || fx.currentIdx < 0 || fx.currentIdx >= mapLen) fx.currentIdx = safeStart;
-        byte val = map[fx.currentIdx]; if (fx.scratch) val = constrain(val + STEPFX_SCRATCH_OFFSET, 0, 255); dmxData[channel] = val;
+        byte val;
+        if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0) val = (byte)constrain(shakeBase + (fx.currentIdx - 1) * 5, 0, 255);
+        else val = map[fx.currentIdx];
+        dmxData[channel] = val;
       }
     }
   };
-  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]));
-  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]));
-  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]));
+  runStep(colFX, CH_COLOR, wheelMap, sizeof(wheelMap) / sizeof(wheelMap[0]), 0);
+  runStep(sgobFX, CH_GOBO, sGoboMap, sizeof(sGoboMap) / sizeof(sGoboMap[0]), 211);
+  runStep(rgobFX, CH_GOBO_ROT, rGoboMap, sizeof(rGoboMap) / sizeof(rGoboMap[0]), 226);
 
   if (chaserActive && !isDipping) { 
     if (stepStartTime == 0) stepStartTime = now;

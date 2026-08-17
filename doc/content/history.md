@@ -1219,3 +1219,121 @@ angeschlossenen echten Gerät geflasht (`pio run -t upload` +
 gilt: das neue Beschleunigungsverhalten, die drei Tabs mit identischen
 Joystick-Reglern und der geglättete Followspot-Marker sind visuell im
 Browser/am Fixture zu bestätigen, nicht per CLI verifizierbar.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Offizielles Fixture-Datenblatt beschafft und ausgewertet
+
+User lieferte vier Original-Herstellerdateien zum Fixture (SHEHDS 160W
+3in1 GOBO, im Projekt bisher nur als „Pro Beam 280" bezeichnet):
+`160W三合一光束灯-LED-说明书.pdf` (Handbuch, Chinesisch+Englisch),
+`SHEHDS_160W3in1GOBO.d4` (Avolites-Fixture-Personality, XML),
+`160W gobo.R20` (MagicQ/Chamsys-Personality, Klartext), `160W gobo.ssl2`
+(unbekanntes Binärformat). Auftrag: alles extrahieren und in eine
+dauerhafte Projekt-Referenz übertragen, weil in den vorigen Sessions
+mehrfach ohne belastbare Datengrundlage geraten werden musste (Shake-
+Offset, Gobo-Nummerierung) — User: „ich dachte eigentlich dass das iwo
+gestanden hätte."
+
+### Werkzeuge
+
+`poppler` (insb. `pdftotext`) war nicht installiert — über `brew install
+poppler` nachinstalliert, danach `pdftotext -layout` genutzt, um den
+kompletten Handbuchtext inkl. der tabellarischen DMX-Kanalübersicht
+sauber (mit erhaltener Spaltenausrichtung) zu extrahieren. `.d4` ist
+valides UTF-8-XML, direkt lesbar. `.R20` ist ein klartextbasiertes
+Custom-Format mit Kommentaren, direkt lesbar. `.ssl2` erwies sich per
+`file`/`strings` als reines Binärformat ohne extrahierbaren Klartext
+(vermutlich eine proprietäre, komprimierte oder verschlüsselte MagicQ-
+Show-Datei) — keine zusätzlichen Daten daraus gewonnen, im neuen
+Referenzdokument als „nicht auslesbar" vermerkt statt stillschweigend
+ignoriert.
+
+### Neue Referenzdatei
+
+`doc/content/mapping_sheds_160w_3in1_gobo.md` — vollständige, kanalweise
+DMX-Tabelle (CH1–CH18) direkt aus dem Handbuch übertragen, pro Kanal mit
+einem Abgleich gegen den aktuellen Code (`wheelMap`/`sGoboMap`/
+`rGoboMap` in `Moving_Head_Horizon.ino`, `SGOBOS`/`RGOBOS`/`COLOR_STEPS`
+in `data/index.html`), plus die Bordmenü-Struktur des Fixtures (Abschnitt
+9/10 des Handbuchs) als Anhang.
+
+### Wichtigste Erkenntnisse aus dem Abgleich
+
+1. **Farbrad (CH6), statisches Gobo-Rad (CH7), rotierendes Gobo-Rad
+   (CH8), Prisma (CH10), Frost (CH12) — alle bereits korrekt im Code.**
+   `wheelMap[20]`, `sGoboMap[10]`, `rGoboMap[7]` sowie die
+   Prism/Frost-Schwellwerte (128 als An/Aus-Grenze) stimmen exakt mit dem
+   offiziellen Datenblatt überein. Das bedeutet insbesondere: der vom
+   User in der vorigen Runde gemeldete Bug „Gobo 6 static kommt nicht"
+   ist **kein Code-Bug** — `sGoboMap[6] = 60` trifft exakt die Mitte der
+   offiziellen Gobo-6-Zone (CH7, 60–69). Die wahrscheinlichste Erklärung
+   ist eine physische Abweichung des tatsächlichen Rads dieses konkreten
+   Geräts vom gedruckten Handbuch, oder ein mechanischer Defekt an
+   genau dieser Position — nicht per Software zu beheben, nur durch
+   Sichtprüfung am Gerät zu klären. Damit ist auch die in der vorigen
+   Runde offen gebliebene Unsicherheit aufgelöst (dort nur per `git log`
+   auf „keine Regression" geprüft, jetzt zusätzlich per echtem
+   Datenblatt auf „numerisch korrekt" verifiziert).
+
+2. **Shake-Formel war nachweislich falsch — jetzt mit echten Zahlen
+   gefixt.** Das Handbuch listet für CH7 und CH8 jeweils sehr schmale
+   (5 DMX-Werte breite), individuell pro Gobo-Nummer versetzte Shake-
+   Zonen: CH7 `211–215` (Gobo1) bis `251–255` (Gobo9), CH8 `226–230`
+   (Gobo1) bis `251–255` (Gobo6) — Formel `basis + (gobo_nr - 1) × 5`.
+   Der bisherige Code (`STEPFX_SCRATCH_OFFSET = 183`, in der vorigen
+   `/ultrareview`-Runde nur als Konstante *benannt*, nie gegen echte
+   Hardware verifiziert) addierte stattdessen einen einzigen, für alle
+   Gobo-Nummern identischen Offset auf den Wheel-Wert — bei Gobo 6 auf
+   CH7 z. B. `60 + 183 = 243`, was in die offizielle **Gobo-7**-Shake-Zone
+   (241–245) fällt statt in die korrekte Gobo-6-Zone (236–240). Erklärt
+   direkt den Bug-Report „gobo chaser auf shake läuft einfach durch" —
+   der Offset landete bei praktisch jeder Gobo-Nummer in einer falschen
+   oder unpassenden DMX-Zone.
+
+   **Fix in `Moving_Head_Horizon.ino`:** `runStep()`s Lambda bekommt einen
+   neuen Parameter `shakeBase` (211 für `sgobFX`/CH7, 226 für
+   `rgobFX`/CH8, `0` für `colFX`/CH6 — das Farbrad hat laut Datenblatt gar
+   keine Shake-Funktion). Bei aktivem `fx.scratch` und `currentIdx > 0`
+   (kein Shake für „White"/Index 0, dafür definiert das Handbuch keine
+   Zone) wird jetzt `shakeBase + (currentIdx - 1) × 5` berechnet statt der
+   alten Pauschal-Addition. `STEPFX_SCRATCH_OFFSET` als toter Code
+   entfernt.
+
+3. **CH9 (Gobo-Rotation/Index) hat zwei entgegengesetzte
+   Drehrichtungs-Zonen (64–192 CW, 193–255 CCW) — dokumentiert, aber kein
+   Fix nötig.** Ein Modulator-Bereich, der diese Grenze überschreitet,
+   würde beim Durchlaufen der LFO-Kurve sichtbar die Drehrichtung
+   wechseln. Der aktuelle Frontend-Default für `gRotFX` (`grSt:135,
+   grEn:190`) liegt bereits komplett innerhalb der CW-Zone — safe, aber
+   bisher nirgends als Invariante festgehalten. Jetzt in der neuen
+   Referenzdatei dokumentiert, damit künftige Preset-/Default-Änderungen
+   diese Grenze nicht versehentlich überschreiten.
+
+4. **CH17 (Macro) — Diskrepanz erkannt, bewusst nicht blind gefixt.** Das
+   Datenblatt kennt nur drei grobe Sammelzonen (`10–120`/`121–150` beide
+   „Auto mode", `151–255` „Sound mode"), ohne benannte Einzelmakros.
+   Unser Frontend-Dropdown bietet dagegen 13 granulare, benannte Werte
+   (Lamp On/Off, Reset fixture, Fan speed, Demo modes, …) — das sieht nach
+   einer generischen Platzhalterliste aus einer anderen Fixture-Vorlage
+   aus, nicht nach für dieses Gerät verifizierten Werten. Da das
+   Handbuch selbst zu ungenau ist, um die echten Einzelwerte
+   abzuleiten, wurde hier bewusst nichts geändert — als offener Punkt in
+   der Referenzdatei vermerkt (verifizierbar nur durch Durchklicken des
+   Bordmenüs „Set → Run Mode" am echten Gerät).
+
+5. **CH5 (Speed) bleibt absichtlich unverändert.** Das Handbuch
+   beschreibt „Pan/Tilt speed, Pan/Tilt time" ohne exakten Split-Punkt
+   zwischen den beiden Modi — nicht genug Information, um eine
+   Verhaltensänderung zu rechtfertigen. Nur als bekannte Unschärfe
+   dokumentiert.
+
+### Verifikation
+
+`pio run` `[SUCCESS]` (nur `Moving_Head_Horizon.ino` geändert, kein
+`buildfs` nötig, da `data/` nicht angefasst wurde). Auf dem
+angeschlossenen echten Gerät geflasht (`pio run -t upload`), danach per
+`curl` als online bestätigt (`/api/get_dmx` liefert reale Live-Werte).
+Ob der Shake-Effekt jetzt tatsächlich sichtbar/spürbar am Fixture
+funktioniert und ob die Gobo-6-Frage tatsächlich physisch/mechanisch ist,
+kann nur der User am echten Gerät bestätigen.

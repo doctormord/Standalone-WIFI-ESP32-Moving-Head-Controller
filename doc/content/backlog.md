@@ -118,29 +118,13 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   `WiFi.setAutoReconnect(true)` manchmal träge.
 - **UI State Sync:** Zwei gleichzeitig offene Browser-Fenster überschreiben
   sich beim Auto-Sync (Polling) teilweise gegenseitig.
-- **Statische Gobo-/Rotating-Gobo-Nummern stimmen laut Hardware-Test nicht.**
-  User-Report 2026-08-17: „Gobo 6 static kommt nicht". `SGOBOS`/`sGoboMap`
-  (`data/index.html`, `Moving_Head_Horizon.ino`) sind seit Einführung
-  unverändert und intern konsistent (Frontend CH7-Wert == Backend-Map-Wert,
-  per `git log` verifiziert) — das ist also keine Code-Regression, sondern
-  vermutlich eine Diskrepanz zur echten DMX-Personality des Fixtures
-  (Pro Beam 280). Braucht entweder das Fixture-Datenblatt oder einen
-  manuellen DMX-Sweep auf CH7 (0–255 langsam durchfahren, echte
-  Gobo-Wechsel-Grenzen live am Gerät notieren), um `SGOBOS`/`RGOBOS`/
-  `sGoboMap`/`rGoboMap` korrekt zu kalibrieren. Nicht blind fixbar.
-- **Chaser-„Shake" (`STEPFX_SCRATCH_OFFSET = 183`) erzeugt laut Hardware-
-  Test keinen sichtbaren Shake-Effekt, läuft „einfach durch".** Der Wert
-  183 wurde am 2026-08-16 selbst als Platzhalter benannt (vorher unbenannte
-  Magic Number `183, // fixture-specific`), nie gegen echte Hardware
-  verifiziert. `runStep()` addiert ihn aktuell nur als Konstante auf den
-  jeweiligen Wheel-Schritt-Wert (`map[idx] + 183`, im selben Hold-Time-Takt
-  wie normales Chasen) — das erzeugt keinen echten Shake (schnelles Zittern
-  innerhalb eines Hold-Intervalls), sondern verschiebt die Chase-Sequenz
-  nur in eine andere DMX-Zone. Die statische „Shake"-Option in
-  `SGOBO_BASES`/`RGOBO_BASES` (Werte 211+/193+) ist vermutlich näher an der
-  echten Fixture-Shake-Zone, aber ob/wie sich das mit laufendem Chasing
-  kombinieren lässt, ist ohne Fixture-Datenblatt oder Hardware-Sweep nicht
-  sicher zu sagen. Nicht blind fixbar.
+- **Statische Gobo-Nummer 6 kommt laut User am Fixture nicht.** **Update
+  2026-08-17:** Mit dem jetzt vorliegenden offiziellen Datenblatt (siehe
+  `mapping_sheds_160w_3in1_gobo.md`) verifiziert: `sGoboMap[6] = 60` trifft
+  exakt die offizielle Gobo-6-Zone (60–69) auf CH7. **Kein Code-Bug** —
+  bleibt offen als vermutlich physisches/mechanisches Problem am
+  konkreten Gerät (Rad-Abweichung vom Handbuch oder Defekt), nicht durch
+  Software lösbar. Nur durch Sichtprüfung am Gerät zu klären.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
@@ -506,3 +490,43 @@ Fix-Batch, noch am selben Tag:
 Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`, auf
 dem echten Gerät geflasht und per `curl` als online bestätigt. Details in
 `history.md`.
+
+**2026-08-17, Fortsetzung — offizielles Fixture-Datenblatt beschafft,
+Shake-Offset korrekt gefixt.** User hat die Original-Herstellerunterlagen
+zum Fixture (SHEHDS 160W 3in1 GOBO) geliefert: Handbuch-PDF (mit
+vollständiger DMX-Kanaltabelle), Avolites-`.d4`-Personality, MagicQ-
+`.R20`-Personality, `.ssl2` (binär, nicht auslesbar). Komplett extrahiert
+nach `mapping_sheds_160w_3in1_gobo.md` — neue, dauerhafte Referenz für
+alle künftigen Kanal-/Gobo-/Shake-Fragen, statt jedes Mal neu zu raten
+oder git-log-Archäologie zu betreiben.
+
+- **Shake-Formel war nachweislich falsch, jetzt mit echten Werten
+  gefixt.** Der bisherige `STEPFX_SCRATCH_OFFSET = 183` (ein einzelner
+  geratener Konstanten-Offset für alle Wheel-Typen) hatte keine reale
+  Grundlage. Laut Handbuch hat die Shake-Zone pro Gobo nur 5 DMX-Werte
+  Breite, mit unterschiedlicher Basis je Kanal: CH7 (statisches Gobo)
+  `211 + (n-1)×5`, CH8 (rotierendes Gobo) `226 + (n-1)×5` (`n` = 1-basierte
+  Gobo-Nummer, kein Shake für „White"/Index 0). `runStep()` in
+  `Moving_Head_Horizon.ino` bekommt jetzt einen `shakeBase`-Parameter pro
+  Aufruf (0 für Farbrad, das laut Datenblatt gar keine Shake-Funktion hat)
+  und berechnet den echten, gobo-spezifischen Shake-Wert statt der alten
+  Pauschal-Addition. `STEPFX_SCRATCH_OFFSET` als toter Code entfernt.
+- **Gobo-Nummerierung verifiziert korrekt.** `sGoboMap`/`rGoboMap` decken
+  sich 1:1 mit dem offiziellen Datenblatt — kein Code-Bug, siehe „Bekannte
+  kleine Issues" oben.
+- **CH9-Zonengrenze dokumentiert (kein Fix nötig).** Datenblatt zeigt: CH9
+  (Gobo-Rotation) hat zwei entgegengesetzte Drehrichtungs-Zonen (64–192
+  CW, 193–255 CCW). `gRotFX`s Frontend-Default (135–190) bleibt komplett
+  innerhalb der CW-Zone — sicher, aber jetzt bewusst dokumentiert als
+  Grenze, die künftige Default-/Preset-Änderungen nicht überschreiten
+  sollten.
+- **CH17-Macro-Dropdown als vermutlich fixture-fremde Platzhalterwerte
+  erkannt**, aber nicht blind gefixt — das Datenblatt selbst ist an dieser
+  Stelle zu grob (nur 3 Sammelzonen, keine benannten Einzelmakros), um
+  die aktuell 13 granularen Dropdown-Werte zu verifizieren oder zu
+  ersetzen. Als offener Punkt in `mapping_sheds_160w_3in1_gobo.md`
+  vermerkt.
+
+Mit `pio run` verifiziert (`[SUCCESS]`, kein `buildfs` nötig — nur
+`Moving_Head_Horizon.ino` geändert), auf dem echten Gerät geflasht und per
+`curl` als online bestätigt. Details in `history.md`.

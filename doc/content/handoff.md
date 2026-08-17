@@ -1,59 +1,47 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-17)
-> **Dritte Runde direktes Nutzer-Feedback, noch am selben Tag wie der
-> zweite Hands-on-Test.** User hatte die 6 Fixes aus der vorigen Runde
-> (Motor-Stop, Modulator-Speed, Poll-Race, Mode/Curve, Jog-Snapback,
-> Joystick-Curve v1) getestet und meldete: die Joystick-Curve wirkt
-> immer noch nicht spürbar, der Speed/Curve/Momentum-Kontrollblock fehlt
-> im Programmer- und Followspot-Tab, ein toter „Curve"-Button im
-> Followspot-Tab, der „Advanced Motors"-Block im Programmer-Tab sei jetzt
-> redundant, ein optisch „eingefrorener" gestrichelter Marker im
-> Followspot-Joystick, und F5/Reload springt immer zurück ins Live-Tab.
-> Alle 6 Punkte bearbeitet, neu geflasht, per `curl` als online bestätigt.
+> **Offizielles Fixture-Datenblatt (SHEHDS 160W 3in1 GOBO) beschafft und
+> ausgewertet.** User lieferte Handbuch-PDF + Avolites-`.d4` +
+> MagicQ-`.R20` + `.ssl2` (letzteres binär, nicht auslesbar). Alles
+> extrahiert nach **`doc/content/mapping_sheds_160w_3in1_gobo.md`** — die
+> jetzt maßgebliche Referenz für alle Kanal-/Gobo-/Shake-Zahlen dieses
+> Fixtures. Vorher musste in dieser Session mehrfach ohne belastbare Basis
+> geraten werden (Shake-Offset, Ungewissheit bei Gobo-Nummerierung) —
+> das ist jetzt behoben.
 >
-> **Gefixt (Details in `history.md`, 2026-08-17 zweite Fortsetzung):**
-> 1. **Joystick-Curve komplett neu gebaut** (v1 aus der vorigen Runde war
->    technisch korrekt, aber praktisch unsichtbar, weil der
->    Momentum-Blend in ~150ms konvergiert — jede Kurven-Umformung darüber
->    ist zu kurz, um wahrgenommen zu werden). Jetzt eine eigene,
->    zeitbasierte 2-Sekunden-Rampe (`joyHoldTime`/`accelMul`), komplett
->    entkoppelt vom Momentum-Blend, die NUR beim aktiven Halten der
->    Auslenkung greift — Loslassen/Abbremsen bleibt exakt wie vorher
->    (unverändertes Momentum-Verhalten).
-> 2. **Neue gemeinsame Komponente `JoystickAdvancedControls`** (Max
->    Speed/Curve/Momentum), jetzt in Live-, Programmer- UND
->    Followspot-Tab eingebunden (vorher nur inline im Live-Tab).
-> 3. **Toter „Curve"-Button im Followspot-Tab entfernt** (war ein
->    `<Pill>` ganz ohne `onClick`), ersetzt durch den echten,
->    funktionierenden Kontrollblock.
-> 4. **„Advanced Motors"-Accordion im Programmer-Tab entfernt** (Motor
->    Speed CH5/Pan Fine CH15/Tilt Fine CH16 manuelle Regler) — auf
->    expliziten Wunsch, da mit dem neuen gemeinsamen Block redundant.
->    State/Sync dieser Felder bleibt bestehen, nur die UI-Regler sind weg.
-> 5. **Followspot-Joystick-Marker geglättet** — der gestrichelte
->    „reale Position"-Ring sprang bisher nur alle ~2s (Poll-Kadenz) und
->    stand dazwischen still, wirkte wie ein eingefrorener Fremdkörper.
->    Jetzt per kleiner `requestAnimationFrame`-Ease-Schleife kontinuierlich
->    geglättet.
-> 6. **Tab-Wahl übersteht jetzt F5/Reload** (`localStorage`, Key `hz_tab`,
->    gleiches Muster wie `night`/`accent`).
+> **Wichtigste Erkenntnisse:**
+> 1. **Farbrad/Gobo-Räder/Prisma/Frost waren schon immer korrekt im Code**
+>    (`wheelMap`/`sGoboMap`/`rGoboMap` stimmen 1:1 mit dem Datenblatt). Der
+>    „Gobo 6 kommt nicht"-Bug aus der vorigen Runde ist damit **kein
+>    Code-Bug** — vermutlich physische Abweichung/Defekt am konkreten
+>    Gerät, nur durch Sichtprüfung zu klären.
+> 2. **Shake-Formel war nachweislich falsch, jetzt mit echten Werten
+>    gefixt.** Der alte `STEPFX_SCRATCH_OFFSET = 183` (geraten, nie
+>    verifiziert) landete bei den meisten Gobo-Nummern in der falschen
+>    Shake-Zone (Beispiel Gobo 6/CH7: alter Code → Zone von Gobo 7). Neue,
+>    aus dem Datenblatt abgeleitete Formel: `211 + (n-1)×5` für CH7 (statisch),
+>    `226 + (n-1)×5` für CH8 (rotierend), kein Shake für CH6 (Farbe, hat
+>    laut Datenblatt keine Shake-Funktion) oder Index 0 (White/Open).
+> 3. **CH9-Drehrichtungsgrenze (64–192 CW / 193–255 CCW) dokumentiert** —
+>    aktuelle Defaults liegen sicher innerhalb einer Zone, aber jetzt als
+>    Invariante für künftige Preset-Änderungen festgehalten.
+> 4. **CH17-Macro-Dropdown vermutlich fixture-fremde Platzhalterwerte** —
+>    erkannt, aber bewusst nicht blind gefixt (Datenblatt selbst zu grob,
+>    um die 13 granularen Dropdown-Werte zu verifizieren/ersetzen).
 >
-> **Was noch NICHT visuell/physisch verifiziert ist** (alle 6 Punkte nur
-> am Code + durch Kompilieren/Flashen bestätigt):
-> - Joystick-Curve fühlt sich jetzt tatsächlich wie eine 2s-Beschleunigung
->   an (nicht nur theoretisch berechnet).
-> - Alle drei Tabs zeigen den Speed/Curve/Momentum-Block konsistent.
-> - Followspot-Marker bewegt sich jetzt sichtbar statt zu „kleben".
-> - F5 im Browser öffnet wieder den zuletzt aktiven Tab.
-> - Weiterhin unverifiziert aus der vorigen Runde: Motor stoppt wirklich,
->   Rotation läuft ruckelfrei, FX-Toggle bleibt stabil, Jog snappt zurück.
-> - Aus früheren Runden weiterhin offen: 4 FX-Panels, Blackout-Panic-
->   Button, Chaser-Restart-Verhalten, Stage-Map-Kalibrierung im Browser.
+> Geflasht (`pio run -t upload`, kein `buildfs` nötig — nur
+> `Moving_Head_Horizon.ino` geändert), per `curl` als online bestätigt.
 >
-> **Bewusst nicht blind gefixt (unverändert, Fixture-DMX-Personality-
-> Daten, siehe `backlog.md` → „Bekannte kleine Issues"):** Gobo-6-static-
-> Nummerierung, Gobo-Chaser-Shake-Offset (`STEPFX_SCRATCH_OFFSET`).
+> **Was noch NICHT visuell/physisch verifiziert ist:**
+> - Ob Gobo-Chaser-Shake jetzt tatsächlich sichtbar/spürbar funktioniert.
+> - Ob „Gobo 6 static" wirklich ein Hardware-/Mechanik-Problem ist (durch
+>   Sichtprüfung am physischen Rad zu bestätigen).
+> - Alles aus den beiden vorigen Runden am selben Tag (Motor-Stop,
+>   Modulator-Speed, Poll-Race, Mode/Curve, Jog-Snapback, Joystick-Curve
+>   v2, drei einheitliche Joystick-Tabs, geglätteter Followspot-Marker,
+>   F5-Tab-Persistenz) — siehe die beiden vorigen Handoff-Runden in
+>   `history.md` für Details, alles bisher nur code-seitig verifiziert.
 >
 > **Bekannter offener Punkt (unverändert):** Der One-Click-Web-Installer
 > (`install.html` → `firmware/manifest.json`) ist kaputt, seit der alte
@@ -63,58 +51,55 @@
 > Restrukturierungen, siehe `backlog.md` → Tech Debt): `SceneData`-NVS-
 > Format-Versionierung, `/api/get_dmx`s JSON-String-Bau auf
 > `snprintf`/ArduinoJson umstellen, die zwei unsynchronisierten Frontend-
-> Polling-Loops zusammenlegen (relevant für den geglätteten Followspot-
-> Marker — eine echte Merge würde die zugrundeliegende ~2s-Sprunghaftigkeit
-> an der Quelle beheben statt sie nur clientseitig zu kaschieren).
+> Polling-Loops zusammenlegen.
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Am Fixture/im Browser nachtesten, ob alle Fixes aus dieser UND der
->    vorigen Runde tatsächlich wie erwartet wirken — das ist der
->    wichtigste nächste Schritt, den nur der User erledigen kann.
-> 2. Falls noch nötig: DMX-Sweep für Gobo-Nummerierung und Shake-Zone.
+> 1. Am Fixture/im Browser nachtesten — insbesondere den Gobo-Chaser-Shake
+>    (jetzt mit korrekten Zonen) und ob Gobo 6 tatsächlich ein
+>    Hardware-Thema ist. Das ist der wichtigste nächste Schritt, den nur
+>    der User erledigen kann.
+> 2. Falls gewünscht: CH17-Macro-Dropdown am echten Bordmenü verifizieren
+>    (`Set → Run Mode`) und ggf. durch echte Werte ersetzen.
 > 3. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
-> 4. Danach frei: die zurückgestellten Restrukturierungen (inkl.
->    Polling-Loop-Merge), Preset-Engine-Split, ADS1115-Hardware-Joystick,
->    `jogBend` fertigbauen oder entfernen, übrige Tech-Debt-Punkte.
+> 4. Danach frei: die zurückgestellten Restrukturierungen, Preset-Engine-
+>    Split, ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder
+>    entfernen, übrige Tech-Debt-Punkte.
 
 ## Aktueller Status
 
-Acht Review-/Test-Runden durch: `/code-review max` (15 Findings),
-`/code-review` Vollcodebase (9 Findings), `/ultrareview` teilweise (18
-gemeldet, 15 gefixt) + vollständig nachgeholt (8 Findings, alle gefixt),
-erster echter Hardware-Test (1 Bug), zweiter echter Hands-on-Test (7
-gemeldete Punkte, 5+2 gefixt, 2 zurückgestellt), dritte Runde direktes
-Feedback zum Joystick (6 weitere Punkte, alle gefixt). Zielhardware:
-**ESP32-C3 Supermini**. Repository ist sowohl lokal als auch auf GitHub
-(`future`-Branch) git-versioniert und läuft auf echter Hardware.
-Verbleibender Blocker: die zuletzt gefixten Verhaltensänderungen sind noch
-nicht am laufenden Gerät/im Browser bestätigt.
+Neun Review-/Test-Runden durch (Details siehe `history.md`), plus jetzt
+erstmals ein **offizielles Herstellerdatenblatt** als Referenz
+(`mapping_sheds_160w_3in1_gobo.md`). Zielhardware: **ESP32-C3 Supermini**
+(Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
+lokal als auch auf GitHub (`future`-Branch) git-versioniert und läuft auf
+echter Hardware. Verbleibender Blocker: die zuletzt gefixten
+Verhaltensänderungen sind noch nicht am laufenden Gerät/im Browser
+bestätigt.
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 17) gemacht wurde
 
 1. Exploratorische Frage zu React-Code-Splitting/Vite beantwortet — dabei
-   den Fund gemacht, dass React/Babel per CDN geladen wurden. Gefixt:
-   lokal gehostet, gzip-komprimiert.
+   den Fund gemacht, dass React/Babel per CDN geladen wurden. Gefixt.
 2. Stage-Map-Bild-Speichern/Laden geprüft, drei kleine Punkte gefixt.
 3. `/code-review` (Vollcodebase) ergab 9 Findings — alle gefixt.
-4. Projekt auf GitHub gepusht (`future`-Branch): `V1`/`V2`/`V3`/`firmware`
-   entfernt, `images` behalten, `README.md` gezielt aktualisiert.
-5. `/ultrareview` (1. Anlauf, Session-Limit-Ausfälle) — 15 von 18 gefixt.
-6. `/ultrareview` (2. Anlauf, „nachholen") — 8 von 8 gefixt, größter Fund:
-   4 von 6 FX-Panels an tote State-Keys gebunden.
-7. Erster echter Hardware-Test: geflasht, doppelten `Content-Encoding`-
-   Header gefunden und gefixt, erneut geflasht und verifiziert.
-8. Zweiter echter Hands-on-Test: 7 vom User live am Fixture beobachtete
-   Bugs plus 2 Nachträge — 5+2 root-caused und gefixt (FX-Stop-Reset,
-   Modulator-Speed-Skalierung, Poll/Toggle-Race, Mode/Curve-Key-Mismatch,
-   Jog-Snapback, Joystick-Curve v1), 2 bewusst nicht blind gefixt
-   (Gobo-Nummerierung, Chaser-Shake).
+4. Projekt auf GitHub gepusht (`future`-Branch).
+5. `/ultrareview` (1. Anlauf) — 15 von 18 gefixt.
+6. `/ultrareview` (2. Anlauf, „nachholen") — 8 von 8 gefixt.
+7. Erster echter Hardware-Test: doppelten `Content-Encoding`-Header
+   gefunden und gefixt.
+8. Zweiter echter Hands-on-Test: 7 gemeldete Bugs plus 2 Nachträge —
+   5+2 gefixt (FX-Stop-Reset, Modulator-Speed, Poll/Toggle-Race,
+   Mode/Curve-Key-Mismatch, Jog-Snapback, Joystick-Curve v1).
 9. Dritte Runde, direktes Feedback zum Joystick: Curve v1 reichte nicht
-   (neu gebaut, zeitbasierte 2s-Rampe statt pow-Reshape), gemeinsame
-   `JoystickAdvancedControls`-Komponente in alle drei Bewegungs-Tabs
-   eingebaut, toter Curve-Button im Followspot-Tab entfernt, „Advanced
-   Motors"-Accordion im Programmer-Tab entfernt, Followspot-Positions-
-   Marker geglättet, Tab-Wahl übersteht jetzt F5/Reload.
+   (neu gebaut als zeitbasierte 2s-Rampe), gemeinsame
+   `JoystickAdvancedControls`-Komponente in alle drei Bewegungs-Tabs,
+   toter Curve-Button entfernt, Advanced-Motors-Block entfernt,
+   Followspot-Marker geglättet, F5-Tab-Persistenz.
+10. Vierte Runde: offizielles Fixture-Datenblatt (PDF + `.d4` + `.R20` +
+    `.ssl2`) ausgewertet, komplette DMX-Tabelle nach
+    `mapping_sheds_160w_3in1_gobo.md` extrahiert, Shake-Offset-Formel mit
+    den jetzt bekannten echten Zonen korrekt neu gebaut, Gobo-Nummerierung
+    als code-seitig korrekt verifiziert (Bug vermutlich Hardware-seitig).
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 17).
 
@@ -125,3 +110,6 @@ Dieser Handoff ist der **einzige aktuelle Snapshot** — beim nächsten Mal
 ersetzen (Banner + Status aktualisieren), nicht anhäufen. `history.md` ist
 Append-only — dort landen abgeschlossene Sessions als neuer, chronologischer
 Eintrag, ohne bestehende Einträge zu verändern.
+`mapping_sheds_160w_3in1_gobo.md` ist die neue Fixture-DMX-Referenz —
+keine Session-Historie, sondern ein Nachschlagewerk; bei Bedarf direkt
+erweitern/korrigieren (kein Append-only-Zwang wie bei `history.md`).
