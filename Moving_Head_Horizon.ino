@@ -90,6 +90,12 @@ Modulator dimFX(0, 255);
 Modulator gRotFX(135, 255);
 Modulator pRotFX(135, 255);
 StepFX colFX, sgobFX, rgobFX;
+// Tracks whether each wheel chaser was active last frame, so runStep() (below) can apply a one-shot
+// stop-reset on the falling edge. Global (not local to updateEngines()) so WebAPI.h's /sgobfx and
+// /rgobfx handlers can clear the relevant flag when they've already applied their own atomic
+// stop-restore (the "mv" manual-value param) -- otherwise the very next runStep() call would
+// immediately overwrite that restore with its own fallback (the chaser's last wheel position).
+bool colWasActive = false, sgWasActive = false, rgWasActive = false;
 
 struct SceneData { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc; };
 static SceneData chaserScenes[10]; 
@@ -337,7 +343,6 @@ void updateEngines(unsigned long now) {
   // CH7 (static gobo) shake zones start at 211, CH8 (rotating gobo) at 226, both 5 DMX units per gobo,
   // covering gobo indices 1..N (index 0 = White/Open has no shake zone). shakeBase=0 disables shake
   // entirely (the color wheel, CH6, has no shake function on this fixture per the same chart).
-  static bool colWasActive = false, sgWasActive = false, rgWasActive = false;
   auto runStep = [&](StepFX &fx, int channel, const byte* map, int mapLen, int shakeBase, bool &wasActive) {
     if (fx.active) {
       bool doStep = false;

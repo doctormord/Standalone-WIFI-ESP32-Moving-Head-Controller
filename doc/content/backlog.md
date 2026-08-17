@@ -766,3 +766,38 @@ Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 `uploadfs` auf das echte Gerät gebracht (kein `.ino`/`.h`-Change in
 dieser Runde, daher kein Firmware-Reflash nötig) und per `curl` als
 online bestätigt. Details in `history.md`.
+
+**2026-08-17, Fortsetzung — eigener Bug im Gobo-Chaser-Stop-Fix
+gefunden und gefixt (Screenshot-Beleg vom User).** Der `mv`-basierte
+atomare Stop-Restore aus einer vorigen Runde (Kanal geht beim Stoppen auf
+den manuellen Setup-Wert statt auf die letzte Chaser-Position zurück)
+funktionierte serverseitig nicht: `/sgobfx`/`/rgobfx` schrieben `mv`
+korrekt in `dmxData`, aber `runStep()`s eigener, unabhängig laufender
+Stop-Reset (aus einer noch früheren Runde, „wasActive"-Flankenerkennung)
+lief im allernächsten `updateEngines()`-Durchlauf ebenfalls an und
+überschrieb den gerade erst korrekt gesetzten `mv`-Wert sofort wieder mit
+der letzten Chaser-Wheel-Position — die beiden Fixes bekämpften sich
+gegenseitig, ohne voneinander zu wissen.
+
+- **Root Cause:** `colWasActive`/`sgWasActive`/`rgWasActive` waren
+  `static`-Lokalvariablen innerhalb von `updateEngines()`, für
+  `WebAPI.h` nicht erreichbar — der `/sgobfx`/`/rgobfx`-Handler konnte
+  also nicht mitteilen „ich habe den Stop-Restore schon erledigt,
+  `runStep()` soll seinen eigenen Fallback diesmal überspringen".
+- **Fix:** die drei Flags zu echten globalen Variablen gemacht (deklariert
+  bei den anderen FX-Globals in `Moving_Head_Horizon.ino`, vor dem
+  `#include "WebAPI.h"`, wie im Projekt für genau diesen Zweck üblich).
+  `/sgobfx`/`/rgobfx` setzen `sgWasActive`/`rgWasActive` jetzt explizit
+  auf `false`, sobald sie den `mv`-Restore selbst übernommen haben —
+  `runStep()`s Fallback greift dadurch nur noch bei Stop-Pfaden, die
+  keinen `mv`-Wert kennen (z. B. `/kill_fx`).
+- **Live per `curl` verifiziert** (nicht nur kompiliert): Chaser
+  gestartet (Gobo 2–9), CH7 lag bei 70 (gültiger Zwischenwert) — dann mit
+  `mv=0` gestoppt: CH7 sofort **und** eine Sekunde später weiterhin `0`,
+  kein Zurückkippen mehr.
+
+Mit `pio run` verifiziert (`[SUCCESS]`, kein `buildfs` nötig — nur
+`.ino`/`.h` geändert), auf dem echten Gerät geflasht und zusätzlich live
+per `curl`-Test bestätigt (nicht nur „online", sondern das tatsächliche
+gemeldete Fehlverhalten nachgestellt und als behoben verifiziert). Details
+in `history.md`.

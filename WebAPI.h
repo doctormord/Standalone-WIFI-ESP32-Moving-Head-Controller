@@ -288,8 +288,9 @@ void setupAPI() {
       // as "mv" alongside a=0) instead of the chaser's own last wheel position -- matches what the
       // user expects to see once the chaser hands control back to the manual slider. runStep()'s own
       // stop-reset (the plain, non-shake gobo value) still runs as a fallback for stop paths that
-      // don't know a manual value (e.g. /kill_fx).
-      if (!sgobFX.active && server.hasArg("mv")) dmxData[CH_GOBO] = (byte)constrain(server.arg("mv").toInt(), 0, 255);
+      // don't know a manual value (e.g. /kill_fx) -- clear sgWasActive here so THIS restore isn't
+      // immediately overwritten by that fallback on the very next runStep() call.
+      if (!sgobFX.active && server.hasArg("mv")) { dmxData[CH_GOBO] = (byte)constrain(server.arg("mv").toInt(), 0, 255); sgWasActive = false; }
       server.send(200, "OK");
   });
 
@@ -301,8 +302,8 @@ void setupAPI() {
       if (server.hasArg("rng")) rgobFX.scratchRange = constrain(server.arg("rng").toInt(), 0, 100);
       if(rgobFX.active) { rgobFX.lastStepTime = millis(); rgobFX.currentIdx = rgobFX.startVal; }
       // See /sgobfx above: on stop, land on the Programmer tab's manual CH8 value instead of the
-      // chaser's own last wheel position.
-      if (!rgobFX.active && server.hasArg("mv")) dmxData[CH_GOBO_ROT] = (byte)constrain(server.arg("mv").toInt(), 0, 255);
+      // chaser's own last wheel position, and clear rgWasActive so runStep() doesn't undo it.
+      if (!rgobFX.active && server.hasArg("mv")) { dmxData[CH_GOBO_ROT] = (byte)constrain(server.arg("mv").toInt(), 0, 255); rgWasActive = false; }
       server.send(200, "OK");
   });
 

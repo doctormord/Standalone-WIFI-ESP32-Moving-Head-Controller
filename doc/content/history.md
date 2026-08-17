@@ -1800,3 +1800,70 @@ zurückgestellt auf Wunsch des Users, nicht vergessen.
 nur `data/index.html` geändert wurde, genügte `pio run -t uploadfs` (kein
 vollständiger Firmware-Reflash nötig) — auf dem angeschlossenen echten
 Gerät ausgeführt, danach per `curl` als online bestätigt.
+
+---
+
+## 2026-08-17 (Fortsetzung) — Eigener Bug im Gobo-Chaser-Stop-Fix, per Screenshot belegt
+
+User schickte einen Screenshot des Programmer-Tabs mit rot/gelb
+markierten Bereichen: links die manuellen Setup-Dropdowns „Static gobo"
+(CH7, „White (Open)") und „Rotating gobo" (CH8, „White (Open)"), rechts
+die „Static Gobo Chaser"- und „Rotating Gobo Chaser"-Panels mit
+konfiguriertem Bereich (Gobo 2→9 bzw. Gobo 1→6). Zitat: „wenn da im
+chaser was eingestellt ist und ich stop drücke geht er nicht zurück auf
+die werte die da links eingestellt sind." Das ist exakt das Verhalten,
+das der `mv`-basierte atomare Stop-Restore aus einer vorigen Runde
+eigentlich beheben sollte — offenbar tat er das nicht zuverlässig.
+
+### Root Cause: zwei eigene Fixes bekämpften sich gegenseitig
+
+Nachvollzogen anhand des Codes: `/sgobfx`/`/rgobfx` (`WebAPI.h`) schrieben
+den `mv`-Wert korrekt in `dmxData[CH_GOBO]`/`dmxData[CH_GOBO_ROT]` — das
+Problem lag nicht dort. Der Fehler steckte im Zusammenspiel mit
+`runStep()`s eigenem, unabhängigem Stop-Reset aus einer noch früheren
+Runde (die `wasActive`-Flankenerkennung, die beim Stoppen einmalig den
+regulären Gobo-Wert des zuletzt gewählten Wheel-Index schreibt, gedacht
+als Fallback für Stop-Pfade ohne bekannten manuellen Wert wie
+`/kill_fx`). Diese beiden Mechanismen liefen **unabhängig voneinander**:
+der HTTP-Handler setzte `dmxData[CH_GOBO] = mv` synchron beim Empfang der
+Anfrage — aber `sgWasActive`/`rgWasActive` (die `runStep()` braucht, um
+zu wissen, ob gerade eine Stop-Flanke vorliegt) waren zu diesem Zeitpunkt
+noch `true`. Im allernächsten `updateEngines()`-Durchlauf (Hauptschleife,
+läuft weit öfter als der 30ms-DMX-Sendetakt) sah `runStep()` also
+`active=false` und `wasActive=true` — genau die Bedingung für seinen
+eigenen Fallback — und überschrieb den gerade erst korrekt gesetzten
+`mv`-Wert sofort wieder mit `map[currentIdx]`, der letzten
+Chaser-Wheel-Position. Zwei für sich genommen korrekte Fixes aus zwei
+verschiedenen Runden, die beide denselben Kanal beim Stoppen beschreiben
+wollten, ohne voneinander zu wissen.
+
+### Fix
+
+`colWasActive`/`sgWasActive`/`rgWasActive` waren bisher `static`-
+Lokalvariablen innerhalb von `updateEngines()` — für `WebAPI.h`
+grundsätzlich unerreichbar, weshalb der `/sgobfx`/`/rgobfx`-Handler dem
+`runStep()`-Fallback nicht mitteilen konnte „ich habe den Stop-Restore
+bereits selbst erledigt, überspringen". Gefixt: die drei Flags zu
+echten globalen Variablen gemacht, deklariert direkt bei den anderen
+FX-Globals (`moveFX`, `dimFX`, `gRotFX`, `pRotFX`, `colFX`, `sgobFX`,
+`rgobFX`) in `Moving_Head_Horizon.ino`, **vor** dem `#include
+"WebAPI.h"` — genau das im Projekt etablierte Muster, warum dieser
+Include bewusst so spät erfolgt (siehe `CLAUDE.md`: „Arduino
+concatenates translation units, so include order = declaration order").
+`/sgobfx`/`/rgobfx` setzen `sgWasActive`/`rgWasActive` jetzt explizit auf
+`false`, sobald sie den `mv`-Restore selbst angewendet haben —
+`runStep()`s Fallback greift dadurch nur noch bei Stop-Pfaden, die
+keinen `mv`-Wert mitschicken.
+
+### Verifikation — diesmal nicht nur „online", sondern das gemeldete Verhalten nachgestellt
+
+Über `curl` das exakte gemeldete Szenario nachgebaut, nicht nur den
+Server-Neustart geprüft: `/sgobfx?a=1&st=1&en=8&...` gestartet (Gobo
+2–9), nach 2s CH7 abgefragt (`70`, ein gültiger Zwischenwert aus dem
+laufenden Chase) — dann `/sgobfx?a=0&...&mv=0` gesendet (entspricht dem
+manuellen Setup-Wert „White (Open)"). CH7 direkt danach: `0`. CH7 eine
+weitere Sekunde später (um ein verzögertes Zurückkippen auszuschließen):
+weiterhin `0`. Root Cause bestätigt behoben, nicht nur vermutet.
+
+`pio run` `[SUCCESS]` (nur `.ino`/`.h` geändert, kein `buildfs` nötig).
+Auf dem angeschlossenen echten Gerät per `pio run -t upload` geflasht.
