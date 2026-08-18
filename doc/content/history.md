@@ -2136,3 +2136,126 @@ eine weitere Komplexitätsschicht draufkommt.
 
 `pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
 angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`).
+
+## 2026-08-18 — Rotation-Pulse-Shake nachgeschärft (Amplitude, Gobo-Übergänge) + Stop-Race im Frontend gefixt
+
+Nach dem ersten Live-Test der neuen Rotation-Pulse-Shake-Technik (siehe
+2026-08-17 oben) kam echtes UI-Feedback mit drei getrennten,
+unterscheidbaren Problemen zurück:
+
+> „shake ist zu groß für langsame speeds, da rollt der gobo raus. beim
+> gobo wechsel sollte der shake nicht laufen, sonst sieht das choppy
+> aus. aber ansonsten geht es gut. was auffällt, wenn man stop drück
+> sowohl static gobo als auch rot gobo, er springt dann manchmal nach 1
+> sekunden wieder auf run. wenn man danach stop drückt geht er auch
+> wieder auf open bzw,. das was links eingestellt ist. will sagen,
+> manchmal nimmt er das stop async wohl nicht an."
+
+### Fix 1 — Puls-Dauer von der Shake-Speed entkoppelt
+
+Root Cause: die bisherige Formel leitete die Pulsdauer direkt aus der
+Periode ab (`quarter = period/4`). Bei niedrigem `scratchSpeed` (Hz)
+wird die Periode lang, also war auch der einzelne CW-/CCW-Puls lang —
+mehr gehaltene Rotationszeit bei gleicher Zonen-Intensität bedeutet mehr
+Winkel-Drift, genug um über die Mitte des aktuellen Gobos hinaus zum
+Nachbarn zu wandern. Das war exakt das gemeldete „rollt raus" bei
+niedrigen Speeds.
+
+Fix in `runStep()` (`Moving_Head_Horizon.ino`): Pulsdauer ist jetzt eine
+feste Konstante (`FIXED_PULSE_S = 0,05s`/50ms), gedeckelt auf höchstens
+die Hälfte der Halbperiode (damit sich bei sehr hohen Speed-Werten die
+beiden Pulse einer Halbperiode nicht überlappen). `scratchSpeed`
+bestimmt jetzt nur noch, wie viel Ruhezeit zwischen den Pulsen liegt
+(den Rhythmus), nicht mehr, wie weit ein einzelner Puls dreht — die
+Amplitude pro Puls bleibt dadurch bei jeder Speed-Einstellung gleich
+beschränkt.
+
+**Live per curl verifiziert:** Chaser mit `spd=0.3` (0,3 Hz, sehr
+langsam), `rng=60` (60% Intensität) auf Gobo 5 (`CH7`-Anker = 50)
+gestartet, danach 35× im 100ms-Takt `CH7` abgefragt. Ergebnis: 34 von 35
+Samples zeigten den Anker-Wert `50`, ein einzelnes Sample traf mitten in
+einen Puls und zeigte `112` — exakt der erwartete, intensitätsproportionale
+CW-Pulswert (`129 - 60×29/100 = 112`), keine sonstigen Zwischenwerte, kein
+Driften. Bestätigt: der Wechsel sitzt fast durchgehend auf dem Anker und
+nur kurz auf einem klar begrenzten Pulswert, statt lange in der
+Rotationszone zu verweilen.
+
+### Fix 2 — Settle-Fenster nach Gobo-Wechsel
+
+Reported: „beim gobo wechsel sollte der shake nicht laufen, sonst sieht
+das choppy aus." Root Cause: die Shake-Berechnung kannte bisher nur die
+absolute Zeit (`now`/`millis()`), nicht aber, ob gerade eben ein
+Gobo-Schritt (`doStep`) stattgefunden hat — der Shake konnte also mitten
+in einen frischen Wechsel hineinlaufen.
+
+Fix: neue Konstante `SHAKE_SETTLE_MS = 220` in `runStep()`, prüft
+`now - fx.lastStepTime` (der Zeitstempel wird bei jedem `doStep` ohnehin
+schon aktualisiert) und unterdrückt für die ersten 220ms nach jedem
+Schritt sowohl den Rotation-Pulse-Zyklus (CH7) als auch den nativen
+CH8-Shake-Fallback — in diesem Fenster liefert `runStep()` einfach den
+planen, nicht-shakenden Gobo-Wert. Danach setzt der Shake normal wieder
+ein.
+
+### Fix 3 — Stop-Race für Gobo-Chaser im Frontend
+
+Reported: Stop-Druck (sowohl Static- als auch Rotating-Gobo-Chaser)
+„springt dann manchmal nach 1 sekunden wieder auf run... nimmt er das
+stop async wohl nicht an." Erst per curl gegen das Backend direkt
+getestet, um Frontend- von Backend-Ursache zu trennen: Start → Stop mit
+`mv=60` → Status sofort und noch einmal ~1,6s später abgefragt, beide
+Male sauber `sgA:0, CH7:60`, kein Zurückspringen. Der bereits
+implementierte atomare `mv`-Stop-Restore (siehe 2026-08-17 oben) war
+serverseitig also die ganze Zeit korrekt — das gemeldete Verhalten war
+demnach eine reine Frontend-Race, nicht im Backend zu finden.
+
+Fix in `data/index.html`: neue Hilfsfunktion `tFetchImmediate(url, id)`
+— dasselbe Bypass-Muster wie `sendJoy`s Stop-Sonderfall (siehe
+`history.md`, Joystick-Commit-Delay-Fix). Der State-Sync-Effekt für
+`sgFxRunning`/`rgFxRunning` unterscheidet jetzt Start/laufende Änderung
+(weiter über die normale `tFetch`-Debounce-Queue) von Stop (`a=0`,
+umgeht die Queue komplett über einen direkten `fetch()` und leert
+`tfPending['sgfx']`/`['rgfx']`). Vorher verließ sich der Stop-Fall
+ausschließlich auf das 2,5s-`dirtyUntilRef`-Schutzfenster gegen
+überschreibende Poll-Antworten — laut gemeldetem Verhalten offenbar
+nicht zuverlässig genug, wenn der Stop-Request selbst hinter einer noch
+laufenden Debounce-Cooldown der vorherigen Start-Anfrage feststeckte.
+
+**Noch nicht vom User selbst bestätigt** (curl kann UI-Timing und
+physisches Pendeln nicht beurteilen): ob die Amplitude bei niedriger
+Speed jetzt tatsächlich am Gobo bleibt, ob der Gobo-Wechsel jetzt sauber
+statt choppy wirkt, und ob der Stop im Browser jetzt zuverlässig beim
+ersten Versuch greift.
+
+### Nebenbefund: Gerät nach dem Flashen vorübergehend "unerreichbar" — falscher Alarm
+
+Nach dem Flashen von Firmware + Filesystem war das Gerät für mehrere
+Minuten weder per `movinghead.local` noch per direktem `curl` erreichbar.
+Diagnoseversuch: `pio device monitor` schlug in dieser Sandbox-Shell
+fehl (kein TTY für `termios`), ein direkter Zugriff auf den seriellen
+Port per `pyserial` lieferte zunächst gar keine Bytes. Ein manueller
+DTR/RTS-Reset-Versuch zur Diagnose landete das Gerät kurzzeitig im
+ROM-Bootloader-Downloadmodus (`rst:0x15 ... boot:0x5 DOWNLOAD`) —
+harmlos, durch erneutes `pio run -t upload` (das den Chip über
+`esptool`s eigene, bewährte Reset-Routine wieder in den normalen
+Programmlauf zurückholt) behoben. Zusätzliche Erkenntnis dabei: bei
+deaktiviertem „USB CDC on Boot" (wie hier per Projektkonvention immer)
+trägt der USB-Port ausschließlich die ROM-Bootloader-Konsole — die
+Sketch-eigenen `Serial.print()`-Ausgaben laufen stattdessen über die
+UART0-Pins, nicht über USB. Serielles Monitoring des laufenden Sketches
+ist von dieser Sandbox aus daher grundsätzlich nicht möglich; nur der
+ROM-Bootloader ist sichtbar.
+
+Am Ende stellte sich heraus: Das Gerät lief die ganze Zeit einwandfrei
+(Neustart nach beiden Flashs erfolgreich, korrekter, sinnvoller
+Non-Default-Status) — nur unter seiner festen LAN-IP `192.168.8.113`
+statt per `movinghead.local` erreichbar. Die mDNS-Auflösung war schlicht
+wieder flakey, dasselbe bereits am 2026-08-17 beobachtete und dort per
+`backlog.md` dokumentierte Muster. Kein Firmware-Bug, keine Auswirkung
+der neuen Shake-Änderungen auf Boot/WLAN.
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Auf dem
+angeschlossenen echten Gerät geflasht (`upload` + `uploadfs`), Backend-
+Verhalten (Fix 1 Amplitude, Fix 3 atomarer Stop-Restore) live per `curl`
+bestätigt. Fix 2 (Settle-Fenster) und die Browser-seitige Hälfte von
+Fix 3 sind code-verifiziert, aber noch nicht am echten Gerät/UI vom User
+gegengeprüft.

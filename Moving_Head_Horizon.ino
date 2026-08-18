@@ -356,7 +356,13 @@ void updateEngines(unsigned long now) {
         if (fx.currentIdx > safeEnd || fx.currentIdx < 0 || fx.currentIdx >= mapLen) fx.currentIdx = safeStart;
       }
       byte val;
-      if (fx.scratch && fx.currentIdx > 0 && rotationPulse) {
+      // Post-step settle window: right after landing on a new gobo, hold the plain anchor value for
+      // a moment before resuming the shake -- otherwise the rotation pulse (or native shake) starts
+      // mid-transition and reads as choppy against the gobo-wheel step. Reported live 2026-08-18:
+      // "beim gobo wechsel sollte der shake nicht laufen, sonst sieht das choppy aus."
+      const unsigned long SHAKE_SETTLE_MS = 220;
+      bool justStepped = (now - fx.lastStepTime) < SHAKE_SETTLE_MS;
+      if (fx.scratch && fx.currentIdx > 0 && rotationPulse && !justStepped) {
         // "Rotation pulse" shake (CH7/static gobo only -- see StepFX::scratchSpeed comment in
         // FX_Engine.h for why CH8 can't use this). Confirmed live on hardware 2026-08-17: alternating
         // brief pulses into the fixture's continuous CW (100 slow .. 129 fast) and CCW (135 slow ..
@@ -364,20 +370,28 @@ void updateEngines(unsigned long now) {
         // selected gobo instead of scrolling to neighbors, as long as the plain index value is
         // re-sent between pulses to re-anchor position and bound drift (the rotation zones are
         // open-loop speed control, not an absolute position seek like the index zone is).
-        // Cycle: CW pulse -> re-anchor -> CCW pulse -> re-anchor, one quarter-period each.
+        // Cycle: CW pulse -> re-anchor rest -> CCW pulse -> re-anchor rest.
+        // Pulse duration is capped at a FIXED length (not period/4) so travel-per-pulse stays bounded
+        // regardless of speed -- previously duration scaled with 1/speedHz, so slow speeds meant much
+        // longer pulses and enough angular travel to drift onto the neighboring gobo ("shake ist zu
+        // gross fuer langsame speeds, da rollt der gobo raus", reported live 2026-08-18). speedHz now
+        // only controls how much idle/rest time separates the pulses (i.e. the shake's rhythm), not
+        // how far each pulse travels.
         float speedHz = constrain(fx.scratchSpeed, 0.2f, 10.0f);
         float period = 1.0f / speedHz;
-        float quarter = period / 4.0f;
+        float halfPeriod = period / 2.0f;
+        const float FIXED_PULSE_S = 0.05f; // 50ms, bounds travel-per-pulse at any speed
+        float pulseDur = min(FIXED_PULSE_S, halfPeriod * 0.5f);
         float t = fmodf(now / 1000.0f, period);
         int intensity = constrain(fx.scratchRange, 0, 100);
         byte cwVal = (byte)(129 - (intensity * 29) / 100);
         byte ccwVal = (byte)(135 + (intensity * 75) / 100);
         byte anchorVal = map[constrain(fx.currentIdx, 0, mapLen - 1)];
-        if (t < quarter) val = cwVal;
-        else if (t < quarter * 2.0f) val = anchorVal;
-        else if (t < quarter * 3.0f) val = ccwVal;
+        if (t < pulseDur) val = cwVal;
+        else if (t < halfPeriod) val = anchorVal;
+        else if (t < halfPeriod + pulseDur) val = ccwVal;
         else val = anchorVal;
-      } else if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0) {
+      } else if (fx.scratch && fx.currentIdx > 0 && shakeBase > 0 && !justStepped) {
         // Fixture-native shake fallback (CH8/rotating gobo): hold one of the fixture's 5 built-in
         // shake rates steady. Confirmed live on hardware 2026-08-17 that this sub-zone is 5 discrete,
         // ascending speed steps handled entirely by the fixture's own firmware, not a continuous

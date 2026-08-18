@@ -905,3 +905,57 @@ Mit `pio run` und `pio run -t buildfs` verifiziert, beides `[SUCCESS]`,
 auf dem echten Gerät geflasht (`upload` + `uploadfs`) und live per `curl`
 funktional bestätigt (Start, laufender Zustand, sauberer Stop). Details
 in `history.md`.
+
+**2026-08-18 — Rotation-Pulse-Shake nachgeschärft (Amplitude, Übergänge)
++ Stop-Race für Gobo-Chaser gefixt.** User-Feedback nach echtem UI-Test:
+„shake ist zu groß für langsame speeds, da rollt der gobo raus", „beim
+gobo wechsel sollte der shake nicht laufen, sonst sieht das choppy aus",
+„wenn man stop drückt... springt dann manchmal nach 1 sekunden wieder
+auf run... nimmt er das stop async wohl nicht an". Drei getrennte Fixes:
+- **Puls-Dauer von der Speed entkoppelt** (`runStep()` in
+  `Moving_Head_Horizon.ino`): vorher war die Pulsdauer `period/4`, also
+  bei niedrigem `scratchSpeed` (Hz) proportional LÄNGER — mehr
+  Rotationszeit bei gleicher Intensität bedeutet mehr Winkel-Drift, genug
+  um zum Nachbar-Gobo zu wandern. Jetzt feste, kurze Pulsdauer (50ms,
+  gedeckelt auf max. die Hälfte der Halbperiode bei sehr hohen Speeds),
+  `scratchSpeed` steuert nur noch die Ruhezeit zwischen den Pulsen
+  (Rhythmus), nicht mehr die Weite. Live per curl bestätigt: bei 0,3 Hz/
+  60% Range bleibt CH7 fast durchgehend auf dem Anker-Wert (50), nur
+  kurz auf den erwarteten, intensitätsproportionalen Puls-Wert (112 bei
+  60% Intensität = `129 - 60×29/100`).
+- **Settle-Fenster nach Gobo-Wechsel** (`runStep()`): neue Konstante
+  `SHAKE_SETTLE_MS = 220`, prüft `now - fx.lastStepTime` und unterdrückt
+  sowohl den Rotation-Pulse-Zyklus als auch den nativen CH8-Shake-
+  Fallback für die ersten 220ms nach jedem Schritt (fällt in diesem
+  Fenster einfach auf den planen Anker-Wert zurück) — verhindert, dass
+  der Shake mitten im Wechsel einsetzt und choppy wirkt.
+- **Stop-Race für `sgFxRunning`/`rgFxRunning` im Frontend**
+  (`data/index.html`): neue Hilfsfunktion `tFetchImmediate()` (gleiches
+  Bypass-Muster wie `sendJoy`s Stop-Fall) — wenn der State-Sync-Effekt
+  einen Stop sendet (`a=0`), umgeht das den `tFetch`-Debounce/Queue
+  komplett (direkter `fetch()`, `tfPending` geleert) statt sich nur auf
+  das 2,5s-`dirtyUntilRef`-Fenster zu verlassen, das den beobachteten
+  „springt nach ~1s wieder auf run"-Fall offenbar nicht zuverlässig
+  abdeckte. Start/laufende Änderungen bleiben weiter über die normale
+  `tFetch`-Debounce-Queue.
+- Backend-seitig (atomarer `mv`-Stop-Restore) per curl erneut bestätigt:
+  Start → Stop → Status sofort und ~1,6s später beide `sgA:0, CH7:60`,
+  kein Zurückspringen — dieser Teil war serverseitig schon vorher korrekt,
+  das gemeldete Verhalten war die Frontend-Race oben.
+- **Nicht per curl testbar, braucht User-Bestätigung an der echten
+  Hardware/im Browser:** ob die Amplitude bei niedriger Speed jetzt am
+  Gobo bleibt (nicht nur die DMX-Werte, sondern das tatsächliche
+  physische Pendeln), ob der Übergang beim Gobo-Wechsel jetzt sauber statt
+  choppy wirkt, und ob der Stop im Browser jetzt zuverlässig sofort greift.
+- **Nebenbefund:** direkt nach dem Flashen war das Gerät für mehrere
+  Minuten nicht per `movinghead.local` erreichbar; ein manueller
+  DTR/RTS-Reset-Versuch zur Diagnose hat es kurz in den Bootloader-
+  Download-Modus versetzt (harmlos, durch erneutes Flashen behoben).
+  Am Ende stellte sich heraus: das Gerät lief die ganze Zeit einwandfrei
+  unter seiner festen LAN-IP (`192.168.8.113`) — nur die mDNS-Auflösung
+  von `movinghead.local` war (wieder) flakey, dasselbe bereits bekannte
+  Muster wie in der vorigen Session. Kein Firmware-Bug.
+
+Mit `pio run` und `pio run -t buildfs` verifiziert (`[SUCCESS]`), auf dem
+echten Gerät geflasht, Backend-Verhalten live per `curl` bestätigt.
+Details in `history.md` (2026-08-18).
