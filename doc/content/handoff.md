@@ -1,58 +1,63 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-18)
-> **Drei Nachschärfungen am Rotation-Pulse-Shake (CH7) + Stop-Race im
-> Gobo-Chaser-Frontend gefixt, nach echtem UI-Test-Feedback.** User testete
-> die am 2026-08-17 gebaute Rotation-Pulse-Shake-Technik im Browser und
-> meldete drei getrennte Probleme: (1) Shake zu groß bei niedriger Speed,
-> Gobo rollt zum Nachbarn raus; (2) Shake sollte während eines Gobo-Wechsels
-> nicht laufen (choppy); (3) Stop-Druck bei Static/Rotating-Gobo-Chaser
-> nimmt manchmal nicht an — springt nach ~1s wieder auf „run".
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-18, Fortsetzung)
+> **Start/Stop-Race und ein echter Backend-Kanal-Clobber für ALLE FX-Typen
+> geprüft und gefixt**, direkt im Anschluss an den sg/rg-Stop-Race-Fix
+> (siehe vorheriger Banner-Stand unten). User meldete dasselbe Symptom
+> ("springt zurück auf run" / "Änderungen werden nicht angenommen") auch
+> für Dimmer-FX und Color-FX, plus eine Bandbreiten-Beobachtung (CH1/CH6-
+> Regler "wackeln" während die FX läuft), und bat explizit um Prüfung für
+> **alle** FX.
+>
+> **Gefunden (zwei getrennte Bugs, keine Vermutung — jede Komponente
+> einzeln gelesen):**
+> 1. **Frontend-Race (alle FX):** `fx`/`dimFx`/`grFx`/`prFx`/`colFx`/
+>    `chaser` nutzten beim Stop noch die alte debounced `tFetch`-Queue statt
+>    des `tFetchImmediate`-Bypasses, der bis dahin nur für sg/rg existierte.
+> 2. **Echter Backend-Bug (nicht nur Race), nur `grFx`/`prFx`/`dimFx`:**
+>    `updateEngines()` setzte CH9/CH11 beim Stop hart auf **0** statt auf
+>    den manuellen Programmer-Wert; `dimFX` liess `dimSmoothTarget` auf dem
+>    letzten LFO-Wert stehen statt auf dem manuellen Wert. `moveFX`/`colFX`/
+>    `chaser` hatten dieses Clobber-Problem nicht (Movement restauriert aus
+>    `centerPan/Tilt16`, `colFX` über den bestehenden `wasActive`-Fallback).
+> 3. **Bandbreiten-/"Regler springt"-Beobachtung bestätigt als eigener Bug:**
+>    Der Poll-Merge in `data/index.html` überschrieb `dimmer`/`goboRot`/
+>    `prismRot`/`colorBase` bei jedem Poll (alle 2 s) unconditional aus dem
+>    Live-DMX-Wert, auch während die zugehörige FX lief.
 >
 > **Gebaut:**
-> - **Fix 1** (`runStep()` in `Moving_Head_Horizon.ino`): Puls-Dauer ist
->   jetzt eine feste Konstante (50ms, gedeckelt bei sehr hohen Speeds),
->   statt `period/4` — `scratchSpeed` steuert nur noch die Ruhezeit
->   zwischen Pulsen, nicht mehr die Pulsweite. Verhindert Drift bei
->   niedrigen Speeds.
-> - **Fix 2** (`runStep()`): neues Settle-Fenster (`SHAKE_SETTLE_MS = 220`)
->   nach jedem Gobo-Schritt (`fx.lastStepTime`) — unterdrückt Rotation-Pulse
->   UND den nativen CH8-Shake-Fallback für 220ms nach einem Wechsel, fällt
->   in der Zeit auf den planen Gobo-Wert zurück.
-> - **Fix 3** (`data/index.html`): neue Funktion `tFetchImmediate()` (gleiches
->   Bypass-Muster wie `sendJoy`s Stop-Fall) — Stop-Kommandos für
->   `sgFxRunning`/`rgFxRunning` umgehen jetzt `tFetch`s Debounce-Queue
->   komplett, statt sich nur auf das 2,5s-`dirtyUntilRef`-Fenster zu
->   verlassen.
+> - `Moving_Head_Horizon.ino`: `gRotFX`/`pRotFX`-Stop-Zweige entfernen das
+>   harte `dmxData[9|11] = 0`.
+> - `WebAPI.h`: `/modfx` akzeptiert jetzt `mv=` (analog `/sgobfx`/
+>   `/rgobfx`) — schreibt bei Stop für `gr`/`pr` direkt `dmxData[9|11]`,
+>   für `dim` stattdessen `dimSmoothTarget`.
+> - `data/index.html`: alle sechs verbliebenen Stop-Übergänge nutzen jetzt
+>   `tFetchImmediate`; `grFx`/`dimFx`/`prFx` senden zusätzlich `mv=` mit;
+>   der Poll-Merge überschreibt die vier betroffenen Felder nur noch, wenn
+>   die zugehörige FX nicht läuft.
 >
-> **Live per curl verifiziert:** Fix 1 — bei `spd=0.3`/`rng=60` auf Gobo 5
-> blieb CH7 in 34 von 35 Samples (100ms-Takt) auf dem Anker-Wert 50, ein
-> Sample traf den erwarteten, begrenzten Pulswert 112. Backend-seitiger
-> Stop-Restore (atomares `mv`) bestätigt weiterhin sauber — die gemeldete
-> Stop-Race war also rein im Frontend, nicht im Backend.
+> **Live per curl verifiziert:** CH1 (Dimmer), CH9 (Gobo-Rotation), CH11
+> (Prism-Rotation) — Start → Stop mit `mv=<Wert>` → Kanal landet sofort auf
+> `mv` und bleibt 2 s später stabil dort, kein Rückfall auf 0 oder den
+> letzten FX-Wert. `pio run` + `pio run -t buildfs` beide `[SUCCESS]`,
+> geflasht (`upload` + `uploadfs`), Gerät danach unter `192.168.8.113`
+> erreichbar, `/kill_fx` setzt alle FX-Flags sauber auf 0.
 >
 > **Noch NICHT vom User im Browser/an der echten Hardware bestätigt:**
-> - Fix 1: fühlt sich die Amplitude bei niedriger Speed jetzt physisch
->   richtig an (nicht nur die DMX-Rohwerte per curl)?
-> - Fix 2: wirkt der Gobo-Wechsel jetzt sauber statt choppy?
-> - Fix 3: greift der Stop im Browser jetzt zuverlässig beim ersten Versuch?
->
-> **Nebenbefund, kein Bug:** Nach dem Flashen war das Gerät mehrere Minuten
-> weder per `movinghead.local` noch curl erreichbar — Ursache war (wieder)
-> nur eine flakey mDNS-Auflösung, das Gerät lief die ganze Zeit sauber unter
-> seiner festen LAN-IP (`192.168.8.113`). Dabei auch geklärt: bei
-> deaktiviertem „USB CDC on Boot" (Projektkonvention) trägt der USB-Port nur
-> die ROM-Bootloader-Konsole, keine Sketch-`Serial.print()`-Ausgaben — von
-> dieser Sandbox aus ist Live-Serial-Monitoring des laufenden Sketches daher
-> grundsätzlich nicht möglich, nur der Bootloader ist sichtbar. Ein
-> manueller DTR/RTS-Diagnoseversuch landete den Chip kurz im
-> Bootloader-Downloadmodus — harmlos, durch erneutes Flashen behoben.
+> - Greift Stop jetzt bei Movement-FX, Dimmer-FX, Gobo-Rotation-FX,
+>   Prism-Rotation-FX, Color-Chaser und Scene-Chaser zuverlässig beim
+>   ersten Versuch (nicht nur sg/rg, die bereits vorher bestätigt waren)?
+> - Wackeln die CH1/CH6/CH9/CH11-Regler jetzt nicht mehr sichtbar, während
+>   die jeweilige FX läuft?
+> - **Aus der vorigen Runde weiterhin offen:** Fix 1 (Shake-Amplitude bei
+>   niedriger Speed) und Fix 2 (Settle-Fenster, kein Choppy-Effekt beim
+>   Gobo-Wechsel) — code-/curl-verifiziert, aber noch nicht am echten
+>   Gerät vom User optisch bestätigt.
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Die drei neuen Fixes am echten Gerät/im Browser nachtesten (siehe oben).
-> 2. Falls alle drei sich bestätigen: das ist der stabile Stand, ab dem die
->    zuvor besprochenen Zeit-Rampen für den Shake („wa-wa-wosh") aufgesetzt
->    werden könnten, falls gewünscht.
+> 1. Die oben genannten Fixes am echten Gerät/im Browser nachtesten.
+> 2. Falls alles sich bestätigt: stabiler Stand für die zuvor besprochenen
+>    Zeit-Rampen für den Shake ("wa-wa-wosh"), falls gewünscht.
 > 3. Klären, ob ein separates Followspot-Joystick-Profil gewünscht ist.
 > 4. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
 > 5. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
@@ -62,26 +67,31 @@
 
 ## Aktueller Status
 
-Siebzehn Review-/Test-Runden durch (Details siehe `history.md`), inklusive
+Achtzehn Review-/Test-Runden durch (Details siehe `history.md`), inklusive
 eines offiziellen Herstellerdatenblatts als Referenz
 (`mapping_sheds_160w_3in1_gobo.md`) und einer erfolgreichen, mehrstufigen
 interaktiven Hardware-Kalibrierung für den Gobo-Shake — von „Idee
 verworfen" über „User korrigiert die Testtechnik" zu „funktioniert live
-bestätigt" zu „nach echtem UI-Test nachgeschärft" in derselben
+bestätigt" zu „nach echtem UI-Test nachgeschärft" zu „Start/Stop-Race und
+Kanal-Clobber für alle FX-Typen geprüft und gefixt" in derselben
 fortlaufenden Session. Zielhardware: **ESP32-C3 Supermini** (Fixture:
 SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl lokal als
 auch auf GitHub (`future`-Branch) git-versioniert und läuft auf echter
 Hardware, aktuell erreichbar unter der festen LAN-IP `192.168.8.113`
-(mDNS `movinghead.local` bleibt bekannt-flakey, siehe Nebenbefund oben).
+(mDNS `movinghead.local` bleibt bekannt-flakey).
 
 ## Was in dieser Session (Fortsetzung, 2026-08-15 bis 18) gemacht wurde
 
-1–16: siehe vorige Handoff-Snapshots / `history.md`.
-17. Nach echtem Browser-UI-Test des Rotation-Pulse-Shakes kam Feedback zu
-    drei konkreten Problemen zurück (Amplitude bei niedriger Speed,
-    Choppy-Wirkung bei Gobo-Wechsel, Stop-Race im Frontend) — alle drei
-    gefixt, kompiliert, geflasht, Backend-Seite live per curl bestätigt.
-    Browser-/Hardware-seitige Bestätigung der drei Fixes steht noch aus.
+1–17: siehe vorige Handoff-Snapshots / `history.md`.
+18. Nach dem sg/rg-Stop-Race-Fix bat der User um dieselbe Prüfung für alle
+    FX-Typen. Gefunden: derselbe Frontend-Race bei `fx`/`dimFx`/`grFx`/
+    `prFx`/`colFx`/`chaser`, plus ein echter (kein Race) Backend-Bug bei
+    `grFx`/`prFx` (Kanal-Stomp auf 0 beim Stop) und `dimFx`
+    (`dimSmoothTarget` bleibt auf letztem LFO-Wert stehen), plus ein
+    Poll-Merge-Bug (Dimmer/Gobo-Rot/Prism-Rot/Color-Regler wackeln
+    sichtbar mit der laufenden FX mit). Alle gefixt, kompiliert, geflasht,
+    Backend-Seite live per curl bestätigt. Browser-/Hardware-seitige
+    Bestätigung steht noch aus.
 
 Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 18).
 

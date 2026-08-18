@@ -312,13 +312,13 @@ void updateEngines(unsigned long now) {
 
   if (moveFX.active) moveFX.process(now, masterSyncTime, globalBPM, syncBeats);
 
-  static bool gRotWasActive = false;
-  if (gRotFX.active) { float t; gRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[9] = (byte)t; gRotWasActive = true; }
-  else if (gRotWasActive) { dmxData[9] = 0; gRotWasActive = false; }
-
-  static bool pRotWasActive = false;
-  if (pRotFX.active) { float t; pRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[11] = (byte)t; pRotWasActive = true; }
-  else if (pRotWasActive) { dmxData[11] = 0; pRotWasActive = false; }
+  // On stop, leave CH9/CH11 as-is instead of forcing 0 -- /modfx's own mv-restore (see WebAPI.h)
+  // already writes the Programmer tab's manual value there the moment the stop lands. Previously this
+  // unconditionally zeroed the channel, discarding whatever manual value the user had set -- reported
+  // live 2026-08-18 as gobo/prism rotation FX "changes not taking" (same symptom class as the sg/rg
+  // stop race, but this half of it was a real backend clobber, not just a frontend timing race).
+  if (gRotFX.active) { float t; gRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[9] = (byte)t; }
+  if (pRotFX.active) { float t; pRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[11] = (byte)t; }
 
   if (dimFX.active) { dimFX.process(now, masterSyncTime, globalBPM, syncBeats, dimSmoothTarget); dimSmoothCurrent = dimSmoothTarget; } 
   else { if (dimSmoothVal > 0) { float sensitivity = (100.0f - dimSmoothVal) * 0.1f; dimSmoothCurrent += (dimSmoothTarget - dimSmoothCurrent) * sensitivity * dt * 10.0f; } else { dimSmoothCurrent = dimSmoothTarget; } }

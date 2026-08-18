@@ -2259,3 +2259,90 @@ Verhalten (Fix 1 Amplitude, Fix 3 atomarer Stop-Restore) live per `curl`
 bestätigt. Fix 2 (Settle-Fenster) und die Browser-seitige Hälfte von
 Fix 3 sind code-verifiziert, aber noch nicht am echten Gerät/UI vom User
 gegengeprüft.
+
+## 2026-08-18 (Fortsetzung) — Start/Stop-Race und Kanal-Clobber für alle FX-Typen geprüft und gefixt
+
+Direkt im Anschluss an den sg/rg-Stop-Race-Fix meldete der User denselben
+Symptomtyp auch für andere FX, verbunden mit einer Bandbreiten-Beobachtung:
+„dimmer fx updated auch die controls in CH1, genauso wie color fx die
+fields in CH6 updated. das frisst m.E. Bandbreite. ich habe nämlich das
+Problem, dass wenn ich z. B. start/stop drücke, er manchmal einfach wieder
+zurück springt oder die Änderungen nicht annimmt. Prüfe das für alle FX,
+weil das wird ja ein größeres Problem sein.“
+
+**Root-Cause-Recherche** (kein Rätselraten, jede Komponente einzeln
+gelesen, bevor etwas geändert wurde):
+
+1. `data/index.html` per grep auf `tFetch`/`dirtyUntilRef`/`isLocalDirty`
+   durchsucht: bestätigt, dass `fx` (Movement), `dimFx`, `grFx`, `prFx`,
+   `colFx` und `chaser` beim Stop noch alle die alte debounced
+   `tFetch`-Queue nutzten — exakt dasselbe Muster, das für sg/rg schon als
+   Race identifiziert und per `tFetchImmediate`-Bypass gefixt worden war.
+2. `track()` und seine Aufrufstellen (Zeilen ~1550–1581) gelesen: die
+   bestehende `skip`-Logik (unterdrückt `/set_all`-Sync für FX-eigene Kanäle
+   während die FX läuft) ist bereits korrekt und musste nicht angefasst
+   werden.
+3. Per grep die Poll-Merge-Zeilen gefunden: `next.dimmer`, `next.goboRot`,
+   `next.prismRot` und `next.colorBase` (aus `colorEntry`) wurden bei
+   *jedem* Poll (alle 2 s) unconditional aus dem Live-DMX-Wert
+   übernommen — unabhängig davon, ob die zugehörige FX gerade lief. Das
+   erklärt exakt die gemeldete Beobachtung („Regler wackelt mit der FX
+   mit“) und zusätzlich, warum manuelle Reglerbewegungen *während* eine FX
+   lief, von der nächsten Poll-Antwort wieder überschrieben werden konnten,
+   bevor der User überhaupt Stop gedrückt hatte.
+4. `WebAPI.h` (`/fx`, `/modfx`, `/colfx`, `/chaser`) gelesen: keiner dieser
+   vier Handler hat einen `mv`-artigen atomaren Stop-Restore-Parameter wie
+   `/sgobfx`/`/rgobfx`.
+5. `FX_Engine.h` (`Modulator::stop()`, `MovementEngine::stop()`) gelesen:
+   beide setzen nur `active = false`, schreiben selbst keinen DMX-Kanal.
+6. `updateEngines()` in `Moving_Head_Horizon.ino` gelesen (Zeilen ~313–333):
+   hier lag der eigentliche, unerwartete Fund — **kein Race, sondern ein
+   echter Backend-Bug:**
+   - `gRotFX`/`pRotFX` (CH9/CH11): `else if (gRotWasActive) { dmxData[9] =
+     0; ... }` — beim Stop wurde der Kanal hart auf **0** gesetzt, nicht auf
+     den manuellen Programmer-Wert. Bestätigt der Sache nach exakt das
+     gemeldete „Änderungen werden nicht angenommen“ für Gobo-Rotation/
+     Prism-Rotation-FX.
+   - `dimFX`: `dimFX.process(..., dimSmoothTarget)` schreibt bei jedem
+     aktiven Tick direkt in `dimSmoothTarget` (per Referenz) — die
+     eigentliche „Zielgröße“, auf die `dimSmoothCurrent` beim Stop
+     zurückgleitet. Nach einem Stop blieb `dimSmoothTarget` also auf dem
+     letzten LFO-Wert stehen, nicht auf dem manuellen Wert, bis ein
+     separater `/set_all`-Aufruf ihn korrigierte — und genau dieser
+     Korrektur-Aufruf konnte durch die Debounce-Race (Punkt 1) zu spät
+     ankommen, während `dimFX.active` backend-seitig noch `true` war und
+     `dimSmoothTarget` pro Tick weiter überschrieb.
+   - `moveFX` (Pan/Tilt), `colFX` (Farbrad) und `chaserActive` hatten dieses
+     Clobber-Problem nicht: Movement restauriert Pan/Tilt jeden Frame direkt
+     aus `centerPan16`/`centerTilt16` (Zeilen 292/305), `colFX` nutzt
+     bereits denselben `wasActive`→`map[currentIdx]`-Fallback wie sg/rg.
+
+**Gebaut:**
+- `Moving_Head_Horizon.ino`: `gRotFX`/`pRotFX`-Stop-Zweige entfernen das
+  harte `dmxData[9|11] = 0` ersatzlos — der Kanal bleibt unangetastet, bis
+  `/modfx`s eigener `mv`-Restore (oder der nächste `track()`-erzwungene
+  `/set_all`) ihn korrekt setzt.
+- `WebAPI.h`: `/modfx` akzeptiert jetzt einen optionalen `mv`-Parameter
+  (analog `/sgobfx`/`/rgobfx`). Beim Stop: für `pfx=gr`/`pr` wird
+  `dmxData[9]`/`dmxData[11]` direkt gesetzt; für `pfx=dim` wird stattdessen
+  `dimSmoothTarget` gesetzt (da `updateEngines()` darüber restauriert, nicht
+  über `dmxData[CH_DIMMER]` direkt).
+- `data/index.html`:
+  - Alle sechs verbliebenen Stop-Übergänge (`fx`, `dimFx`, `grFx`, `prFx`,
+    `colFx`, `chaser`) nutzen jetzt denselben `tFetchImmediate`-Sofort-
+    Bypass wie zuvor nur sg/rg — Stop-Kommandos umgehen die
+    `tFetch`-Debounce-Queue komplett.
+  - `grFx`/`dimFx`/`prFx` senden dabei zusätzlich `mv=<manueller Wert>`
+    mit, damit der neue Backend-Restore sofort den richtigen Zielwert
+    bekommt.
+  - Der Poll-Merge überschreibt `dimmer`/`goboRot`/`prismRot`/`colorBase`
+    jetzt nur noch, wenn die jeweils zugehörige FX (`dimFxRunning`/
+    `grFxRunning`/`prFxRunning`/`colFxRunning`) *nicht* läuft.
+
+**Live per curl verifiziert** (Start → Stop mit `mv=<Wert>` → 2 s später
+erneut geprüft, jeweils für CH1/CH9/CH11): Kanal landet sofort auf dem
+`mv`-Wert und bleibt stabil dort — kein Rückfall auf 0, kein Rückfall auf
+den letzten FX-Wert. `pio run` und `pio run -t buildfs` beide `[SUCCESS]`,
+auf dem echten Gerät geflasht (`upload` + `uploadfs`), Gerät danach über
+`192.168.8.113` erreichbar und alle FX-Flags nach `/kill_fx` sauber auf 0.
+Browser-/Hardware-seitige Live-Bestätigung durch den User steht noch aus.

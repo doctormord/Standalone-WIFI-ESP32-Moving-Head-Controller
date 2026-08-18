@@ -215,7 +215,8 @@ void setupAPI() {
   server.on("/modfx", []() {
       String pfx = server.arg("pfx");
       Modulator* m = nullptr;
-      if (pfx == "dim") m = &dimFX; else if (pfx == "gr") m = &gRotFX; else if (pfx == "pr") m = &pRotFX;
+      int ch = -1; // CH9/CH11 for gr/pr -- dim restores via dimSmoothTarget instead, see below
+      if (pfx == "dim") m = &dimFX; else if (pfx == "gr") { m = &gRotFX; ch = 9; } else if (pfx == "pr") { m = &pRotFX; ch = 11; }
       if(m) {
         bool startFresh = !m->active && (server.arg("a") == "1");
         m->active = (server.arg("a") == "1");
@@ -224,6 +225,15 @@ void setupAPI() {
         m->curve = server.arg("cu").toInt(); m->trigger = server.arg("tr").toInt();
         m->sync = constrain(server.arg("sy").toInt(), 0, 6);
         if(startFresh) m->start(); else if (!m->active) m->stop();
+        // On stop, land on the Programmer tab's manual value immediately instead of leaving the
+        // modulator's last live output in place. For gr/pr that means writing CH9/CH11 directly; for
+        // dim, updateEngines() reads dimSmoothTarget (not dmxData[CH_DIMMER]) as its restore target,
+        // since dimFX.process() had been overwriting dimSmoothTarget itself every tick while active.
+        // Reported live 2026-08-18: dimmer/gobo-rot/prism-rot FX "changes not taking" after stop.
+        if (!m->active && server.hasArg("mv")) {
+          int mv = constrain(server.arg("mv").toInt(), 0, 255);
+          if (ch >= 0) dmxData[ch] = (byte)mv; else dimSmoothTarget = mv;
+        }
       }
       server.send(200, "OK");
   });

@@ -128,6 +128,39 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
+- **Start/Stop-Race betraf ALLE FX-Typen, nicht nur den Gobo-Chaser
+  (2026-08-18).** Nach dem sg/rg-Fix vom selben Tag meldete der User dasselbe
+  Symptom ("springt zurück" / "Änderung wird nicht angenommen") auch für
+  Dimmer-FX und Color-FX und bat um eine Prüfung für alle FX. Ergebnis:
+  zwei getrennte, sich überlagernde Bugs.
+  1. **Frontend-Race (alle FX betroffen):** `fx`/`dimFx`/`grFx`/`prFx`/
+     `colFx`/`chaser` nutzten beim Stop noch die alte debounced `tFetch`-
+     Queue statt des `tFetchImmediate`-Bypasses (bis dahin nur für sg/rg
+     gebaut). Gefixt: alle sechs Stop-Übergänge in `data/index.html` nutzen
+     jetzt denselben Sofort-Bypass.
+  2. **Backend-Value-Clobber (nur `grFx`/`prFx`/`dimFx`):** `gRotFX`/
+     `pRotFX` (CH9/CH11) setzten beim Stop den Kanal hart auf **0** statt
+     auf den manuellen Programmer-Wert (`Moving_Head_Horizon.ino`,
+     `updateEngines()`) — ein echter Bug, keine Race. `dimFX` liess
+     `dimSmoothTarget` beim Stop auf dem letzten LFO-Wert stehen statt auf
+     dem manuellen Wert. Gefixt: `/modfx` (`WebAPI.h`) akzeptiert jetzt
+     `mv=` (analog zu `/sgobfx`/`/rgobfx`) und schreibt den manuellen Wert
+     sofort beim Stop — für `gr`/`pr` direkt nach `dmxData[9|11]`, für `dim`
+     nach `dimSmoothTarget`. `moveFX`/`colFX`/`chaser` hatten dieses
+     Clobber-Problem nicht (Movement restauriert Pan/Tilt jeden Frame aus
+     `centerPan/Tilt16`, `colFX` über den bestehenden `wasActive`-Fallback).
+  3. **Zusätzlich (Bandbreite/„Regler springt"):** Der Polling-Merge in
+     `data/index.html` überschrieb `dimmer`/`goboRot`/`prismRot`/`colorBase`
+     bei jedem Poll (alle 2 s) unconditional aus dem Live-DMX-Wert, auch
+     während die zugehörige FX lief — deshalb "wackelte" der CH1/CH6-Regler
+     sichtbar mit der laufenden FX mit, und manuelle Anpassungen während
+     einer laufenden FX konnten von der nächsten Poll-Antwort überschrieben
+     werden, bevor Stop gedrückt wurde. Gefixt: diese vier Felder werden nur
+     noch aus dem Poll übernommen, wenn die jeweilige FX gerade NICHT läuft.
+  Alle Fixes live per curl gegen CH1/CH9/CH11 verifiziert (Start → Stop mit
+  `mv=`-Wert → Wert bleibt auch 2 s später stabil, kein Rückfall auf 0 oder
+  den letzten FX-Wert). Browser-/Hardware-seitige Bestätigung durch den User
+  steht noch aus (siehe `handoff.md`).
 - **`colFX`/`sgobFX`/`rgobFX` fehlten als globale Deklarationen (Build-Blocker).**
   Gefixt am 2026-08-15: `StepFX colFX, sgobFX, rgobFX;` im `.ino` ergänzt.
   Siehe `history.md` (2026-08-15) für die Fundgeschichte (Root Cause anhand
