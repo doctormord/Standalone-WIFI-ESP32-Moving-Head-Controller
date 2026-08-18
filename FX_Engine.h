@@ -45,7 +45,7 @@ public:
     bool active = false;
     int startVal = 0;
     int endVal = 255;
-    int mode = 0;
+    int mode = 2;
     int curve = 0;
     float speed = 30.0f;
     int trigger = 0;
@@ -82,7 +82,9 @@ public:
         if(dt <= 0 || dt > 1.0f) dt = 0.02f; 
 
         if (trigger == 0 || trigger >= 2) {
-            phase += (speed / 2000.0f) * dt * 2.0f;
+            // speed is the full LFO cycle duration in ms (matches the UI slider's ms range).
+            float periodMs = speed < 1.0f ? 1.0f : speed;
+            phase += (dt * 1000.0f) / periodMs;
         } else if (trigger == 1) {
             int safeSync = constrain(sync, 0, 6);
             unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];

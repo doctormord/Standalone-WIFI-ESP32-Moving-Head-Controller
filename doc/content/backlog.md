@@ -992,3 +992,28 @@ auf run... nimmt er das stop async wohl nicht an". Drei getrennte Fixes:
 Mit `pio run` und `pio run -t buildfs` verifiziert (`[SUCCESS]`), auf dem
 echten Gerät geflasht, Backend-Verhalten live per `curl` bestätigt.
 Details in `history.md` (2026-08-18).
+
+**2026-08-18 (Fortsetzung) — Dimmer-Speed-Einheit, Beat-Sync-Default,
+HW-Mic-Programmer-Button.** Drei neue User-Meldungen im Anschluss an den
+Stop-Race-Fix:
+- **`Modulator::process()` free-run Phasenformel** (`FX_Engine.h`)
+  interpretierte `speed` als inversen Kehrwert (`1.000.000/speed` ms
+  Periode) statt als literalen ms-Wert, obwohl der Frontend-Slider
+  ("Manual speed", `holdUnit=""`, 0–10000/Step 100) eindeutig eine
+  ms-Eingabe suggerierte. Gefixt: `speed` ist jetzt die tatsächliche
+  volle Zyklusdauer in ms (`phase += dt*1000/periodMs`). Gilt für
+  `dimFX`/`gRotFX`/`pRotFX` (gemeinsame `Modulator`-Klasse).
+- **Beat-Sync-Default** (`mode=0` Forward + `curve=3` Sine) machte das
+  Licht exakt auf dem Beat dunkel und kurz davor hell — Gegenteil vom
+  erwarteten "Flash on beat". Default auf `mode=2` (Reverse/Decay)
+  geändert, Backend-Klasse und Frontend-Startzustand.
+- **HW-Mic-Programmer-Button tat nichts:** war an tote, nie ans Backend
+  angebundene Felder (`state.micSync`/`state.micSens`) gebunden statt an
+  den echten `micOn`/`hwSens`-Zustand, den der Live-Tab nutzt. Programmer-
+  Tab bekommt jetzt dieselben Props/Handler wie Live-Tab.
+
+Alle drei mit `pio run`/`pio run -t buildfs` (`[SUCCESS]`) verifiziert,
+auf dem echten Gerät geflasht, Dimmer-Speed-Timing und Beat-Sync-Richtung
+live per curl bestätigt. HW-Mic-Fix ist reine Frontend-Verdrahtung, noch
+nicht im Browser vom User bestätigt. Details in `history.md` (2026-08-18,
+Fortsetzung).

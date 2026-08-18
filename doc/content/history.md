@@ -2346,3 +2346,97 @@ den letzten FX-Wert. `pio run` und `pio run -t buildfs` beide `[SUCCESS]`,
 auf dem echten Gerät geflasht (`upload` + `uploadfs`), Gerät danach über
 `192.168.8.113` erreichbar und alle FX-Flags nach `/kill_fx` sauber auf 0.
 Browser-/Hardware-seitige Live-Bestätigung durch den User steht noch aus.
+
+## 2026-08-18 (Fortsetzung) — Dimmer-Speed-Einheit, Beat-Sync-Feel, HW-Mic-Programmer-Button
+
+Drei neue User-Meldungen im direkten Anschluss an den vorigen Stop-Race-
+Fix, alle einzeln root-caused (kein Raten):
+
+**1. „manual speed beim dimmer sollte milliseconds, ist es aktuell
+nicht."** Bestätigt: Der Slider für Dimmer-/Gobo-Rotation-/Prism-
+Rotation-FX ("Manual speed", `holdUnit=""`, Bereich 0–10000, Step 100)
+sah wie eine ms-Eingabe aus, war es aber nicht. `Modulator::process()`
+in `FX_Engine.h` berechnete `phase += (speed/2000.0f) * dt * 2.0f`,
+also eine tatsächliche Zyklusdauer von `1.000.000/speed` ms — ein
+inverser Kehrwert, kein literaler ms-Wert (größere Zahl = schneller,
+nicht "mehr Millisekunden"). Gefixt: `phase += (dt*1000.0f) / periodMs`
+mit `periodMs = max(speed, 1.0f)` — `speed` ist jetzt buchstäblich die
+volle LFO-Zyklusdauer in ms, exakt wie der Slider es zeigt. Gilt
+einheitlich für `dimFX`/`gRotFX`/`pRotFX`, da alle dieselbe `Modulator`-
+Klasse nutzen. Frontend: `holdUnit=""` entfernt (jetzt Standard "ms")
+für alle drei Controls.
+- **Live per curl verifiziert:** `dimFX` gestartet mit `sp=1000`,
+  `mo=0` (Forward/Saw), `cu=0` (Linear) — CH1 alle ~290ms gesampelt und
+  die Phasenposition aus dem Wert zurückgerechnet (`value/0.255` =
+  ms-Position im Zyklus). Über 5 Samples stimmte die berechnete
+  Phasenposition exakt mit einer 1000ms-Periode überein (inkl. zweier
+  beobachteter Wraps genau an den erwarteten Zeitpunkten) — kein
+  Timing-Zufall, sondern exakte Übereinstimmung mit `speed=1000` →
+  1000ms Periode.
+
+**2. „ausserdem ist der sync auf beat nicht sauber, mainly ist das
+licht iwie aus anstatt an."** Root-Cause gefunden (kein Bug in der
+Mathematik, sondern ein ungünstiger Default): Bei BPM-Sync
+(`trigger==1`) ist `phase` exakt 0 an jedem Beat und läuft bis kurz vor
+dem nächsten Beat auf 1 hoch. Mit dem bisherigen Default `mode=0`
+(Forward) + `curve=3` (Sine) bedeutet das: **dunkel exakt auf dem Beat**,
+hell kurz VOR dem nächsten Beat, dann Sprung zurück auf dunkel — das
+Gegenteil vom intuitiven "Licht flasht AUF den Beat". Da dies der
+ausgelieferte Default war (`dimMo: 0` im Frontend, `mode=0` in der
+`Modulator`-Klasse) und niemand das Mode-Dropdown angefasst haben muss,
+um dieses Verhalten zu sehen, ist das der wahrscheinliche Grund für
+"Licht eher aus als an". Fix: Default auf `mode=2` (Reverse/Decay)
+geändert — sowohl in der `Modulator`-Klasse (`FX_Engine.h`) als auch im
+Frontend-Startzustand (`dimMo: 2`). Damit ist die Helligkeit bei
+`phase=0` (also exakt auf dem Beat) maximal und fällt bis zum nächsten
+Beat ab — das klassische "Flash on beat, decay" Verhalten. Die anderen
+Modi bleiben für Power-User weiterhin über das Dropdown wählbar, das ist
+nur ein Default-Wechsel, keine Verhaltensänderung der Modi selbst.
+- Nebenbefund, geprüft und ausgeschlossen: die Sorge, `globalBPM` könnte
+  0 werden und eine Division durch 0 in den BPM-Sync-Intervall-
+  Berechnungen (`Modulator`, `StepFX`, Chaser) auslösen. Bestätigt über
+  `Audio_Engine.h`: `globalBPM` wird nach jedem Audio-Update über
+  `constrain(globalBPM, BPM_MIN_LIMIT=60, BPM_MAX_LIMIT=180)` geklemmt,
+  Startwert 120, Fallback bei Verlust der Erkennung ebenfalls über
+  `BPM_DEFAULT_FALLBACK`. `/beat` (manueller Tap) liest `globalBPM` nur,
+  schreibt es nie. Kein Divide-by-zero-Risiko — kein Fix nötig.
+- **Live per curl verifiziert:** `/sync` (setzt `masterSyncTime` auf
+  jetzt) gefolgt von `dimFX` Start mit `mo=2, cu=3, tr=1` (Beat-Sync) —
+  CH1 direkt nach dem Sync-Reset bei 245 (nahe Maximum, exakt auf dem
+  simulierten Beat), danach abfallendes/oszillierendes Muster über die
+  folgenden Beat-Intervalle — bestätigt "hell auf dem Beat, Abfall bis
+  zum nächsten" statt umgekehrt.
+
+**3. „hw mic im programmer button tut nichts, wenn hw mic nicht im
+live an ist, die scheinen nicht gesycnt. genauso wue ix sensitity."**
+Root-Cause: Der "HW MIC"-Button und der "Mic sensitivity"-Slider im
+Programmer-Tab (`ProgrammerTab` in `data/index.html`) waren an
+`state.micSync`/`state.micSens` gebunden — zwei Felder, die **nirgendwo
+sonst im Code vorkommen**: nie initialisiert, nie gelesen, nie per
+`fetch()` ans Backend geschickt. Kein Sync-Bug zwischen zwei echten
+Zuständen, sondern zwei komplett tote, rein dekorative Duplikate ohne
+jede Backend-Anbindung — daher "tut nichts". Der echte Zustand
+(`micOn`/`hwSens`, angebunden an `/hwaudio` über `handleMic()`) existierte
+nur im `LiveTab`. Fix: `ProgrammerTab` bekommt jetzt dieselben Props wie
+`LiveTab` (`micOn`, `onMicToggle`, `hwSens`, `setHwSens`) von der
+App-Komponente durchgereicht; Button und Slider im Programmer-Tab nutzen
+jetzt diese echten, gemeinsamen Werte statt der toten lokalen Felder.
+Beide Tabs zeigen jetzt denselben Live-Zustand und lösen denselben
+`/hwaudio`-Request aus, unabhängig davon, in welchem Tab man klickt.
+
+**Gebaut:**
+- `FX_Engine.h`: `Modulator::process()` Free-run-Phasenformel auf
+  literale ms-Periode umgestellt; `Modulator`-Default `mode` von 0 auf 2.
+- `data/index.html`: `dimMo`-Default von 0 auf 2; `holdUnit=""` für
+  Dimmer-/Gobo-Rot-/Prism-Rot-"Manual speed" entfernt (zeigt jetzt "ms");
+  `ProgrammerTab` erhält `micOn`/`onMicToggle`/`hwSens`/`setHwSens` als
+  Props, Button/Slider nutzen diese statt `state.micSync`/`state.micSens`;
+  Render-Aufruf von `HorizonProgrammerTab` reicht dieselben Handler durch
+  wie `HorizonLiveTab`.
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`, auf dem echten
+Gerät geflasht (`upload` + `uploadfs`), Gerät danach unter
+`192.168.8.113` erreichbar. Alle drei Punkte oben live per `curl`
+bestätigt (Dimmer-Speed-Timing, Beat-Sync-Helligkeitsrichtung). Die
+HW-Mic-Programmer-Fix ist eine reine Frontend-Verdrahtung ohne
+eigenständig curl-prüfbares Verhalten — braucht Bestätigung im Browser.

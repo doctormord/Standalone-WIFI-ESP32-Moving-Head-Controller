@@ -1036,7 +1036,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     return (
       <Accordion title="Dimmer FX" dot={FX_HUE.dimmer} badge={state.dimFxRunning ? 'RUN' : null}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.dimMo} onChange={(v) => setState((s) => ({ ...s, dimMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.dimCu} onChange={(v) => setState((s) => ({ ...s, dimCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.dimTr} setTrigger={(v) => setState((s) => ({ ...s, dimTr: v }))} sync={state.dimSy} setSync={(v) => setState((s) => ({ ...s, dimSy: v }))} hold={state.dimSp} setHold={(v) => setState((s) => ({ ...s, dimSp: v }))} holdLabel="Manual speed" holdUnit="" accent={accent} />
+        <TriggerBlock trigger={state.dimTr} setTrigger={(v) => setState((s) => ({ ...s, dimTr: v }))} sync={state.dimSy} setSync={(v) => setState((s) => ({ ...s, dimSy: v }))} hold={state.dimSp} setHold={(v) => setState((s) => ({ ...s, dimSp: v }))} holdLabel="Manual speed" accent={accent} />
         <div style={{ marginTop: 6 }}><LabeledSlider label="Start value" value={state.dimSt} onChange={(v) => setState((s) => ({ ...s, dimSt: v }))} accent={accent} compact /><LabeledSlider label="End value" value={state.dimEn} onChange={(v) => setState((s) => ({ ...s, dimEn: v }))} accent={accent} compact /></div>
         <FxButton running={state.dimFxRunning} label="DIMMER FX" onClick={() => setState((s) => ({ ...s, dimFxRunning: !s.dimFxRunning }))} />
       </Accordion>
@@ -1048,14 +1048,14 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
       <Accordion title="Rotation FX · gobo + prism" dot={FX_HUE.rotation} badge={state.grFxRunning || state.prFxRunning ? 'RUN' : null}>
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Gobo rotation · CH9</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.grMo} onChange={(v) => setState((s) => ({ ...s, grMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.grCu} onChange={(v) => setState((s) => ({ ...s, grCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.grTr} setTrigger={(v) => setState((s) => ({ ...s, grTr: v }))} sync={state.grSy} setSync={(v) => setState((s) => ({ ...s, grSy: v }))} hold={state.grSp} setHold={(v) => setState((s) => ({ ...s, grSp: v }))} holdLabel="Manual speed" holdUnit="" accent={accent} />
+        <TriggerBlock trigger={state.grTr} setTrigger={(v) => setState((s) => ({ ...s, grTr: v }))} sync={state.grSy} setSync={(v) => setState((s) => ({ ...s, grSy: v }))} hold={state.grSp} setHold={(v) => setState((s) => ({ ...s, grSp: v }))} holdLabel="Manual speed" accent={accent} />
         <LabeledSlider label="Start DMX" value={state.grSt} onChange={(v) => setState((s) => ({ ...s, grSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.grEn} onChange={(v) => setState((s) => ({ ...s, grEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.grFxRunning} label="GOBO ROT" onClick={() => setState((s) => ({ ...s, grFxRunning: !s.grFxRunning }))} />
 
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 }}>Prism rotation · CH11</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.prMo} onChange={(v) => setState((s) => ({ ...s, prMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.prCu} onChange={(v) => setState((s) => ({ ...s, prCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.prTr} setTrigger={(v) => setState((s) => ({ ...s, prTr: v }))} sync={state.prSy} setSync={(v) => setState((s) => ({ ...s, prSy: v }))} hold={state.prSp} setHold={(v) => setState((s) => ({ ...s, prSp: v }))} holdLabel="Manual speed" holdUnit="" accent={accent} />
+        <TriggerBlock trigger={state.prTr} setTrigger={(v) => setState((s) => ({ ...s, prTr: v }))} sync={state.prSy} setSync={(v) => setState((s) => ({ ...s, prSy: v }))} hold={state.prSp} setHold={(v) => setState((s) => ({ ...s, prSp: v }))} holdLabel="Manual speed" accent={accent} />
         <LabeledSlider label="Start DMX" value={state.prSt} onChange={(v) => setState((s) => ({ ...s, prSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.prEn} onChange={(v) => setState((s) => ({ ...s, prEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.prFxRunning} label="PRISM ROT" onClick={() => setState((s) => ({ ...s, prFxRunning: !s.prFxRunning }))} />
@@ -1127,7 +1127,7 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
     );
   }
 
-  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick }) {
+  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens }) {
     return (
       <div className="prog-grid">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1145,9 +1145,9 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
               <button onPointerDown={tap} style={{ padding: '9px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>TAP · {bpm}</button>
               <button style={{ padding: '9px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 9, color: '#5eead4', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>SYNC</button>
-              <button onClick={() => setState((s) => ({ ...s, micSync: !s.micSync }))} style={{ padding: '9px 0', background: state.micSync ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${state.micSync ? 0.6 : 0.3})`, borderRadius: 9, color: '#86efac', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>{state.micSync ? <LED color="#22c55e" pulse size={6} /> : null} HW MIC</button>
+              <button onClick={onMicToggle} style={{ padding: '9px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 9, color: '#86efac', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>{micOn ? <LED color="#22c55e" pulse size={6} /> : null} HW MIC</button>
             </div>
-            <div style={{ marginTop: 8 }}><LabeledSlider label="Mic sensitivity" value={state.micSens} onChange={(v) => setState((s) => ({ ...s, micSens: v }))} min={0} max={100} unit="%" accent={accent} compact /><JogDial value={state.jog || 0} accent={accent} onChange={(v) => { setState((s) => ({ ...s, jog: v })); fetch('/jog?v=' + v); }} onRelease={() => { setState((s) => ({ ...s, jog: 0 })); fetch('/jog?v=0'); }} /></div>
+            <div style={{ marginTop: 8 }}><LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact /><JogDial value={state.jog || 0} accent={accent} onChange={(v) => { setState((s) => ({ ...s, jog: v })); fetch('/jog?v=' + v); }} onRelease={() => { setState((s) => ({ ...s, jog: 0 })); fetch('/jog?v=0'); }} /></div>
           </Panel>
           <Panel title="Joystick · pan + tilt" padding={12}>
             <div style={{ display: 'flex', justifyContent: 'center', padding: 4 }}>
@@ -1480,7 +1480,7 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'PATCH'];
       presetNames: Array(10).fill(''), presetActive: null, presetSaveSlot: 1, presetSaveName: '',
       chaserTrigger: 0, chaserSync: 3, chaserHold: 2000, chaserFadeMode: 0, chaserFade: 2000, chaserFadeSync: 3, chaserOrder: 0, chaserFrom: 0, chaserTo: 3, showRunning: false, transMode: 0,
       fxRunning: false, fxType: 1, fxRot: 0, fxMode: 0, fxCurve: 3, fxMS: 100, fxSS: 0, fxSE: 255, fxZS: 0, fxZE: 255, fxTr: 0, fxSy: 3,
-      dimFxRunning: false, dimSt: 0, dimEn: 255, dimMo: 0, dimCu: 3, dimSp: 2000, dimTr: 0, dimSy: 3,
+      dimFxRunning: false, dimSt: 0, dimEn: 255, dimMo: 2, dimCu: 3, dimSp: 2000, dimTr: 0, dimSy: 3,
       grFxRunning: false, grSt: 135, grEn: 190, grMo: 0, grCu: 3, grSp: 2000, grTr: 0, grSy: 3,
       prFxRunning: false, prSt: 193, prEn: 255, prMo: 0, prCu: 3, prSp: 2000, prTr: 0, prSy: 3,
       colFxRunning: false, colSt: 0, colEn: 19, colHo: 2000, colTr: 0, colSy: 3,
@@ -1647,7 +1647,7 @@ const isReceiving = useRef(false);
         <div className="tab-scroll">
           {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
           {tab === 'FOLLOWSPOT' && <HorizonFollowspotTab accent={accent} joystickSize={195} state={state} setState={setState} onJoystick={joystickHandler} onMapTap={handleMapTap} keyJoyRef={keyJoyRef} />}
-          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} />}
+          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'PATCH' && <HorizonPatchTab accent={accent} />}
         </div>
         <MutedWarning show={muted} onUnmute={handleMute} />
