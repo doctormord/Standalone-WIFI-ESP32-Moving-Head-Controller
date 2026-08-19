@@ -917,12 +917,16 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 
   const TRIGGERS = [[0, 'Trigger · Internal Timer'], [1, 'Trigger · Global BPM Sync'], [2, 'Trigger · Audio Kickdrum (Bass)'], [3, 'Trigger · Audio Snare (Mids)'], [4, 'Trigger · Audio Hi-Hat (Highs)']];
   const SYNCS = [[0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']];
+  // Movement patterns take real time to trace (finite pan/tilt slew), so a
+  // full revolution can't lock to a sub-beat divisor the way a dimmer/gobo
+  // LFO can — this table is beats-per-revolution, not fractions of a beat.
+  const MOVE_SYNCS = [[0, 'Sync · 1 Beat / rev'], [1, 'Sync · 2 Beats / rev'], [2, 'Sync · 4 Beats / rev'], [3, 'Sync · 8 Beats / rev'], [4, 'Sync · 16 Beats / rev'], [5, 'Sync · 32 Beats / rev'], [6, 'Sync · 64 Beats / rev']];
 
-  function TriggerBlock({ trigger, setTrigger, sync, setSync, hold, setHold, holdLabel = 'Hold time', holdUnit = 'ms', accent }) {
+  function TriggerBlock({ trigger, setTrigger, sync, setSync, hold, setHold, holdLabel = 'Hold time', holdUnit = 'ms', accent, syncOptions = SYNCS }) {
     return (
       <>
         <div style={{ marginBottom: 8 }}><Dropdown value={trigger} onChange={(v) => setTrigger(parseInt(v))} options={TRIGGERS} accent={accent} dense /></div>
-        {trigger === 0 ? <LabeledSlider label={holdLabel} value={hold} onChange={setHold} min={0} max={10000} step={100} unit={holdUnit} accent={accent} compact /> : <Dropdown value={sync} onChange={(v) => setSync(parseInt(v))} options={SYNCS} accent={accent} dense />}
+        {trigger === 0 ? <LabeledSlider label={holdLabel} value={hold} onChange={setHold} min={0} max={10000} step={100} unit={holdUnit} accent={accent} compact /> : <Dropdown value={sync} onChange={(v) => setSync(parseInt(v))} options={syncOptions} accent={accent} dense />}
       </>
     );
   }
@@ -936,7 +940,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     );
   }
 
-  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, FX_HUE });
+  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, FX_HUE, MOVE_SYNCS });
 })();
 </script>
 <script type="text/babel">
@@ -1062,7 +1066,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         <div style={{ marginTop: 8 }}><LabeledSlider label="Rotation" value={state.fxRot} onChange={(v) => setState((s) => ({ ...s, fxRot: v }))} min={0} max={360} unit="°" accent={accent} compact /></div>
         <div style={{ marginTop: 8, marginBottom: 6, fontSize: 9.5, color: FX_HUE.movement, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase' }}>Size + Speed modulator</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.fxMode} onChange={(v) => setState((s) => ({ ...s, fxMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.fxCurve} onChange={(v) => setState((s) => ({ ...s, fxCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} />
+        <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} syncOptions={MOVE_SYNCS} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}><LabeledSlider label="Speed Start" value={state.fxSS} onChange={(v) => setState((s) => ({ ...s, fxSS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Speed End" value={state.fxSE} onChange={(v) => setState((s) => ({ ...s, fxSE: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size Start" value={state.fxZS} onChange={(v) => setState((s) => ({ ...s, fxZS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size End" value={state.fxZE} onChange={(v) => setState((s) => ({ ...s, fxZE: v }))} min={1} max={100} unit="%" accent={accent} compact /></div>
         <FxButton running={state.fxRunning} label="MOVEMENT FX" onClick={() => setState((s) => ({ ...s, fxRunning: !s.fxRunning }))} />
       </Accordion>

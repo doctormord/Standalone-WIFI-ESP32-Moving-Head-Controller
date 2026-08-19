@@ -66,38 +66,6 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 - **Rotationsmatrix pro Fixture neu berechnet.** `cosf(rRad)/sinf(rRad)` in
   `MovementEngine::getValues()` ist über alle Fixtures identisch (gleiches
   `rot`), wird aber pro Fixture neu berechnet — einmal pro Frame reicht.
-- **`MovementEngine`-Beat-Sync moduliert nur die Speed/Size-Hüllkurve, nicht
-  die tatsächliche Pattern-Phase — Design-Problem, noch nicht umgesetzt
-  (2026-08-19).** User-Feedback: Bei BPM-Sync (`trigger==1`) berechnet
-  `MovementEngine::process()` (`FX_Engine.h`) `modPhase` phasenexakt aus dem
-  Beat-Takt (`(now - masterSyncTime) % interval / interval`) — aber
-  `modPhase` treibt nur `currentSize`/`currentSpeed` (eine LFO-Hüllkurve
-  zwischen `szSt/szEn`/`spdSt/spdEn`). Die eigentliche Pattern-Position
-  `enginePhase` (bestimmt wo der Kreis/die Form gerade steht) wird davon
-  **nicht** abgeleitet, sondern jeden Frame separat integriert
-  (`enginePhase += currentSpeed * dt * 5.0f`) — läuft also nie phasenexakt
-  zum Beat, driftet frei, und ein `sync`-Wert sagt nichts darüber aus, wann
-  eine Umdrehung fertig wird. Zusätzlich: `syncBeats[]` (`Moving_Head_Horizon.ino`)
-  hat kurze Divisoren bis 1/8 Beat — für ein „großes" Pattern (volle
-  Pan/Tilt-Auslenkung) verlangt eine volle Umdrehung in <1 Beat eine
-  Winkelgeschwindigkeit, die der Motor real nicht erreichen kann.
-  **Vorgeschlagener Fix (im Chat besprochen, noch nicht gebaut):**
-  `enginePhase` bei `trigger==1` direkt wie `modPhase` aus dem Beat-Takt
-  berechnen (`enginePhase = 2π × ((now - masterSyncTime) % interval) / interval`)
-  statt zu integrieren — dadurch startet jede Umdrehung garantiert exakt auf
-  einem Beat und ist exakt am Ende des Intervalls fertig (kein Drift, keine
-  Akkumulationsfehler). Die bestehende Speed/Size-Hüllkurve bliebe als
-  optionale, separate Modulation *über* dieser phasenexakten Grundbewegung
-  erhalten (deckt den „organischen" Use-Case weiter ab), wäre aber nicht
-  mehr das, was „sync" bedeutet. Zusätzlich bräuchte `MovementEngine` eine
-  eigene Divisor-Tabelle (z. B. 1/2/4/8/16/32/64 Beats pro Umdrehung statt
-  Sekundenbruchteilen) statt des gemeinsamen `syncBeats[]`, das für Dimmer-/
-  Gobo-Rotation weiterhin mit kurzen Divisoren sinnvoll bleibt. **Nicht
-  trivial:** `sync` ist Teil von `SceneData` (NVS-persistiert) — eine
-  Bedeutungsänderung von „sync=3" ändert stillschweigend, wie sich
-  *bestehende gespeicherte* Presets/Chaser-Szenen beim nächsten Recall
-  bewegen. Braucht vor der Umsetzung eine bewusste Entscheidung, keinen
-  Schnellschuss.
 - **NVS-Speicher überwachen.** Presets/Chaser-Szenen als gepackter
   `SceneData`-Blob via `prefs.putBytes()`. Bei vielen Änderungen über Zeit
   ggf. Defragmentierung/Reset nötig.
@@ -160,6 +128,24 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
+- **`MovementEngine`-Beat-Sync gefixt: Pattern-Phase jetzt phasenexakt statt
+  integriert, eigene Multi-Beat-Divisor-Tabelle (2026-08-19).** War oben als
+  offenes Design-Problem eingetragen, noch am selben Tag umgesetzt (siehe
+  `history.md`). `enginePhase` wird bei `trigger==1` jetzt direkt aus
+  `modPhase` abgeleitet (`enginePhase = modPhase * 2π`) statt jeden Frame zu
+  integrieren — eine Umdrehung startet dadurch garantiert exakt auf einem
+  Beat und ist exakt am Ende des `sync`-Intervalls fertig. Neue, von
+  `MovementEngine` exklusiv genutzte `moveSyncBeats[7] = {1,2,4,8,16,32,64}`
+  (Beats/Umdrehung) in `Moving_Head_Horizon.ino`, getrennt vom weiterhin für
+  Dimmer-/Gobo-/Prisma-Rotation genutzten `syncBeats[]` mit den kurzen
+  Sekundenbruchteil-Divisoren. Frontend bekommt eine eigene `MOVE_SYNCS`-
+  Liste für den Movement-FX-Sync-Dropdown (`TriggerBlock` jetzt mit
+  `syncOptions`-Prop, Default bleibt `SYNCS` für alle anderen fünf
+  Verwendungsstellen). **Bewusste Bedeutungsänderung:** `sync`-Werte in
+  bereits gespeicherten Presets/Chaser-Szenen (`SceneData`, NVS) bewegen
+  sich nach diesem Fix anders als vorher (z. B. Index 3 bedeutete vorher
+  „1 Beat"-Hüllkurvenperiode, jetzt „8 Beats pro Umdrehung") — vom User
+  im Chat explizit bestätigt, kein Versehen.
 - **Start/Stop-Race betraf ALLE FX-Typen, nicht nur den Gobo-Chaser
   (2026-08-18).** Nach dem sg/rg-Fix vom selben Tag meldete der User dasselbe
   Symptom ("springt zurück" / "Änderung wird nicht angenommen") auch für

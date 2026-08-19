@@ -2515,3 +2515,61 @@ Beat zurückgesetzt) — dadurch läuft die Form nie phasenexakt zum Beat,
 und kurze Divisoren (1/2, 1/4, 1/8 Beat) verlangen bei großen Mustern
 Winkelgeschwindigkeiten, die der Motor nicht schafft. Vorschlag noch
 nicht implementiert, siehe `doc/content/backlog.md`.
+
+---
+
+## 2026-08-19, Fortsetzung — Movement-Beat-Sync umgesetzt (phasenexakt statt integriert)
+
+User bestätigte im selben Chat den im vorigen Eintrag skizzierten
+Vorschlag ("Ja, umsetzen"). Umgesetzt von einem Hintergrund-Job.
+
+**Fix in `FX_Engine.h`, `MovementEngine::process()`:** Der finale
+Integrations-Schritt (`enginePhase += currentSpeed * dt * 5.0f`) läuft
+jetzt nur noch für `trigger != 1` (freilaufend/Audio-Trigger). Für
+`trigger == 1` (BPM-Sync) wird `enginePhase` stattdessen direkt aus dem
+ohnehin schon beat-exakten `modPhase` abgeleitet
+(`enginePhase = modPhase * PI * 2.0f`) — `modPhase` selbst wurde schon
+vorher korrekt aus dem Beat-Takt berechnet
+(`(now - masterSyncTime) % interval / interval`), nur die Pattern-Phase
+hing bisher nicht daran. Ergebnis: eine Umdrehung startet jetzt
+garantiert exakt auf einem Beat und ist exakt am Ende des
+`sync`-Intervalls fertig, kein Drift mehr über die Zeit. Die
+Speed/Size-Hüllkurve (`currentSize`/`currentSpeed`, moduliert über
+`modMo`/`modCu`) bleibt unverändert bestehen und läuft weiterhin
+synchron zur selben Phase.
+
+**Eigene Divisor-Tabelle für Movement statt der gemeinsamen `syncBeats[]`:**
+`Moving_Head_Horizon.ino` bekommt `const float moveSyncBeats[7] = {1.0,
+2.0, 4.0, 8.0, 16.0, 32.0, 64.0}` (Beats **pro Umdrehung**, nicht
+Sekundenbruchteile) — `moveFX.process(...)` nutzt jetzt diese Tabelle
+statt des gemeinsamen `syncBeats[]` (`{8, 4, 2, 1, 0.5, 0.25, 0.125}`),
+das für Dimmer-/Gobo-Rotation/Prisma-Rotation (`dimFX`/`gRotFX`/`pRotFX`)
+unverändert weiterläuft — dort sind kurze Divisoren bis 1/8 Beat
+sinnvoll (LFO auf einem Kanal, kein physisches Pan/Tilt-Slew-Limit).
+
+**Frontend (`data/index.html`):** Der Sync-Dropdown im Movement-FX-Panel
+zeigte bisher dieselbe `SYNCS`-Liste ("Sync · 1 Beat" … "Sync · 1/8 Beat")
+wie alle anderen fünf FX-Typen — jetzt inhaltlich falsch, da die
+Divisor-Indizes eine andere Bedeutung haben. Neue, separate
+`MOVE_SYNCS`-Liste ("Sync · 1 Beat / rev" … "Sync · 64 Beats / rev").
+`TriggerBlock` bekommt einen neuen `syncOptions`-Prop (Default bleibt
+`SYNCS`, unverändert für Dimmer-/Gobo-Rot-/Prism-Rot-/Color-Chaser-/
+Gobo-Chaser-TriggerBlocks), nur `MovementFx`s `TriggerBlock`-Aufruf
+übergibt jetzt `syncOptions={MOVE_SYNCS}`.
+
+**Bewusste Bedeutungsänderung, vom User im Chat bestätigt:** `moveFX.sync`
+ist Teil von `SceneData` (NVS-persistiert). Ein gespeichertes Preset mit
+`sync=3` bedeutete vorher "1 Beat"-Hüllkurvenperiode, bedeutet nach
+diesem Fix "8 Beats pro Umdrehung" — bestehende gespeicherte Presets/
+Chaser-Szenen mit aktivem Movement-BPM-Sync bewegen sich also spürbar
+anders (langsamer/größere Zeitskala) als vor dem Fix. Kein Versehen,
+sondern genau der besprochene Trade-off.
+
+**Verifiziert:** `pio run` und `pio run -t buildfs` beide `[SUCCESS]`
+(Flash-Nutzung 91,0 %, minimal gestiegen durch die zusätzliche
+`moveSyncBeats[]`-Konstante und den `syncOptions`-Prop). Nicht auf
+echter Hardware getestet — reine Logik-/Datenänderung ohne
+curl-prüfbares Verhalten über den bestehenden State-Poll hinaus, braucht
+Bestätigung am echten Fixture (insbesondere: schließt ein großer Kreis
+bei "8 Beats / rev" wirklich sauber auf dem Beat ab, ohne dass der Motor
+sichtbar hinterherhinkt).

@@ -153,8 +153,17 @@ public:
         currentSize = (szSt + (szEn - szSt) * mVal) / 100.0f;
         currentSpeed = (spdSt + (spdEn - spdSt) * mVal) / 100.0f;
 
-        enginePhase += currentSpeed * dt * 5.0f; 
-        if (enginePhase > PI * 2.0f) enginePhase -= PI * 2.0f;
+        if (trigger == 1) {
+            // Beat-locked: derive the pattern position directly from the
+            // beat clock (modPhase is already phase-exact) instead of
+            // integrating currentSpeed, so one revolution always starts
+            // exactly on a beat and completes exactly at the end of
+            // `sync` beats, with no drift and no dependency on frame timing.
+            enginePhase = modPhase * PI * 2.0f;
+        } else {
+            enginePhase += currentSpeed * dt * 5.0f;
+            if (enginePhase > PI * 2.0f) enginePhase -= PI * 2.0f;
+        }
     }
 
     void getValues(int centerP, int centerT, int fixturePhase, bool invP, bool invT, int &outP, int &outT) {

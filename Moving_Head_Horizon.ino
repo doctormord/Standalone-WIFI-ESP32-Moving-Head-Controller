@@ -53,6 +53,11 @@ unsigned long masterSyncTime = 0;
 bool beatTriggered = false; 
 bool manualTap = false; 
 const float syncBeats[7] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125};
+// Movement patterns take real time to trace (pan/tilt slew is finite) — a
+// sub-beat divisor demands angular velocity the motor can't reach for a
+// full-size shape, so MovementEngine gets its own multi-beat table instead
+// of the fast dimmer/gobo-rotation divisors above.
+const float moveSyncBeats[7] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0};
 
 bool bumpBlackout = false; bool bumpStrobeF = false; bool bumpStrobe50 = false; bool bumpBlinder = false;
 int activePresetSlot = 0;
@@ -310,7 +315,7 @@ void updateEngines(unsigned long now) {
   auto checkAudioTrg = [&](int trg) { return (trg == 2 && triggerBass) || (trg == 3 && triggerMid) || (trg == 4 && triggerHigh); };
   if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
 
-  if (moveFX.active) moveFX.process(now, masterSyncTime, globalBPM, syncBeats);
+  if (moveFX.active) moveFX.process(now, masterSyncTime, globalBPM, moveSyncBeats);
 
   // On stop, leave CH9/CH11 as-is instead of forcing 0 -- /modfx's own mv-restore (see WebAPI.h)
   // already writes the Programmer tab's manual value there the moment the stop lands. Previously this
