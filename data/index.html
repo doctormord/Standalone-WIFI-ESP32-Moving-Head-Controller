@@ -33,6 +33,15 @@
     .hz-toast.info{ border-color:rgba(59,130,246,0.5); color:#93c5fd; }
     @keyframes toastIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 
+    /* Confirm dialog (mobile-safe replacement for window.confirm) */
+    .hz-confirm-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:10000; padding:24px; animation:toastIn 0.15s ease; }
+    .hz-confirm-card { background:rgba(24,24,28,0.98); border:1px solid rgba(255,255,255,0.1); border-radius:14px; padding:20px; max-width:340px; width:100%; box-shadow:0 12px 40px rgba(0,0,0,0.6); }
+    .hz-confirm-msg { color:#fff; font-size:13.5px; font-weight:600; line-height:1.5; margin-bottom:16px; font-family:'Inter',sans-serif; }
+    .hz-confirm-btns { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .hz-confirm-btn { padding:13px 0; border-radius:9px; font-weight:700; font-size:13px; cursor:pointer; border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.06); color:rgba(255,255,255,0.85); }
+    .hz-confirm-btn.ok { background:#16a34a; border-color:#16a34a; color:#fff; }
+    .hz-confirm-btn.ok.danger { background:#dc2626; border-color:#dc2626; }
+
     /* Landscape prompt */
     .hz-landscape-prompt { display:none; }
     @media (orientation:portrait) and (max-width:768px) {
@@ -637,6 +646,34 @@ window.showToast = (msg, type = 'ok', ms = 2200) => {
   setTimeout(() => { d.style.opacity = '0'; d.style.transition = 'opacity 0.25s'; setTimeout(() => d.remove(), 270); }, ms);
 };
 window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
+
+// Mobile-safe confirm dialog — native window.confirm() renders inconsistently
+// inside home-screen/fullscreen PWA contexts, so use a real in-page modal instead.
+window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
+  const overlay = document.createElement('div');
+  overlay.className = 'hz-confirm-overlay';
+  const card = document.createElement('div');
+  card.className = 'hz-confirm-card';
+  const msg = document.createElement('div');
+  msg.className = 'hz-confirm-msg';
+  msg.textContent = message;
+  const btns = document.createElement('div');
+  btns.className = 'hz-confirm-btns';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'hz-confirm-btn cancel';
+  cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+  const okBtn = document.createElement('button');
+  okBtn.className = 'hz-confirm-btn ok' + (opts.danger ? ' danger' : '');
+  okBtn.textContent = opts.okLabel || 'OK';
+  const finish = (result) => { overlay.remove(); resolve(result); };
+  cancelBtn.onclick = () => finish(false);
+  okBtn.onclick = () => finish(true);
+  overlay.onclick = (e) => { if (e.target === overlay) finish(false); };
+  btns.appendChild(cancelBtn); btns.appendChild(okBtn);
+  card.appendChild(msg); card.appendChild(btns);
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+});
 </script>
 <script type="text/babel">
 // horizon-primitives.jsx
@@ -1161,6 +1198,18 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
             </div>
             <JoystickAdvancedControls accent={accent} state={state} setState={setState} />
           </Panel>
+          <Accordion title="Save to preset · slot" dot={accent}>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+              <select value={state.presetSaveSlot} onFocus={() => setState((s) => ({ ...s, presetSaveName: s.presetNames[s.presetSaveSlot - 1] || '' }))} onChange={(e) => { const slot = parseInt(e.target.value); setState((s) => ({ ...s, presetSaveSlot: slot, presetSaveName: s.presetNames[slot - 1] || '' })); }} style={{ flex: '0 0 80px', padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, appearance: 'none', cursor: 'pointer' }}>
+                {Array.from({length:10}, (_,i)=>(<option key={i} value={i+1} style={{background:'#1a1a1d'}}>{`Slot ${i+1}`}</option>))}
+              </select>
+              <input value={state.presetSaveName !== undefined ? state.presetSaveName : (state.presetNames[state.presetSaveSlot - 1] || '')} onChange={(e) => setState((s) => ({ ...s, presetSaveName: e.target.value }))} placeholder="Preset name (max 20)" maxLength={20} style={{ flex: 1, padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, fontFamily: 'inherit' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              <button onClick={async () => { const ok = await confirmDialog(`Save current programmer state to Preset ${state.presetSaveSlot}? This overwrites the existing preset.`, { okLabel: 'Save', cancelLabel: 'Cancel' }); if (!ok) return; fetch(`/save?slot=${state.presetSaveSlot}&n=${encodeURIComponent(state.presetSaveName || '')}`).then(() => { setState(s => { const pn = [...s.presetNames]; pn[state.presetSaveSlot - 1] = state.presetSaveName || `Preset ${state.presetSaveSlot}`; return { ...s, presetNames: pn }; }); showToast(`✓ Preset ${state.presetSaveSlot} saved`, 'ok'); }); }} style={{ padding: '11px 0', background: '#16a34a', border: 'none', borderRadius: 9, color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>SAVE</button>
+              <button onClick={async () => { const ok = await confirmDialog(`Recall Preset ${state.presetSaveSlot}? This replaces the current programmer state.`, { okLabel: 'Recall', cancelLabel: 'Cancel' }); if (!ok) return; fetch('/recall?slot=' + state.presetSaveSlot); setState((s) => ({ ...s, presetActive: state.presetSaveSlot })); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.18)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>RECALL</button>
+            </div>
+          </Accordion>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <Panel title="Master · color" padding={12}>
@@ -1180,18 +1229,6 @@ window.haptic = (ms = 8) => { try { navigator.vibrate?.(ms); } catch(e) {} };
             <LabeledSlider label="Zoom · CH14" value={state.zoom} onChange={(v) => setState((s) => ({ ...s, zoom: v }))} accent={accent} compact />
             <div style={{ marginTop: 4 }}><div style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.45)', letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 5 }}>Auto macros · CH17</div><Dropdown value={state.macro} onChange={(v) => setState((s) => ({ ...s, macro: parseInt(v) }))} options={[[0,'Off (open)'],[8,'Lamp On'],[16,'Lamp Off'],[24,'Reset fixture'],[32,'Fan speed auto'],[40,'Fan speed high'],[80,'Pan/Tilt speed fast'],[120,'Pan/Tilt speed slow'],[168,'Blackout on move'],[200,'Sound auto'],[230,'Demo mode 1'],[240,'Demo mode 2'],[255,'Demo mode 3']]} accent={accent} dense /></div>
           </Panel>
-          <Accordion title="Save to preset · slot" dot={accent}>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              <select value={state.presetSaveSlot} onChange={(e) => { const slot = parseInt(e.target.value); setState((s) => ({ ...s, presetSaveSlot: slot, presetSaveName: s.presetNames[slot - 1] || '' })); }} style={{ flex: '0 0 80px', padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, appearance: 'none', cursor: 'pointer' }}>
-                {Array.from({length:10}, (_,i)=>(<option key={i} value={i+1} style={{background:'#1a1a1d'}}>{`Slot ${i+1}`}</option>))}
-              </select>
-              <input value={state.presetSaveName !== undefined ? state.presetSaveName : (state.presetNames[state.presetSaveSlot - 1] || '')} onChange={(e) => setState((s) => ({ ...s, presetSaveName: e.target.value }))} placeholder="Preset name (max 20)" maxLength={20} style={{ flex: 1, padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, fontFamily: 'inherit' }} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-              <button onClick={() => { fetch(`/save?slot=${state.presetSaveSlot}&n=${encodeURIComponent(state.presetSaveName || '')}`).then(() => { setState(s => { const pn = [...s.presetNames]; pn[state.presetSaveSlot - 1] = state.presetSaveName || `Preset ${state.presetSaveSlot}`; return { ...s, presetNames: pn }; }); showToast(`✓ Preset ${state.presetSaveSlot} saved`, 'ok'); }); }} style={{ padding: '11px 0', background: '#16a34a', border: 'none', borderRadius: 9, color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>SAVE</button>
-              <button onClick={() => { fetch('/recall?slot=' + state.presetSaveSlot); setState((s) => ({ ...s, presetActive: state.presetSaveSlot })); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.18)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>RECALL</button>
-            </div>
-          </Accordion>
         </div>
         <div className="prog-col-fx" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <MovementFx accent={accent} state={state} setState={setState} />

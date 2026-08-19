@@ -2440,3 +2440,78 @@ Gerät geflasht (`upload` + `uploadfs`), Gerät danach unter
 bestätigt (Dimmer-Speed-Timing, Beat-Sync-Helligkeitsrichtung). Die
 HW-Mic-Programmer-Fix ist eine reine Frontend-Verdrahtung ohne
 eigenständig curl-prüfbares Verhalten — braucht Bestätigung im Browser.
+
+---
+
+## 2026-08-19 — Preset-Panel-Layout, Slot-Reload-Bug, mobiles Confirm-Dialog
+
+Drei konkrete UI-Fixes im Programmer-Tab (`data/index.html`), von einem
+Hintergrund-Job umgesetzt.
+
+**1. „Save to preset" war rechts, weit weg vom Joystick — nicht per
+Daumen erreichbar.** Der `Accordion`-Block "Save to preset · slot" saß
+in der rechten Spalte von `ProgrammerTab`, hinter "Optics · prism ·
+macros" — mehrere Panels von "Speed · Curve · Momentum"
+(`JoystickAdvancedControls`, in der linken Spalte innerhalb "Joystick ·
+pan + tilt") entfernt. Fix: Block in die linke Spalte verschoben, direkt
+unter `JoystickAdvancedControls`/dem Joystick-Panel.
+
+**2. Preset-Name lud nicht neu, wenn man denselben Slot erneut wählte.**
+Root-Cause: Das Nachladen des Namens (`presetSaveName:
+s.presetNames[slot-1]`) hing komplett am `onChange` des nativen
+`<select>` — und der DOM feuert `change` nur, wenn sich der Wert
+tatsächlich ändert. War man schon auf Slot 1 und wählte erneut "Slot 1",
+blieb der `change`-Event aus, der Namens-Reload lief nie, ein zuvor
+eingetippter/übriggebliebener Text blieb im Feld stehen. Fix: zusätzlich
+`onFocus` am `<select>` — feuert zuverlässig beim Öffnen des
+Pickers (auch mobil, iOS Safari/Android Chrome), lädt den Namen des
+aktuell gewählten Slots also schon vor jeder Auswahl frisch nach,
+unabhängig davon ob sich der Wert danach ändert.
+
+**3. Save/Recall ohne Sicherheitsabfrage, und `window.confirm()` ist auf
+dem Handy nicht zuverlässig genug.** Es gab noch keine eigene
+Modal-Komponente im File — nur `window.showToast` (rein-imperatives
+Vanilla-DOM, an `window` gehängt, damit es aus jedem
+`<script type="text/babel">`-Scope aufrufbar ist, siehe `CLAUDE.md` zur
+Scope-Trennung der Blöcke). `window.confirm()` wird an drei Stellen
+verwendet (OTA-Upload, WiFi-Reset, Clear Programmer), aber genau das
+wollte der Nutzer für Save/Recall explizit vermeiden ("popup nicht
+clever", muss auf dem Handy zuverlässig funktionieren). Gebaut:
+`window.confirmDialog(message, opts) → Promise<boolean>` nach exakt
+demselben Muster wie `showToast` — eigenes Overlay/Card mit großen
+Yes/No-Touch-Targets, `<style>`-Block ergänzt (`.hz-confirm-*`-Klassen,
+gleiche Optik wie die Toasts). SAVE- und RECALL-Button im
+Preset-Accordion rufen jetzt `await confirmDialog(...)` auf und brechen
+bei Ablehnung ab, bevor der `/save`- bzw. `/recall`-Request rausgeht.
+
+**Gebaut:**
+- `data/index.html`: `.hz-confirm-overlay`/`.hz-confirm-card`/
+  `.hz-confirm-msg`/`.hz-confirm-btns`/`.hz-confirm-btn` CSS ergänzt
+  (neben den bestehenden `.hz-toast-*`-Klassen).
+- `window.confirmDialog(...)` ergänzt, direkt neben `window.showToast`/
+  `window.haptic`.
+- "Save to preset · slot"-`Accordion` aus der rechten in die linke
+  Spalte von `ProgrammerTab` verschoben (jetzt direkt unter dem
+  Joystick-Panel).
+- Slot-`<select>` bekommt `onFocus`-Handler zum Neuladen des
+  Preset-Namens.
+- SAVE-/RECALL-Button nutzen `confirmDialog(...)` vor dem jeweiligen
+  `fetch()`.
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]` (Flash-Nutzung
+90.9%, unverändert gegenüber vorher — reine Inline-Style/JS-Ergänzung,
+kein Byte-Sprung). Nicht auf echter Hardware/im Browser getestet — reine
+Frontend-Änderung ohne curl-prüfbares Backend-Verhalten, braucht
+Bestätigung im Browser (insbesondere `onFocus`-Verhalten auf echtem
+Mobilgerät).
+
+**Offen:** Beat-Sync für `MovementEngine`-Pattern (Kreis/Achterbahn
+etc.) wurde in derselben Session besprochen, aber noch nicht
+umgesetzt — siehe Rückmeldung im Chat: aktuell moduliert `sync`
+(`FX_Engine.h` `MovementEngine::process()`) nur die Speed/Size-Hüllkurve
+(`modPhase` → `currentSpeed`/`currentSize`), nicht die tatsächliche
+Pattern-Phase (`enginePhase`, wird pro Frame integriert, nie auf den
+Beat zurückgesetzt) — dadurch läuft die Form nie phasenexakt zum Beat,
+und kurze Divisoren (1/2, 1/4, 1/8 Beat) verlangen bei großen Mustern
+Winkelgeschwindigkeiten, die der Motor nicht schafft. Vorschlag noch
+nicht implementiert, siehe `doc/content/backlog.md`.
