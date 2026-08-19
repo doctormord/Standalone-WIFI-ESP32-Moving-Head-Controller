@@ -79,6 +79,7 @@ extern int globalBPM;
 extern unsigned long lastBeatTime;
 extern bool manualTap;
 extern unsigned long masterSyncTime;
+extern unsigned long beatCount;
 
 inline int32_t raw_samples[SAMPLES];
 inline unsigned long lastBassTime = 0;
@@ -195,6 +196,13 @@ void pollAudioEngine() {
         }
       }
       lastBeatTime = now;
+      // Pair every real-beat lastBeatTime reset with a beatCount increment (see .ino's internal
+      // metronome, which does the same for virtual ticks). Without this, a detected beat resets
+      // lastBeatTime but not beatCount, and since audio detection keeps winning the race against
+      // the metronome's own tick, beatCount nearly freezes while beatsElapsedTotal's fractional
+      // part keeps snapping back toward 0 every beat -- multi-beat sync stayed stuck cycling
+      // within a single beat and visibly jerked backward on every detection ("juggling").
+      beatCount++;
       masterSyncTime = now;
       manualTap = true;
     }

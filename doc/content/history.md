@@ -2725,3 +2725,56 @@ Movement-Beat-Lock-Korrektur selbst (Punkt 2) und die Oktave-Korrektur
 in der JSON-API, Oktave-Fix braucht echtes Mikrofon-Signal) — beide
 brauchen eine Live-Prüfung durch den User am Gerät, jetzt mit `rawBPM`/
 `rawMs`/`loopMax` als zusätzlichen Debug-Signalen.
+
+---
+
+## 2026-08-19, Fortsetzung — Movement-FX-Defaults auf 10 %/1000 ms, und ein echter Bug in der `beatCount`-Korrektur selbst gefunden
+
+**1. "movement fx defaults sollen alle 10% und 1000ms sein."** Backend-
+Defaults in `FX_Engine.h` (`MovementEngine`: `spdSt`/`spdEn` 50→10,
+`szSt`/`szEn` 30→10, `modSp` 10.0f→1000.0f) und Frontend-Initialzustand
+(`data/index.html`, `fxMS` 100→1000, `fxSS`/`fxSE`/`fxZS`/`fxZE` je auf
+10) angepasst. Nebenfund beim Ändern: der bisherige Frontend-Default
+(`fxSS:0, fxSE:255, fxZS:0, fxZE:255`) lag komplett außerhalb des
+Slider-eigenen Bereichs (`min=1 max=100`, %) — vermutlich ein Leftover
+aus einem anderen Kontext (0–255 sieht nach 8-Bit-DMX-Byte-Default aus),
+wurde aber in der Praxis nie sichtbar, weil der erste `/api/get_dmx`-Poll
+(~500 ms nach Laden) diesen Wert sofort mit dem echten Backend-Wert
+überschreibt.
+
+**2. "movement fx stimmt noch nicht. ich habe 16 beats gesetzt bei
+120bpm und er zuckt während dem kreisfahren mehrmals zurück mit dem
+beat... als würde er jugglen."** Ein echter, selbst eingeführter Bug in
+der `beatCount`-Korrektur von weiter oben — nicht nur eine Restungenauig-
+keit. Root Cause: `beatCount` wurde bisher **nur** im internen
+Metronom-Tick (`Moving_Head_Horizon.ino`, unconditional jeden Loop)
+hochgezählt, nicht aber bei echten, per Mikrofon erkannten Beats
+(`Audio_Engine.h`, setzt `lastBeatTime = now` direkt, ohne `beatCount++`).
+Da eine echte Beat-Erkennung `lastBeatTime` fast immer VOR dem internen
+Metronom-Tick zurücksetzt (Audio-Erkennung ist unmittelbarer als der frei
+laufende virtuelle Klick), gewinnt die Audio-Erkennung dieses Wettrennen
+praktisch bei jedem einzelnen Beat — der Metronom-Tick (und damit
+`beatCount++`) feuert dadurch fast nie, während der Bruchteilsanteil
+(`(now-lastBeatTime)/beatInterval`) bei jeder Audio-Erkennung erneut auf
+~0 zurückspringt. Ergebnis: `beatsElapsedTotal` blieb effektiv innerhalb
+eines einzelnen Beats gefangen (exakt der alte "sieht aus wie 1-Beat-
+Sync"-Bug, nur diesmal durch meinen eigenen Fix reproduziert) UND sprang
+bei jeder Erkennung sichtbar zurück — das "Jugglen".
+**Fix:** `beatCount++` jetzt zusätzlich direkt an der Stelle in
+`Audio_Engine.h`, an der ein echter Beat `lastBeatTime` zurücksetzt —
+jeder Reset von `lastBeatTime` (egal ob virtueller Metronom-Tick oder
+echter erkannter Beat) ist jetzt untrennbar mit genau einem
+`beatCount++` gekoppelt, damit `beatsElapsedTotal` durchgehend
+monoton wächst, unabhängig davon, welche der beiden Quellen den nächsten
+Beat zuerst meldet.
+**Ehrlich eingeordnet:** kleine Korrektur-Ruckler bleiben bei sehr langen
+Zyklen (16/32/64/128 Beats) prinzipbedingt möglich, wenn die
+Live-Beat-Erkennung geringfügig von der `globalBPM`-Schätzung abweicht
+(normales Verhalten bei jedem live-beat-gelockten System) — aber
+begrenzt auf höchstens den Bruchteil eines einzelnen Beats, nicht mehr
+auf "springt mitten in der Umdrehung fast auf Null zurück".
+
+**Auf User-Wunsch nur kompiliert und committed, NICHT geflasht** ("ich
+flashe morgen"). `pio run` und `pio run -t buildfs` beide `[SUCCESS]`.
+Weder die neuen Defaults noch der `beatCount`-Fix sind bisher live
+verifiziert.

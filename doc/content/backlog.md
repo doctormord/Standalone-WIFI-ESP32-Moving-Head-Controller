@@ -15,6 +15,15 @@ dauerhaft bei der Hälfte hängen bleiben. Falls immer noch zu langsam: weitere 
 nötig (z. B. `BPM_DEVIATION_TOLERANCE_DIVISOR` lockern oder `MIN_BEAT_INTERVAL_MS`/Schwellwert-
 Empfindlichkeit prüfen), nicht blind vorwegnehmen.
 
+**Offen: `beatCount`-Fix (Movement-Multi-Beat-Sync) und neue FX-Defaults kompiliert, aber noch
+nicht geflasht/verifiziert (2026-08-19).** User testet erst am Folgetag. Zwei Dinge prüfen: (1)
+Movement-Sync bei z. B. 16 Beats/120 BPM sollte jetzt eine saubere Umdrehung ohne Rückwärts-
+Zucken schaffen (siehe „Kürzlich gefixt" — `beatCount` wird jetzt auch bei echten Mic-erkannten
+Beats hochgezählt, nicht nur beim internen Metronom-Tick). Kleine, auf ≤1 Beat begrenzte
+Korrektur-Ruckler bei Live-Beat-Erkennung sind prinzipbedingt normal, keine große Rückwärts-
+Sprünge mehr. (2) Movement-FX-Panel sollte jetzt frisch mit Speed Start/End und Size Start/End
+je 10 % und Modulation Speed 1000 ms öffnen.
+
 **2026-08-16, `/ultrareview` (Cloud-Multi-Agent):** Hauptorchestrator und
 mehrere Teil-Agenten sind an einem Account-Session-Limit gescheitert, drei
 Teilreviews liefen durch. Die meisten Funde wurden noch am selben Tag
