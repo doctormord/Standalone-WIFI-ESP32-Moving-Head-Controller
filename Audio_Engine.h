@@ -85,6 +85,13 @@ inline unsigned long lastBassTime = 0;
 inline unsigned long lastMidTime  = 0;
 inline unsigned long lastHighTime = 0;
 
+// Debug/verification signals for the octave-error correction above -- rawDetectedBPM is the
+// median-derived BPM BEFORE the 19:1 smoothing into globalBPM, lastRawIntervalMs is the most
+// recent accepted (possibly octave-folded) sample. Exposed via /api/state so live drift/lock-up
+// behaviour can actually be observed instead of guessed at.
+inline int lastRawDetectedBPM = 0;
+inline unsigned long lastRawIntervalMs = 0;
+
 inline unsigned long beatIntervals[BPM_HISTORY_SIZE];
 inline uint8_t beatIdx = 0;
 
@@ -141,12 +148,27 @@ void pollAudioEngine() {
       if (diff < MAX_BEAT_INTERVAL_MS) {
         unsigned long currentInterval = MS_PER_MINUTE / globalBPM;
         long error = std::abs((long)diff - (long)currentInterval);
-        
+
+        // Octave-error correction: a plain energy-threshold onset detector misses quiet kicks
+        // sometimes, and once globalBPM has locked onto the wrong octave (e.g. half the real
+        // tempo after a run of missed hits), every genuinely-correct, faster interval differs
+        // from currentInterval by ~50% and gets rejected by the tolerance gate below forever --
+        // a permanent "too slow" lock with no way back. Also fold the reverse case (a single
+        // missed beat: diff is ~2x a real beat) down to its true single-beat length instead of
+        // feeding a falsely-slow raw interval into the history/median.
+        long errorAsDouble = std::abs((long)(diff * 2) - (long)currentInterval); // diff looks like half of currentInterval
+        long errorAsHalf   = std::abs((long)(diff / 2) - (long)currentInterval); // diff looks like a missed beat (2x currentInterval)
+        unsigned long candidate = diff;
+        long bestError = error;
+        if (errorAsDouble < bestError) { bestError = errorAsDouble; } // keep raw (faster) diff -- it's the correct one
+        if (errorAsHalf < bestError && (diff / 2) >= MIN_BEAT_INTERVAL_MS) { candidate = diff / 2; bestError = errorAsHalf; }
+
         bool sampleWritten = false;
-        if (error < (currentInterval / BPM_DEVIATION_TOLERANCE_DIVISOR) || globalBPM == BPM_DEFAULT_FALLBACK) {
-            beatIntervals[beatIdx] = diff;
+        if (bestError < (currentInterval / BPM_DEVIATION_TOLERANCE_DIVISOR) || globalBPM == BPM_DEFAULT_FALLBACK) {
+            beatIntervals[beatIdx] = candidate;
             beatIdx = (beatIdx + 1) % BPM_HISTORY_SIZE;
             sampleWritten = true;
+            lastRawIntervalMs = candidate;
         }
 
         if (sampleWritten) {
@@ -165,6 +187,7 @@ void pollAudioEngine() {
             }
             unsigned long medianInterval = sorted[validCount / 2];
             int detectedBPM = MS_PER_MINUTE / medianInterval;
+            lastRawDetectedBPM = detectedBPM;
 
             globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
             globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);

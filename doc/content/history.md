@@ -2604,3 +2604,124 @@ echter Hardware getestet — der User muss so oder so neu flashen, um
 überhaupt eine der beiden Movement-Sync-Änderungen aus dieser Session zu
 sehen (falls die ursprüngliche Rückmeldung tatsächlich vom alten,
 ungeflashten Stand kam statt von einer echten Grenze im neuen Code).
+
+---
+
+## 2026-08-19, Fortsetzung — Geräte selbst geflasht, echter Root-Cause für "Movement random/1-Beat" gefunden, plus BPM-Tap-Bug
+
+User: "flashe selbst, gerät ist dran" — Firmware und Filesystem per
+`pio run -t upload`/`-t uploadfs` über `/dev/cu.usbmodem1101` geflasht,
+beide Hash-verifiziert, Gerät danach unter `192.168.8.113` erreichbar
+bestätigt. Direkt danach zwei Live-Rückmeldungen vom User:
+
+1. **"movement fx hat immernoch nur max. 8 beats, nicht 16 32 64 128."**
+   Divisor-Tabelle war zu diesem Zeitpunkt bereits im Code auf 7 Einträge
+   (bis 64) erweitert — User wollte zusätzlich 128. `moveSyncBeats[]` auf 8
+   Einträge erweitert (`{1,2,4,8,16,32,64,128}`), zugehörige Clamps in
+   `MovementEngine::process()` (`FX_Engine.h`) und der `/fx`-Route
+   (`WebAPI.h`) von `0,6` auf `0,7`, Frontend-`MOVE_SYNCS` um den 8. Eintrag
+   ergänzt. Geflasht und per curl bestätigt: `/fx?...&sy=7` wird jetzt
+   akzeptiert und als `"fSy":7` zurückgemeldet.
+
+2. **"da funktioniert so nicht, die movements sind total wiered und
+   random... sieht auch eher so aus, als ob er auf 1 beat sync obwohl z.b.
+   8 oder 32 eingestellt sind."** Das war der eigentlich interessante Fund
+   dieser Session — ein waschechter, vorher unentdeckter Bug, keine
+   Fehlbedienung. Root Cause: `masterSyncTime` wird bei **jedem einzelnen
+   erkannten Beat** (echter Audio-Bass-Treffer über `pollAudioEngine()`,
+   `Audio_Engine.h:174-176`, UND jedem manuellen `/beat`-Tap) auf `now`
+   zurückgesetzt — das ist beabsichtigtes Verhalten für die
+   Selbstkorrektur bei kurzen (≤1 Beat) Zyklen, bricht aber jede
+   `(now - masterSyncTime) % interval`-Berechnung für `interval > 1 Beat`
+   fundamental: der Zähler kann nie über eine Beat-Länge hinauswachsen,
+   bevor er wieder auf ~0 zurückgesetzt wird — der `sync`-Wert (8, 32, ...)
+   war für Movement (und ebenso für Dimmer-/Gobo-Rot-/Prisma-Rotation!)
+   **schon immer wirkungslos**, sobald echte Beat-Erkennung lief. Genau das
+   hat mein vorheriger Fix (Pattern-Phase direkt aus `modPhase` statt
+   integriert) von einer kaum wahrnehmbaren Hüllkurven-Delle in einen
+   sofort sichtbaren Positions-Sprung verwandelt — daher "random" und
+   "kleine Kreise, die ab und an springen".
+   **Fix (`FX_Engine.h` + `Moving_Head_Horizon.ino`):** Neuer globaler
+   `beatCount` (wächst nur bei echten, vollständigen Beat-Intervallen,
+   nie zurückgesetzt) plus ein pro Frame einmal berechnetes
+   `beatsElapsedTotal = beatCount + clamp((now-lastBeatTime)/beatIntervalMs, 0, 1)`
+   in `updateEngines()`. `Modulator::process()` und
+   `MovementEngine::process()` nehmen jetzt dieses `beatsElapsedTotal`
+   entgegen statt `masterSyncTime`+`globalBPM`, und berechnen die
+   Zyklusposition als Bruchteil von `beatsElapsedTotal / syncBeats[sync]`
+   (nur der Nachkommaanteil) — das wächst weiter über beliebig viele echte
+   Beats, unabhängig davon, wie oft `masterSyncTime`/`lastBeatTime`
+   zwischendurch neu verankert wird. Betrifft/fixt gleichermaßen Movement,
+   Dimmer-, Gobo-Rotations- und Prisma-Rotations-BPM-Sync (alle nutzten
+   dieselbe kaputte Formel).
+
+**Zusätzlich vom User gemeldet, separat root-caused (nicht Teil der
+ursprünglichen Movement-Frage, aber im selben Testlauf aufgefallen):**
+„bpm function scheint kaputt, wenn ich manuell reintappe und mic aus ist,
+stimmt es kurz... aber nach 1s ist er wieder... zurück. auch scheint es
+mit mic on zu driften... bpm ist immer zu langsam."
+
+3. **Manueller Tap persistierte `globalBPM` nie.** `/beat` (`WebAPI.h`)
+   setzte bisher nur `lastBeatTime`/`manualTap` (Phasen-Alignment) — den
+   tatsächlichen `globalBPM`-Wert hat der Tap nie berührt. Der Frontend-
+   `useTapTempo()`-Hook berechnet die getappte BPM zwar korrekt, hält sie
+   aber nur in lokalem React-State — und der nächste `/api/state`-Poll
+   (alle 500 ms) überschreibt diesen lokalen State bedingungslos mit dem
+   unveränderten, alten Backend-`globalBPM` (`if (d.bpm) setBpm(d.bpm)`).
+   Deshalb "stimmt es kurz, dann zurück" — exakt ein Polling-Zyklus lang.
+   **Fix:** `tap()` gibt den berechneten Wert jetzt zurück,
+   `tapWithFirmware` hängt ihn als `?bpm=` an den `/beat`-Request an;
+   `/beat` setzt `globalBPM` jetzt direkt (geklammert auf
+   `BPM_MIN_LIMIT`/`BPM_MAX_LIMIT`, 60–180), wenn der Parameter vorhanden
+   ist. Live per curl verifiziert: `/beat?bpm=126` → `globalBPM` bleibt
+   auch 1,5 s später noch bei 126 (vorher wäre es im nächsten Poll-Zyklus
+   zurückgesprungen).
+4. **Mic-Erkennung "immer zu langsam"/driftet — plausibelste Ursache
+   identifiziert und behoben, aber nicht live mit echtem Audio
+   verifizierbar.** Die Bass-Beat-Erkennung (`Audio_Engine.h`,
+   `pollAudioEngine()`) akzeptierte ein neues Intervall bisher nur, wenn
+   es innerhalb ±20 % des aktuellen `globalBPM`-Schätzwerts lag
+   (`BPM_DEVIATION_TOLERANCE_DIVISOR`). Ein reiner Energie-Schwellwert-
+   Detektor übersieht auf echtem Audio gelegentlich einen leiseren Kick —
+   sobald das passiert, ist das gemessene Intervall ~2× so lang wie der
+   echte Beat, die Schätzung rutscht auf die halbe Tempo ("Oktave"), und
+   ab dann werden alle folgenden, eigentlich korrekten (schnelleren)
+   Intervalle von der ±20 %-Toleranz für immer abgelehnt, da sie ~50 %
+   vom (falschen) aktuellen Schätzwert abweichen — ein permanenter
+   Zu-langsam-Lock ohne Weg zurück. Erklärt "immer zu langsam" sehr
+   plausibel (ein reiner Rauschartefakt hätte keine derart systematische,
+   einseitige Verzerrung). **Fix:** Oktave-Fehlerkorrektur ergänzt — vor
+   dem Toleranz-Check wird zusätzlich geprüft, ob das gemessene Intervall
+   verdoppelt oder halbiert deutlich besser zum aktuellen Schätzwert passt;
+   falls ja, wird der bessere Kandidat (roh, falls die Messung eigentlich
+   das schnellere/korrekte Intervall war, oder halbiert, falls ein Beat
+   ausgelassen wurde) in die Historie/den Median übernommen statt
+   verworfen. **Nicht mit echtem Audio verifizierbar** in dieser Umgebung
+   (kein Mikrofon-Input hier) — dafür zwei neue Debug-Felder in
+   `/api/state` ergänzt: `rawBPM` (Median-Schätzung vor der 19:1-Glättung)
+   und `rawMs` (letztes akzeptiertes, ggf. oktave-korrigiertes Intervall
+   in ms), damit sich das live per curl beobachten/verifizieren lässt statt
+   erraten zu werden.
+
+**User-Vorschlag "vllt. musst du eine fkt bauen um dir den jitter der
+mainloop zu debuggen"** — aufgenommen, aber mit Vorbehalt: die drei oben
+gefundenen Bugs erklären die gemeldeten Symptome bereits vollständig und
+mechanistisch (kein diffuses Rauschen, sondern klar reproduzierbare
+Ursachen), Main-Loop-Jitter erschien daher unwahrscheinlich als
+Hauptursache. Trotzdem als billige, dauerhaft nützliche Diagnose ergänzt:
+`loop()` trackt jetzt die größte Lücke zwischen zwei Iterationen im
+letzten 5-Sekunden-Fenster (`loopMaxMs`), exponiert als `loopMax` in
+`/api/state`. Live gemessen direkt nach dem Flashen: **8 ms** im Leerlauf
+— bestätigt, dass Jitter (zumindest ohne aktive FX/Traffic) keine
+signifikante Rolle spielt, Feld bleibt aber dauerhaft für künftige
+Diagnose unter Last (viele Fixtures, OTA, etc.) verfügbar.
+
+**Verifiziert:** `pio run` und `pio run -t buildfs` beide `[SUCCESS]`
+(Flash-Nutzung 91,0 %), auf dem echten, angeschlossenen Gerät geflasht
+(`upload` + `uploadfs`, beide Hash-verifiziert). Per curl bestätigt:
+`/fx?...&sy=7` akzeptiert, `/beat?bpm=126` persistiert über 1,5 s. Die
+Movement-Beat-Lock-Korrektur selbst (Punkt 2) und die Oktave-Korrektur
+(Punkt 4) sind **nicht** per curl beobachtbar (Pattern-Position liegt nie
+in der JSON-API, Oktave-Fix braucht echtes Mikrofon-Signal) — beide
+brauchen eine Live-Prüfung durch den User am Gerät, jetzt mit `rawBPM`/
+`rawMs`/`loopMax` als zusätzlichen Debug-Signalen.

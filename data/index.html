@@ -609,8 +609,12 @@ function useTapTempo() {
       for (let i = 1; i < taps.current.length; i++) intervals.push(taps.current[i] - taps.current[i-1]);
       const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
       const next = Math.round(60000 / avg);
-      if (next >= 40 && next <= 240) setBpm(next);
+      // Clamped to the backend's own BPM_MIN_LIMIT/BPM_MAX_LIMIT (60-180, see Audio_Engine.h) --
+      // a value outside that range would just get rejected server-side anyway (see /beat), so
+      // matching it here keeps the displayed tap result consistent with what actually gets applied.
+      if (next >= 60 && next <= 180) { setBpm(next); return next; }
     }
+    return undefined;
   }, []);
   return [bpm, tap, setBpm];
 }
@@ -1659,7 +1663,7 @@ const isReceiving = useRef(false);
 
     const handleMic = useCallback(() => { const next = !micOn; fetch(`/hwaudio?en=${next ? 1 : 0}&sens=${hwSens}`); setMicOn(next); }, [micOn, hwSens]);
     useEffect(() => { try { localStorage.setItem('hz_hwsens', hwSens); } catch(e) {} if (micOn) { fetch(`/hwaudio?en=1&sens=${hwSens}`).catch(() => {}); } }, [hwSens]);
-    const tapWithFirmware = useCallback(() => { tap(); fetch('/beat'); }, [tap]);
+    const tapWithFirmware = useCallback(() => { const tapped = tap(); fetch('/beat' + (tapped ? ('?bpm=' + tapped) : '')); }, [tap]);
     const hardSync = useCallback(() => { fetch('/sync'); }, []);
     const handleJog = useCallback((v) => { tFetch('/jog?v=' + v, 'jog'); }, []);
     const releaseJog = useCallback(() => { tFetch('/jog?v=0', 'jog'); }, []);

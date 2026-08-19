@@ -49,9 +49,23 @@ String presetNames[10];
 
 int globalBPM = 120;
 unsigned long lastBeatTime = 0;
-unsigned long masterSyncTime = 0; 
-bool beatTriggered = false; 
-bool manualTap = false; 
+unsigned long masterSyncTime = 0;
+bool beatTriggered = false;
+bool manualTap = false;
+// Counts real elapsed beats (incremented once per internal-metronome tick, see updateEngines()).
+// Unlike masterSyncTime/lastBeatTime, which get re-anchored to "now" on every detected beat,
+// this only ever increases -- it's the reference multi-beat sync divisors (>1 beat) are computed
+// against, so they keep counting correctly across repeated beat-clock re-anchoring instead of
+// only ever seeing "time since the last beat".
+unsigned long beatCount = 0;
+
+// Main-loop jitter diagnostic: worst gap between consecutive loop() iterations in the current
+// 5s window. server.handleClient()/ArduinoOTA/WiFi can occasionally block the single ESP32-C3
+// core for tens of ms; exposed via /api/state (loopMaxMs) to check whether that -- rather than
+// the beat-sync/BPM logic itself -- is a contributor to observed timing glitches.
+unsigned long loopLastMs = 0;
+unsigned long loopMaxMs = 0;
+unsigned long loopMaxWindowStart = 0;
 const float syncBeats[7] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125};
 // Movement patterns take real time to trace (pan/tilt slew is finite) — a
 // sub-beat divisor demands angular velocity the motor can't reach for a
@@ -310,22 +324,29 @@ void updateEngines(unsigned long now) {
       if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; }
   }
 
-  if (globalBPM > 0) { unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; } }
+  if (globalBPM > 0) { unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; beatCount++; } }
   if (manualTap) { if (dimFX.trigger == 1) dimFX.phase = 0.0; if (gRotFX.trigger == 1) gRotFX.phase = 0.0; if (pRotFX.trigger == 1) pRotFX.phase = 0.0; if (moveFX.trigger == 1) moveFX.modPhase = 0.0; masterSyncTime = now; manualTap = false; }
   auto checkAudioTrg = [&](int trg) { return (trg == 2 && triggerBass) || (trg == 3 && triggerMid) || (trg == 4 && triggerHigh); };
   if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
 
-  if (moveFX.active) moveFX.process(now, masterSyncTime, globalBPM, moveSyncBeats);
+  // Continuous "how many real beats have elapsed" reference for trigger==1 (BPM sync) on any FX
+  // with a multi-beat divisor -- see Modulator::process()/MovementEngine::process() for why this
+  // replaced (now - masterSyncTime) % interval. beatCount only advances on confirmed whole beats;
+  // the fractional term interpolates smoothly within the current beat.
+  float beatIntervalMsF = globalBPM > 0 ? 60000.0f / (float)globalBPM : 500.0f;
+  float beatsElapsedTotal = (float)beatCount + constrain((float)(now - lastBeatTime) / beatIntervalMsF, 0.0f, 1.0f);
+
+  if (moveFX.active) moveFX.process(now, beatsElapsedTotal, moveSyncBeats);
 
   // On stop, leave CH9/CH11 as-is instead of forcing 0 -- /modfx's own mv-restore (see WebAPI.h)
   // already writes the Programmer tab's manual value there the moment the stop lands. Previously this
   // unconditionally zeroed the channel, discarding whatever manual value the user had set -- reported
   // live 2026-08-18 as gobo/prism rotation FX "changes not taking" (same symptom class as the sg/rg
   // stop race, but this half of it was a real backend clobber, not just a frontend timing race).
-  if (gRotFX.active) { float t; gRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[9] = (byte)t; }
-  if (pRotFX.active) { float t; pRotFX.process(now, masterSyncTime, globalBPM, syncBeats, t); dmxData[11] = (byte)t; }
+  if (gRotFX.active) { float t; gRotFX.process(now, beatsElapsedTotal, syncBeats, t); dmxData[9] = (byte)t; }
+  if (pRotFX.active) { float t; pRotFX.process(now, beatsElapsedTotal, syncBeats, t); dmxData[11] = (byte)t; }
 
-  if (dimFX.active) { dimFX.process(now, masterSyncTime, globalBPM, syncBeats, dimSmoothTarget); dimSmoothCurrent = dimSmoothTarget; } 
+  if (dimFX.active) { dimFX.process(now, beatsElapsedTotal, syncBeats, dimSmoothTarget); dimSmoothCurrent = dimSmoothTarget; }
   else { if (dimSmoothVal > 0) { float sensitivity = (100.0f - dimSmoothVal) * 0.1f; dimSmoothCurrent += (dimSmoothTarget - dimSmoothCurrent) * sensitivity * dt * 10.0f; } else { dimSmoothCurrent = dimSmoothTarget; } }
 
   if (autoFading) {
@@ -484,11 +505,19 @@ void setup() {
   setupAPI(); server.begin(); setupDMX(); loadAllChaserScenes(); initAudioEngine();
 }
 
-void loop() { 
-  server.handleClient(); 
-  ArduinoOTA.handle(); 
-  artnet.read(); 
-  pollAudioEngine(); 
-  updateEngines(millis()); 
+void loop() {
+  unsigned long loopNow = millis();
+  if (loopLastMs > 0) {
+    unsigned long delta = loopNow - loopLastMs;
+    if (loopNow - loopMaxWindowStart > 5000) { loopMaxWindowStart = loopNow; loopMaxMs = delta; }
+    else if (delta > loopMaxMs) loopMaxMs = delta;
+  }
+  loopLastMs = loopNow;
+
+  server.handleClient();
+  ArduinoOTA.handle();
+  artnet.read();
+  pollAudioEngine();
+  updateEngines(millis());
   delay(2);
 }

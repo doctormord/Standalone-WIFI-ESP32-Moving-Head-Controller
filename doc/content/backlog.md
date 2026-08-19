@@ -7,6 +7,14 @@
 
 ## 🛠 Technische Schulden (Tech Debt)
 
+**Offen: Mic-BPM-Oktave-Korrektur braucht Live-Test mit echtem Audio (2026-08-19).** Siehe
+„Kürzlich gefixt" unten — Fix ist gebaut und kompiliert/geflasht, aber ohne Mikrofon-Input in
+dieser Umgebung nicht verifizierbar. `rawBPM`/`rawMs` in `/api/state` beobachten, während Musik
+läuft: `rawBPM` sollte sich nach ein paar Takten auf den echten Tempo-Wert einpendeln, nicht
+dauerhaft bei der Hälfte hängen bleiben. Falls immer noch zu langsam: weitere Tuning-Iteration
+nötig (z. B. `BPM_DEVIATION_TOLERANCE_DIVISOR` lockern oder `MIN_BEAT_INTERVAL_MS`/Schwellwert-
+Empfindlichkeit prüfen), nicht blind vorwegnehmen.
+
 **2026-08-16, `/ultrareview` (Cloud-Multi-Agent):** Hauptorchestrator und
 mehrere Teil-Agenten sind an einem Account-Session-Limit gescheitert, drei
 Teilreviews liefen durch. Die meisten Funde wurden noch am selben Tag
@@ -128,6 +136,44 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
+- **Echter Root-Cause für "Movement random/sieht aus wie 1-Beat-Sync" gefunden und gefixt
+  (2026-08-19) — `masterSyncTime` wird bei jedem echten Beat neu verankert, brach jeden
+  Multi-Beat-Divisor.** `masterSyncTime` wird sowohl von echter Audio-Beat-Erkennung
+  (`Audio_Engine.h`) als auch von manuellen Taps bei **jedem einzelnen** Beat auf `now`
+  zurückgesetzt (beabsichtigt für kurze/≤1-Beat-Zyklen). Die alte Formel
+  `(now - masterSyncTime) % interval` konnte für `interval > 1 Beat` deshalb nie über eine
+  Beat-Länge hinauswachsen — `sync`-Werte wie 8 oder 32 Beats waren für Movement, Dimmer-,
+  Gobo-Rot- und Prisma-Rotations-BPM-Sync gleichermaßen **schon immer wirkungslos**, sobald
+  echte Beat-Erkennung lief; der Fix von weiter oben (phasenexakte `enginePhase`) machte das
+  nur von einer unauffälligen Hüllkurven-Delle zu einem sichtbaren Positions-Sprung. Fix: neuer
+  globaler `beatCount` (wächst nur bei vollständigen Beat-Intervallen, nie zurückgesetzt) plus
+  `beatsElapsedTotal` (Beat-Zähler + Bruchteil des aktuellen Beats), an `Modulator::process()`
+  und `MovementEngine::process()` übergeben statt `masterSyncTime`/`globalBPM` — Zyklusposition
+  ist jetzt `beatsElapsedTotal / syncBeats[sync]` (Nachkommaanteil), wächst über beliebig viele
+  echte Beats unabhängig davon, wie oft der Beat-Takt zwischendurch neu verankert wird.
+- **Manueller BPM-Tap persistierte nie, sprang nach ~1 Poll-Zyklus zurück (2026-08-19).**
+  `/beat` setzte nur Phasen-Alignment (`lastBeatTime`/`manualTap`), nie `globalBPM` selbst — der
+  getappte Wert lebte nur im lokalen Frontend-State und wurde vom nächsten 500-ms-`/api/state`-
+  Poll bedingungslos mit dem unveränderten Backend-Wert überschrieben. Fix: `tap()` gibt den
+  berechneten Wert zurück, `/beat?bpm=...` setzt `globalBPM` jetzt direkt (geklammert 60–180).
+  Live per curl verifiziert (Wert bleibt über 1,5 s stabil).
+- **Mic-BPM-Erkennung "immer zu langsam"/driftet — Oktave-Lock als plausibelste Ursache
+  identifiziert, Korrektur gebaut, aber NICHT mit echtem Audio verifizierbar (2026-08-19).**
+  Ein übersehener leiser Kick lässt das gemessene Intervall auf ~2× den echten Beat springen;
+  die ±20 %-Toleranz gegen den aktuellen (jetzt falschen, halbtempo) Schätzwert lehnt danach
+  jedes korrekte, schnellere Intervall für immer ab — ein permanenter Zu-langsam-Lock. Fix:
+  Oktave-Fehlerkorrektur in `pollAudioEngine()` (`Audio_Engine.h`) — prüft zusätzlich, ob das
+  verdoppelte oder halbierte Intervall besser passt, bevor verworfen wird. Neue Debug-Felder
+  `rawBPM`/`rawMs` in `/api/state` (Median-Schätzung vor Glättung / letztes akzeptiertes
+  Intervall), um das live zu beobachten — **braucht Bestätigung mit echtem Audio-Input**, siehe
+  „Offen" oben.
+- **Main-Loop-Jitter-Diagnose ergänzt auf User-Vorschlag (2026-08-19), aber wahrscheinlich
+  nicht die Hauptursache.** Die drei Punkte oben erklären die gemeldeten Symptome bereits
+  mechanistisch vollständig; Jitter erschien deshalb als Hauptursache unwahrscheinlich, wurde
+  aber trotzdem als billige, dauerhafte Diagnose ergänzt: `loopMaxMs` (größte Lücke zwischen
+  zwei `loop()`-Durchläufen im letzten 5-s-Fenster), exponiert als `loopMax` in `/api/state`.
+  Live gemessen im Leerlauf direkt nach dem Flashen: 8 ms — bestätigt, dass Jitter zumindest
+  ohne Last keine relevante Rolle spielt.
 - **`MovementEngine`-Beat-Sync gefixt: Pattern-Phase jetzt phasenexakt statt
   integriert, eigene Multi-Beat-Divisor-Tabelle (2026-08-19).** War oben als
   offenes Design-Problem eingetragen, noch am selben Tag umgesetzt (siehe

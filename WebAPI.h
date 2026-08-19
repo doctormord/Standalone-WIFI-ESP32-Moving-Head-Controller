@@ -86,7 +86,12 @@ void setupAPI() {
     json += "{\"pr\":" + String(activePresetSlot) + ",\"bpm\":" + String(globalBPM) + ",\"chA\":" + String(chaserActive?1:0);
     json += ",\"hwA\":" + String(hwAudioEnabled?1:0) + ",\"fO\":" + String(fadeStateOut?1:0);
     json += ",\"trB\":" + String(guiBass?1:0) + ",\"trM\":" + String(guiMid?1:0) + ",\"trH\":" + String(guiHigh?1:0);
-    json += ",\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "]}"; 
+    // Beat-sync/BPM-drift debug fields (2026-08-19): rawBPM/rawMs are the audio engine's
+    // pre-smoothing median-detected value and most recent accepted (possibly octave-folded)
+    // interval, loopMax is the worst main-loop gap in the last 5s -- pull these live via curl
+    // to check the BPM detection and loop-jitter theories against real audio instead of guessing.
+    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs);
+    json += ",\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "]}";
     server.send(200, "application/json", json);
     guiBass = false; guiMid = false; guiHigh = false;
   });
@@ -349,9 +354,17 @@ void setupAPI() {
   
   server.on("/beat", []() {
     unsigned long now = millis();
+    // Previously this only re-anchored lastBeatTime/manualTap (phase alignment) and never touched
+    // globalBPM itself -- the frontend's tapped BPM only ever lived in local React state, so it got
+    // overwritten by the backend's stale globalBPM on the very next ~500ms /api/state poll. Now the
+    // tapped value (already computed client-side by useTapTempo) is sent along and actually applied.
+    if (server.hasArg("bpm")) {
+      int tappedBPM = server.arg("bpm").toInt();
+      if (tappedBPM >= BPM_MIN_LIMIT && tappedBPM <= BPM_MAX_LIMIT) globalBPM = tappedBPM;
+    }
     if (globalBPM > 0) {
       unsigned long interval = 60000 / globalBPM;
-      lastBeatTime = now - interval; 
+      lastBeatTime = now - interval;
     }
     manualTap = true;
     server.send(200, "OK");

@@ -75,11 +75,11 @@ public:
         return val;
     }
 
-    void process(unsigned long now, unsigned long masterSyncTime, int globalBPM, const float* syncBeats, float &outVal) {
+    void process(unsigned long now, float beatsElapsedTotal, const float* syncBeats, float &outVal) {
         if (lastUpdate == 0) lastUpdate = now;
         float dt = (now - lastUpdate) / 1000.0f;
         lastUpdate = now;
-        if(dt <= 0 || dt > 1.0f) dt = 0.02f; 
+        if(dt <= 0 || dt > 1.0f) dt = 0.02f;
 
         if (trigger == 0 || trigger >= 2) {
             // speed is the full LFO cycle duration in ms (matches the UI slider's ms range).
@@ -87,8 +87,15 @@ public:
             phase += (dt * 1000.0f) / periodMs;
         } else if (trigger == 1) {
             int safeSync = constrain(sync, 0, 6);
-            unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];
-            phase = (float)((now - masterSyncTime) % interval) / interval;
+            // beatsElapsedTotal increases smoothly and monotonically with real elapsed beats
+            // (see updateEngines()) -- dividing by the cycle length in beats and keeping only
+            // the fractional part gives a phase that wraps exactly every `sync` beats,
+            // regardless of how often the beat clock itself gets re-anchored (every detected
+            // beat, for live audio). Using (now - masterSyncTime) % interval here used to break
+            // any divisor > 1 beat, since masterSyncTime is restamped on every single detected
+            // beat -- the modulo numerator could then never grow past one beat's worth of ms.
+            float cyclePos = beatsElapsedTotal / syncBeats[safeSync];
+            phase = cyclePos - floorf(cyclePos);
         }
 
         if (phase > 1.0f) phase -= 1.0f;
@@ -127,7 +134,7 @@ public:
     void start() { active = true; lastUpdate = millis(); }
     void stop() { active = false; }
 
-    void process(unsigned long now, unsigned long masterSyncTime, int globalBPM, const float* syncBeats) {
+    void process(unsigned long now, float beatsElapsedTotal, const float* syncBeats) {
         if (lastUpdate == 0) lastUpdate = now;
         float dt = (now - lastUpdate) / 1000.0f;
         lastUpdate = now;
@@ -137,8 +144,11 @@ public:
             modPhase += (modSp / 100.0f) * dt * 2.0f;
         } else if (trigger == 1) {
             int safeSync = constrain(sync, 0, 7);
-            unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];
-            modPhase = (float)((now - masterSyncTime) % interval) / interval;
+            // See Modulator::process() for why this is beat-count-based rather than
+            // (now - masterSyncTime) % interval -- masterSyncTime gets re-anchored on every
+            // detected beat, which broke every sync divisor above 1 beat.
+            float cyclePos = beatsElapsedTotal / syncBeats[safeSync];
+            modPhase = cyclePos - floorf(cyclePos);
         }
         if (modPhase > 1.0f) modPhase -= 1.0f;
         if (modPhase < 0.0f) modPhase += 1.0f;
