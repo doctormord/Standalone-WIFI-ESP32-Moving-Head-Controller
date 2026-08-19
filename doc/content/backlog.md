@@ -135,8 +135,10 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   `modPhase` abgeleitet (`enginePhase = modPhase * 2π`) statt jeden Frame zu
   integrieren — eine Umdrehung startet dadurch garantiert exakt auf einem
   Beat und ist exakt am Ende des `sync`-Intervalls fertig. Neue, von
-  `MovementEngine` exklusiv genutzte `moveSyncBeats[7] = {1,2,4,8,16,32,64}`
-  (Beats/Umdrehung) in `Moving_Head_Horizon.ino`, getrennt vom weiterhin für
+  `MovementEngine` exklusiv genutzte `moveSyncBeats[8] =
+  {1,2,4,8,16,32,64,128}` (Beats/Umdrehung, auf User-Wunsch noch am selben
+  Tag von 7 auf 8 Einträge erweitert — siehe „Fortsetzung" unten) in
+  `Moving_Head_Horizon.ino`, getrennt vom weiterhin für
   Dimmer-/Gobo-/Prisma-Rotation genutzten `syncBeats[]` mit den kurzen
   Sekundenbruchteil-Divisoren. Frontend bekommt eine eigene `MOVE_SYNCS`-
   Liste für den Movement-FX-Sync-Dropdown (`TriggerBlock` jetzt mit

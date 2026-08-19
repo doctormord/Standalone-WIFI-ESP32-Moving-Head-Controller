@@ -920,7 +920,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   // Movement patterns take real time to trace (finite pan/tilt slew), so a
   // full revolution can't lock to a sub-beat divisor the way a dimmer/gobo
   // LFO can — this table is beats-per-revolution, not fractions of a beat.
-  const MOVE_SYNCS = [[0, 'Sync · 1 Beat / rev'], [1, 'Sync · 2 Beats / rev'], [2, 'Sync · 4 Beats / rev'], [3, 'Sync · 8 Beats / rev'], [4, 'Sync · 16 Beats / rev'], [5, 'Sync · 32 Beats / rev'], [6, 'Sync · 64 Beats / rev']];
+  const MOVE_SYNCS = [[0, 'Sync · 1 Beat / rev'], [1, 'Sync · 2 Beats / rev'], [2, 'Sync · 4 Beats / rev'], [3, 'Sync · 8 Beats / rev'], [4, 'Sync · 16 Beats / rev'], [5, 'Sync · 32 Beats / rev'], [6, 'Sync · 64 Beats / rev'], [7, 'Sync · 128 Beats / rev']];
 
   function TriggerBlock({ trigger, setTrigger, sync, setSync, hold, setHold, holdLabel = 'Hold time', holdUnit = 'ms', accent, syncOptions = SYNCS }) {
     return (

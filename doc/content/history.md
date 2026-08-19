@@ -2573,3 +2573,34 @@ curl-prüfbares Verhalten über den bestehenden State-Poll hinaus, braucht
 Bestätigung am echten Fixture (insbesondere: schließt ein großer Kreis
 bei "8 Beats / rev" wirklich sauber auf dem Beat ab, ohne dass der Motor
 sichtbar hinterherhinkt).
+
+---
+
+## 2026-08-19, Fortsetzung — Movement-Sync-Divisoren auf 8 Stufen (bis 128 Beats) erweitert
+
+User-Feedback direkt danach: „movement fx hat immernoch nur max. 8 beats,
+nicht 16 32 64 128". Zwei mögliche Ursachen abgewogen: entweder das Gerät
+lief noch mit der alten, nicht geflashten Firmware (dort ist „8 Beats"
+tatsächlich der höchste Wert, aus der alten gemeinsamen `syncBeats[]`) —
+oder der neue `moveSyncBeats[7]`-Bereich (1–64 Beats/Umdrehung aus dem
+vorigen Eintrag) reicht dem User nicht, der explizit auch 128 erwähnte.
+Da Letzteres so oder so ein legitimer, einfacher Ausbau ist, umgesetzt statt
+nur nachgefragt:
+
+- `Moving_Head_Horizon.ino`: `moveSyncBeats[]` von 7 auf 8 Einträge erweitert
+  (`{1, 2, 4, 8, 16, 32, 64, 128}`).
+- `FX_Engine.h`, `MovementEngine::process()`: `constrain(sync, 0, 6)` →
+  `constrain(sync, 0, 7)` (nur hier — `Modulator::process()`, von Dimmer/
+  Gobo-Rot/Prisma-Rot genutzt, bleibt bei `0, 6` mit dem unveränderten
+  7-Werte-`syncBeats[]`).
+- `WebAPI.h`, `/fx`-Route: `moveFX.sync`-Clamp ebenfalls von `0, 6` auf
+  `0, 7` (nur der Movement-spezifische Handler — der geteilte `/modfx`-
+  Handler für dim/gr/pr bleibt bei `0, 6`).
+- `data/index.html`: `MOVE_SYNCS` um `[7, 'Sync · 128 Beats / rev']`
+  ergänzt.
+
+`pio run` und `pio run -t buildfs` beide `[SUCCESS]`. Weiterhin nicht auf
+echter Hardware getestet — der User muss so oder so neu flashen, um
+überhaupt eine der beiden Movement-Sync-Änderungen aus dieser Session zu
+sehen (falls die ursprüngliche Rückmeldung tatsächlich vom alten,
+ungeflashten Stand kam statt von einer echten Grenze im neuen Code).

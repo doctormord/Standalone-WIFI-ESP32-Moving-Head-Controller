@@ -136,7 +136,7 @@ public:
         if (trigger == 0 || trigger >= 2) {
             modPhase += (modSp / 100.0f) * dt * 2.0f;
         } else if (trigger == 1) {
-            int safeSync = constrain(sync, 0, 6);
+            int safeSync = constrain(sync, 0, 7);
             unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync];
             modPhase = (float)((now - masterSyncTime) % interval) / interval;
         }

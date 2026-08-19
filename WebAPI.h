@@ -207,7 +207,7 @@ void setupAPI() {
       moveFX.szSt = constrain(server.arg("zs").toInt(), 1, 100); moveFX.szEn = constrain(server.arg("ze").toInt(), 1, 100);
       moveFX.modMo = server.arg("mm").toInt(); moveFX.modCu = server.arg("mc").toInt();
       moveFX.modSp = server.arg("ms").toFloat(); moveFX.trigger = server.arg("tr").toInt();
-      moveFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
+      moveFX.sync = constrain(server.arg("sy").toInt(), 0, 7);
       if(startFresh) moveFX.start(); else if (!moveFX.active) moveFX.stop();
       server.send(200, "OK");
   });
