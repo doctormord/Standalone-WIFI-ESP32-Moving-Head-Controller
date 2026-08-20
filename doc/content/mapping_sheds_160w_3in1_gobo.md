@@ -63,26 +63,45 @@ Kanalanzahl und -reihenfolge waren schon immer korrekt.
 ### CH3/CH4 — Pan/Tilt
 `0–255` (8-Bit-Grobwert), Pan 540°, Tilt 270°. Feinwerte auf CH15/CH16.
 
-**Bekannter Hardware-Defekt dieser konkreten Einheit — Tilt nicht-monoton um DMX ~127/128
-(16-Bit 32768), live bestätigt 2026-08-20.** Ein sauberer, mathematisch korrekter Sinus-Sweep
-über CH4 durch diesen Punkt lässt den Tilt-Motor am realen Gerät die Richtung falsch
-interpretieren — aus einem programmierten Kreis wird eine sich selbst kreuzende Acht.
-Bestätigt über drei unabhängige Wege: (1) User filmte den projizierten Lichtpunkt direkt (nicht
-das Gehäuse) — bleibt eine Acht, damit ausgeschlossen als Projektions-/Blickwinkel-Artefakt; (2)
-alle Mirror/Invert-Menüeinstellungen am Fixture getestet, keine Wirkung; (3) Fixtures eigenes
-„Tilt Calibration"-Menü stand auf `-037` — live auf `0` gesetzt (macht den geraden Nach-oben-
-Zeigen-Referenzpunkt sichtbar falsch, war also eine echte, gebrauchte Kalibrierung, nicht die
-Ursache) und erneut getestet: Fehler bleibt identisch. Zusätzlich zeigt das fixture-eigene
-„Sensor Monitor"-Diagnosemenü (siehe „Menüs" unten) den `Tilt Codewheel Step`-Zähler über
-längere Zeiträume praktisch eingefroren, während `Pan Codewheel Step` im selben Zeitraum stetig
-weiterläuft — das Fixture meldet selbst einen Tracking-Fehler seines Tilt-Encoders/-Motors in
-diesem Bereich. **Nicht durch Software oder Fixture-Menü behebbar**, nur durch
-Encoder-Neukalibrierung/-Reparatur durch den Hersteller. Software-Workaround (nicht der eigentliche
-Fix, nur bestmögliche Schadensbegrenzung): `MovementEngine::getValues()` in `FX_Engine.h`
-verschiebt das Tilt-Zentrum eines laufenden Patterns automatisch so weit nach oben, dass dessen
-voller Bewegungsradius die Problemzone (`< 32768`) gar nicht erst erreicht — die Form bleibt ein
-echter Kreis, nur automatisch etwas höher zentriert als angefordert. Nur für Movement-FX aktiv,
-nicht für manuelle/Joystick-Tilt-Steuerung.
+**Bekannter physischer Defekt dieser konkreten Einheit — Tilt-Mechanik hakt bei einem festen
+absoluten Winkel (~DMX-Tilt 127), NICHT im Software/Encoder ansteuerbar, kein Fix möglich
+(live untersucht 2026-08-20).** Ein Movement-FX-Kreis, dessen Bahn durch diesen Winkel läuft,
+wird am realen Gerät zu einer sich selbst kreuzenden Acht statt eines Kreises — bestätigt am
+projizierten Lichtpunkt (nicht nur am Gehäuse), unabhängig von Geschwindigkeit (auch sehr
+langsam getestet) und unabhängig vom Trigger-Modus. Verschwindet vollständig, sobald das
+Pattern-Zentrum diesen Winkel nicht mehr kreuzt.
+
+**Root-Cause-Verlauf (drei Hypothesen geprüft, zwei verworfen):**
+1. *Kalibrierung* — Fixture-eigenes „Tilt Calibration" stand auf `-037`; live auf `0` gesetzt und
+   erneut getestet, Fehler blieb identisch (und `0` machte zusätzlich die Geradeaus-nach-oben-
+   Referenz sichtbar falsch — `-037` war also die echte, gebrauchte Kalibrierung). **Verworfen.**
+2. *Nicht-monotone DMX→Winkel-Abbildung* — ursprüngliche Annahme, ein per Software-Fix
+   (Pattern-Zentrum automatisch über den fraglichen Punkt hinausschieben) kompensiert wurde.
+   Per gezieltem, statischem Kalibrier-Sweep widerlegt: CH4 wurde in Einzelschritten von 90 bis
+   165 gesetzt (jeder Wert ca. 2,3 s **gehalten**, keine Bewegung), dabei der `Tilt Codewheel
+   Step` im fixture-eigenen „Sensor Monitor"-Menü per Video mitgeschnitten. Ergebnis: **glatt
+   monoton über den gesamten Bereich, keine Umkehrung, keine Diskontinuität, keine Anomalie genau
+   am vermuteten Punkt** (Rohdaten: DMX 93→Step -12, 108→+1, 120→+11, 127→+19, 128→+20,
+   135→+24, 150→+37, 165→+50 — durchgehend linear). **Verworfen; der Software-Fix dafür wurde
+   deshalb wieder entfernt** (`FX_Engine.h`, `MovementEngine::getValues()`) — er hatte zusätzlich
+   den Nebeneffekt, ungefähr die halbe nutzbare Tilt-Range für JEDES Pattern sperrten, und stand
+   absichtlicher User-Positionierung im Weg (z. B. ein „Clover"-Pattern, das bewusst über diesen
+   Punkt hinaus fahren soll).
+3. *Physischer Defekt an einem festen absoluten Winkel, nur beim tatsächlichen Durchfahren
+   ausgelöst* — **aktuell plausibelste Erklärung, nicht weiter widerlegt.** Erklärt alle
+   Beobachtungen konsistent: eine **statisch gehaltene** Position (Schritt 2 oben) löst nichts
+   aus, weil der Mechanismus dabei nie durch den Winkel *rotiert* — nur eine kontinuierliche
+   Bewegung, die durch genau diesen Punkt fährt, tut das (unabhängig von der Geschwindigkeit, was
+   zu einem festen mechanischen Fehler passt — z. B. Zahnrad-/Riemen-Defekt an einer festen
+   Position — statt zu einem geschwindigkeitsabhängigen Tracking-Problem). Nicht durch DMX-
+   Werte-Wahl umgehbar, wenn ein Pattern absichtlich durch diesen Winkel fahren soll — nur durch
+   Reparatur/Neukalibrierung durch den Hersteller behebbar.
+
+**Fixture-eigene Sensor-Monitor-Referenzwerte (2026-08-20, nach Kalibrierung `-037`):** Tilt-
+Codewheel-Range laut Menü **-90 bis +130** (`+021` = gerade nach oben). Pan-Codewheel-Range
+**-83 bis +517**. Kein Software-Fix aktiv — Anwender muss Pattern-Zentrum/-Größe selbst so wählen,
+dass der fragliche Winkel nicht gekreuzt wird, wenn eine saubere Form wichtiger ist als exakte
+Positionierung.
 
 ### CH5 — Speed
 `0–255`, „Pan/Tilt speed, Pan/Tilt time" — das Handbuch spezifiziert

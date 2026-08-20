@@ -140,44 +140,40 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   bleibt offen als vermutlich physisches/mechanisches Problem am
   konkreten Gerät (Rad-Abweichung vom Handbuch oder Defekt), nicht durch
   Software lösbar. Nur durch Sichtprüfung am Gerät zu klären.
+- **Movement-Kreis wird zur „Acht", wenn die Bahn durch einen bestimmten
+  absoluten Tilt-Winkel läuft (~DMX-Tilt 127).** Live untersucht
+  2026-08-20 (siehe `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 für die
+  vollständige Diagnose-Historie inkl. aller geprüften Hypothesen): kein
+  Code-Bug — ein statischer Kalibrier-Sweep zeigt eine glatt monotone
+  Tilt-Encoder-Reaktion über den gesamten getesteten Bereich, das
+  Problem tritt nur auf, wenn die Mechanik tatsächlich (mit beliebiger
+  Geschwindigkeit) durch diesen einen Winkel *rotiert*. Physischer Defekt
+  dieser konkreten Einheit an einer festen absoluten Position, nicht
+  durch DMX-Werte-Wahl umgehbar, wenn ein Pattern bewusst dort
+  durchfahren soll — nur durch Reparatur/Neukalibrierung beim Hersteller
+  behebbar. **Kein Software-Fix** (ein früherer Versuch, das Pattern-
+  Zentrum automatisch zu verschieben, wurde entfernt — stand
+  absichtlicher User-Positionierung im Weg). Workaround: Pattern-Zentrum/
+  -Größe so wählen, dass dieser Winkel nicht gekreuzt wird, wenn eine
+  saubere Form wichtiger ist als exakte Positionierung.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
-- **Movement-„Figure 8"-Optik bei zentrierter Pan/Tilt-Position — Root Cause bestätigt: echter
-  Hardware-Encoder-Defekt dieser konkreten Fixture-Einheit auf der Tilt-Achse, keine Kalibrierungs-
-  frage, softwareseitig gefixt (2026-08-20, Fortsetzung).** Live per Video/Fixture-eigenem
-  Sensor-Monitor-Menü verifiziert: Tilt-Reaktion ist unterhalb von DMX 16-Bit 32768 (8-Bit Tilt
-  ~127/128) nicht-monoton — ein sauberer Sinus-Sweep über diesen Punkt faltet sich am realen
-  Gerät zu einer sich selbst kreuzenden Acht zusammen, statt weiterzulaufen. Ausgeschlossen als
-  Ursachen: `beatCount`/Trigger-Modus (tritt bei Internal Timer identisch wie bei BPM-Sync auf),
-  Projektionsgeometrie (User filmte den projizierten Lichtpunkt direkt, nicht das Gehäuse —
-  bleibt eine Acht), Mirror/Invert-Menüeinstellungen am Fixture (alle vom User durchgetestet,
-  keine Wirkung), und **Kalibrierung** — das Fixture hatte einen „Tilt Calibration"-Wert von
-  `-037` im (undokumentierten, aber ohne Passwort erreichbaren) Kalibrierungsmenü; live auf `0`
-  gesetzt und mit softwareseitig deaktiviertem Fix erneut getestet (A/B-Test), Ergebnis blieb
-  identisch eine Acht — zusätzlich zeigte sich, dass der Wert `-037` tatsächlich gebraucht wurde
-  (Fixture zeigt bei `0` nicht mehr korrekt gerade nach oben), also eine echte, notwendige
-  Kalibrierung war, nicht die Fehlerursache. Zusätzliche Bestätigung über das Fixture-eigene
-  „Sensor Monitor"-Diagnosemenü (per Video eingesehen): „Tilt Codewheel Step" (der interne
-  Encoder-Zählerstand der Tilt-Achse) blieb über einen längeren Zeitraum praktisch eingefroren,
-  während „Pan Codewheel Step" im selben Zeitraum stetig weiterlief — das Fixture meldet selbst,
-  dass sein Tilt-Motor/-Encoder Positionsänderungen in diesem Bereich nicht sauber verfolgt.
-  **Fix (`FX_Engine.h`, `MovementEngine::getValues()`):** Statt einzelne Ausgabe-Samples am
-  Übergangspunkt zu spiegeln (frühere Zwischenversion — vermied zwar die Kreuzung, faltete die
-  Form aber zu einer flachen Kuppel/Halfpipe zusammen, von zwei Live-Tests per Video/`ffmpeg`-
-  Trajektorien-Sampling bestätigt), wird jetzt das **Pattern-Zentrum** der Tilt-Achse pro Frame so
-  weit angehoben, dass der volle Bewegungsradius des aktuellen Patterns die Problemzone
-  (`< 32768`) gar nicht erst erreicht — die Form bleibt dadurch ein echter, unverzerrter Kreis,
-  nur automatisch etwas höher zentriert als der angeforderte Rohwert. `maxTiltExcursion` ist eine
-  konservative Schranke (`currentSize * 32767 * (|sin(rot)| + |cos(rot)|)`), die für beliebige
-  `rot`-Werte gilt, nicht nur den getesteten Fall `rot=0`. Bewusst nur im Movement-FX-Pfad
-  angewendet, nicht auf manuelle/Joystick-Tilt-Steuerung (dort gibt es keine Formgebung zu
-  schützen, ein automatisches Verschieben würde nur der direkten User-Eingabe entgegenwirken).
-  Alle drei Versionen (unkorrigiert, Sample-Spiegelung, Zentrum-Verschiebung) live per Trajektorien-
-  Sampling verifiziert — dafür neue Debug-Felder `op`/`ot` in `/api/get_dmx` ergänzt (das reale,
-  animierte Pattern-Output pro Frame; `cp`/`ct` zeigen nur das Zentrum, nie die Animation selbst).
-  **Kein echter Fix möglich ohne Fixture-Reparatur/Encoder-Neukalibrierung durch den Hersteller**
-  — dieser Software-Workaround ist die bestmögliche Abhilfe von unserer Seite.
+- **Movement-„Figure 8"-Optik untersucht bis zur physischen Root Cause — kein Software-Fix
+  möglich, Workaround-Versuch wieder entfernt (2026-08-20, Fortsetzung).** Ausführliche
+  Untersuchung, jetzt als „Bekannte kleine Issues" dokumentiert (siehe dort) statt hier als
+  gefixt geführt — der ursprünglich gebaute Software-Workaround (`MovementEngine::getValues()`
+  verschob das Tilt-Zentrum automatisch) wurde auf User-Wunsch wieder entfernt: ein gezielter
+  statischer Kalibrier-Sweep (CH4 einzeln von 90–165 gesetzt und jeweils gehalten, dabei den
+  fixture-eigenen „Tilt Codewheel Step" per Video mitgeschnitten) zeigte eine **glatt monotone**
+  Reaktion über den gesamten getesteten Bereich — widerlegt die ursprüngliche Annahme einer
+  nicht-monotonen DMX→Winkel-Abbildung, auf der der Fix aufbaute. Der tatsächliche Defekt ist ein
+  fester physischer Fehler an einem absoluten Tilt-Winkel, der nur beim tatsächlichen Durchfahren
+  auftritt (bestätigt unabhängig von Geschwindigkeit) — dagegen hilft kein DMX-Werte-Trick, wenn
+  ein Pattern absichtlich durch diesen Winkel fahren soll (z. B. ein „Clover", das bewusst darüber
+  hinausgeht). Der entfernte Fix hätte das ohnehin verhindert (zusätzlich zum Nebeneffekt, ca. die
+  halbe Tilt-Range für jedes Pattern zu sperren). Volle Diagnose-Historie inkl. aller geprüften und
+  verworfenen Hypothesen in `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 und `history.md`.
 
 - **Gerät nach NVS-Löschung erfolgreich neu konfiguriert und seit dieser Session dauerhaft
   erreichbar (2026-08-20, Fortsetzung).** Die im vorherigen Eintrag beschriebene manuelle

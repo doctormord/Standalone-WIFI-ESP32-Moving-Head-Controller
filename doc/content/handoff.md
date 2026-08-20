@@ -5,7 +5,7 @@
 > Kein offener Blocker.**
 >
 > **Was in dieser Session gemacht wurde (alles geflasht, live per `curl`
-> gegengeprüft, Details in `history.md` 2026-08-20 „dritte"/„vierte
+> gegengeprüft, Details in `history.md` 2026-08-20 „dritte" bis „fünfte
 > Fortsetzung" und `backlog.md` → „Kürzlich gefixt"):**
 >
 > 1. Drei vom User gemeldete Frontend/Backend-Sync-Bugs gefixt (FX-Start/
@@ -15,27 +15,32 @@
 >    gefunden und gefixt:** jeder echte Mic-Beat setzte `manualTap = true`,
 >    dessen Handler `beatCount` sofort wieder auf 0 setzte. Plus ein
 >    unabhängiger `modSp`-Formel-Bug im Movement-Size/Speed-Modulator.
-> 3. **Movement-„Figure 8"-Bug vollständig aufgeklärt und gefixt.** Kein
->    Software-Bug in der Pattern-Mathematik (per Live-Telemetrie bewiesen:
->    das gesendete DMX-Signal ist ein perfekter Kreis) — echter,
->    physischer Tilt-Encoder-/Motor-Defekt dieser konkreten Fixture-
->    Einheit unterhalb von DMX 16-Bit 32768 (~Tilt 127/128), bestätigt über
->    drei unabhängige Wege (projizierter Lichtpunkt direkt gefilmt, alle
->    Mirror/Invert-Settings ausgeschlossen, Fixture-eigenes „Tilt
->    Calibration"-Menü auf 0 getestet und ausgeschlossen, Fixture-eigenes
->    „Sensor Monitor"-Diagnosemenü zeigt den eingefrorenen Tilt-Encoder
->    direkt). Software-Workaround aktiv: `MovementEngine::getValues()`
->    verschiebt das Tilt-Zentrum eines Patterns automatisch so weit nach
->    oben, dass sein voller Bewegungsradius die Problemzone nie erreicht —
->    Kreis bleibt ein echter Kreis, nur automatisch höher zentriert.
->    Volle technische Doku in `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4.
+> 3. **Movement-„Figure 8"-Bug bis zur physischen Root Cause untersucht —
+>    kein Software-Fix möglich, bewusst nicht gefixt.** Kein Bug in der
+>    Pattern-Mathematik (per Live-Telemetrie bewiesen: das gesendete
+>    DMX-Signal ist ein perfekter Kreis). Ein Software-Workaround
+>    (Pattern-Zentrum automatisch verschieben) wurde gebaut, geflasht,
+>    und nach User-Feedback wieder **entfernt** — ein gezielter
+>    statischer Kalibrier-Sweep widerlegte die zugrundeliegende Annahme
+>    (nicht-monotone DMX→Winkel-Abbildung: tatsächlich glatt monoton über
+>    den ganzen Bereich). Echte Ursache: ein fester physischer Defekt an
+>    einem absoluten Tilt-Winkel, der nur beim tatsächlichen Durchfahren
+>    (unabhängig von Geschwindigkeit) auftritt — nicht per DMX-Werte-Wahl
+>    umgehbar, wenn ein Pattern absichtlich dort durchfahren soll. Volle
+>    Diagnose-Historie inkl. aller geprüften/verworfenen Hypothesen in
+>    `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 und `backlog.md` →
+>    „Bekannte kleine Issues". **Kein offener Punkt** — User weiß jetzt,
+>    dass er Pattern-Zentrum/-Größe selbst um diesen Winkel herum wählen
+>    muss, wenn eine saubere Form wichtiger ist als exakte Positionierung.
 > 4. Neuer AUDIO-Tab gebaut (Echtzeit-Band-Graph + Live-Tuning), dabei
 >    zwei weitere echte Bugs im Audio-Pipeline gefunden und gefixt (Beat-
 >    Tick-Latch, strukturell totes Mid-Band).
 >
 > Alles mit `pio run` + `pio run -t buildfs` gegenkompiliert, Firmware +
-> Filesystem mehrfach geflasht, jeder Fix live per `curl`/Telemetrie-
-> Sampling gegengeprüft — keine Vermutungen ungetestet stehen gelassen.
+> Filesystem mehrfach geflasht, jeder Fix (und jede verworfene Hypothese)
+> live per `curl`/Telemetrie-Sampling/Video-Analyse gegengeprüft — keine
+> Vermutungen ungetestet stehen gelassen, auch die eigene falsche Diagnose
+> in Punkt 3 wurde selbst wieder eingefangen und korrigiert.
 >
 > ---
 >
@@ -57,10 +62,10 @@
 Repository ist sowohl lokal als auch auf GitHub (`future`-Branch)
 git-versioniert. Zielhardware: **ESP32-C3 Supermini** (Fixture: SHEHDS 160W
 3in1 GOBO / „Pro Beam 280", Pan 540°/Tilt 270°, bekannter physischer
-Tilt-Encoder-Defekt um DMX 127/128 — siehe oben und `mapping_sheds_160w_
-3in1_gobo.md`). Gerät ist konfiguriert, über `movinghead.local` erreichbar,
-läuft mit der neuesten Firmware und dem neuesten Filesystem-Image (beide in
-dieser Session mehrfach geflasht).
+Tilt-Defekt an einem absoluten Winkel um DMX-Tilt 127 — kein Software-Fix,
+siehe oben und `mapping_sheds_160w_3in1_gobo.md`). Gerät ist konfiguriert,
+über `movinghead.local` erreichbar, läuft mit der neuesten Firmware und dem
+neuesten Filesystem-Image (beide in dieser Session mehrfach geflasht).
 
 ## Doku-Hinweis
 

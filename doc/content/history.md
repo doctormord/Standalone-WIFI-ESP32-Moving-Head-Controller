@@ -3116,3 +3116,75 @@ dieser Software-Workaround ist die bestmögliche Abhilfe von unserer
 Seite. `pio run` gegenkompiliert, Firmware mehrfach per `pio run -t
 upload` geflasht, Ergebnis jeweils live per `curl`-Telemetrie-Sampling
 gegengeprüft (kein Rateversuch an irgendeiner Stelle dieser Untersuchung).
+
+## 2026-08-20, fünfte Fortsetzung — Zentrum-Verschiebungs-Fix limitierte die Tilt-Range zu stark, danach per Kalibrier-Sweep als falsch diagnostiziert widerlegt und komplett entfernt
+
+Zwei unabhängige Probleme mit dem Fix aus dem vorigen Eintrag, in dieser
+Reihenfolge aufgedeckt:
+
+**Erstes Problem — Fix kappte Pattern-Spitzen.** User meldete: „jetzt
+scheint alles gedeckelt, geht nicht mehr über einen bestimmten Punkt
+hinaus." Root Cause: die Zentrum-Verschiebung prüfte nur die *untere*
+Grenze (32768), nie die *obere* (65535) — bei Size ≳50 % (oder kleineren
+Sizes mit `rot`, da `|sin|+|cos|` bis zu √2 reicht) landete die
+verschobene Kreis-Spitze regelmäßig über 65535 und wurde vom
+`constrain()` einfach flachgeklappt. Fix (zunächst): `ry` und die
+Verschiebung auf den tatsächlich verfügbaren „sicheren" Bereich
+(32768–65535, nur die Hälfte der gesamten Range) herunterskaliert, statt
+den harten Clamp die Spitze kappen zu lassen. Live per 60 %-Size-Test
+verifiziert (Trajektorie nutzt die komplette sichere Zone, keine
+Kappung mehr) — Details siehe Backlog-Historie, dieser Zwischenstand
+wurde nicht separat committed.
+
+**Zweites, grundsätzliches Problem — der ganze Ansatz beruhte auf einer
+falschen Diagnose.** User meldete danach: „ich kann den Effekt nicht
+mehr korrekt ausrichten, z. B. Clover über Tilt 127 fahren — das ging
+früher, so taugt der Fix nicht." Statt weiter am Symptom zu patchen,
+wurde die ursprüngliche Annahme (nicht-monotone DMX→Winkel-Abbildung
+genau bei DMX-Tilt ~127) direkt am Gerät geprüft: geführter, statischer
+Kalibrier-Sweep über CH4 (nicht über Movement FX — reine, unbewegte
+`/set_all`-Werte), 90 bis 165 in kleinen Schritten, jeder Wert ca. 2,3 s
+gehalten, User filmte dabei durchgehend das fixture-eigene „Sensor
+Monitor"-Menü. Zwei Aufnahmen mussten wiederholt werden (erste sendete
+versehentlich `c3`/PAN statt `c4`/TILT — eigener Fehler, sofort korrigiert
+und mit vorherigem Countdown neu aufgenommen; zweite lief noch mit
+zwischenzeitlich auf `0` gesetzter Tilt-Kalibrierung, User wies darauf
+hin, bevor ausgewertet wurde — Kalibrierung erst auf `-037` zurückgesetzt,
+dann dritte, gültige Aufnahme).
+
+Für die Auswertung wurde `tesseract` (OCR) versucht, lieferte auf der
+Dot-Matrix-LCD-Schrift aber nur Datenmüll — stattdessen wurden 30 Einzel-
+frames exakt zu den bekannten Sende-Zeitstempeln extrahiert (Timing über
+die Datei-`creation_time`-Metadaten mit den eigenen Kommando-Logs
+korreliert), zu Kontaktbögen zusammengesetzt und von Hand abgelesen.
+Ergebnis: `Tilt Codewheel Step` steigt **glatt und monoton** über den
+gesamten Bereich (DMX 93→Schritt -12, 108→+1, 120→+11, 127→+19,
+128→+20, 135→+24, 150→+37, 165→+50) — keine Umkehrung, keine
+Unstetigkeit, keine Anomalie genau am vermuteten Übergangspunkt. Das
+widerlegt die Kern-Annahme, auf der der gesamte Fix aufbaute.
+
+User bestätigte zusätzlich: der Fehler ist **nicht geschwindigkeitsabhängig**
+(auch bei sehr langsamer Bewegung weiterhin eine Acht) und **nicht durch
+den Encoder erklärbar** — der eingefroren wirkende `Tilt Codewheel Step`
+aus dem früheren Movement-FX-Video war vermutlich ein Artefakt der
+LCD-Menü-Refresh-Rate bei schneller Animation, kein echter Tracking-Fehler.
+Tatsächliche Erklärung: ein fester physischer Defekt an einem absoluten
+Tilt-Winkel, der nur beim tatsächlichen *Durchfahren* dieses Winkels
+auftritt (unabhängig von Geschwindigkeit) — eine gehaltene, unbewegte
+Position (wie im Kalibrier-Sweep) löst ihn nie aus, weshalb der Sweep
+sauber aussah, obwohl der Effekt real ist.
+
+Auf User-Wunsch („remove the fix, it doesn't work this way, i need to
+aim patterns through that point on purpose") wurde die gesamte
+Zentrum-Verschiebungs-Logik aus `MovementEngine::getValues()`
+(`FX_Engine.h`) wieder entfernt — kein Software-Fix ist möglich, wenn ein
+Pattern absichtlich durch den defekten Winkel fahren soll, und die
+automatische Verschiebung stand dieser Absicht mehr im Weg, als sie half
+(zusätzlich zum eigenen Kappungs-Bug oben). `mapping_sheds_160w_3in1_gobo.md`
+→ CH3/CH4 enthält jetzt die vollständige Diagnose-Historie inkl. aller
+geprüften und verworfenen Hypothesen (Kalibrierung, DMX-Mapping,
+physischer Defekt), inklusive der vom Fixture-Menü abgelesenen
+Tilt-Codewheel-Range (-90 bis +130, `+021` = gerade nach oben) und
+Pan-Codewheel-Range (-83 bis +517) als Referenzwerte für künftige
+Untersuchungen. `pio run` gegenkompiliert, Firmware geflasht und live
+per `curl` gegengeprüft (Gerät erreichbar, normaler Betrieb).

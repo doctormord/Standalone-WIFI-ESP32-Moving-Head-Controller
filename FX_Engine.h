@@ -217,32 +217,20 @@ public:
         if (invP) rx = -rx;
         if (invT) ry = -ry;
 
-        // Tilt fold-avoidance for a physical fixture quirk (confirmed live 2026-08-20, this exact
-        // unit -- see history.md): tilt response is non-monotonic below DMX 16-bit 32768 (8-bit
-        // tilt ~127/128) -- a clean sine sweep through that point folds back on itself instead of
-        // continuing, turning a circle into a self-crossing figure-8. Confirmed NOT a calibration
-        // issue: the fixture's own "Tilt Calibration" was -037 (found in its onboard Sensor
-        // Monitor menu); zeroing it live and re-testing the raw (uncorrected) output still
-        // produced the figure-8, and made the fixture's physical level position visibly wrong
-        // (no longer pointed straight up) -- -037 was a real, needed calibration value, not the
-        // cause. So this is a genuine hardware/encoder response defect, not fixable from either
-        // software or the fixture's own menu. An earlier version of this fix reflected individual
-        // output samples off the boundary, which avoided the crossing but folded the whole shape
-        // into a flattened dome/halfpipe (same effective distortion, just symmetric instead of a
-        // crossing). This is the better fix: shift the pattern's *center* up just enough that its
-        // full excursion never needs the broken zone at all, so the shape itself comes out
-        // correct -- positioned a bit higher than the raw centerT the caller asked for, instead
-        // of half-collapsed. maxTiltExcursion is a conservative bound on how far this frame's
-        // rotated shape can swing on the tilt axis; |sin|+|cos| covers any `rot` value, not just
-        // the untested rot==0 case. Deliberately only applied here (the Movement-FX path), not to
-        // manual/joystick tilt -- no pattern shape to protect there, and auto-shifting a direct
-        // drag would just fight the user's own input.
-        const int TILT_FOLD_POINT = 32768;
-        float maxTiltExcursion = currentSize * 32767.0f * (fabsf(sinR) + fabsf(cosR));
-        int adjCenterT = centerT;
-        if (adjCenterT - (int)maxTiltExcursion < TILT_FOLD_POINT) adjCenterT = TILT_FOLD_POINT + (int)maxTiltExcursion;
-
+        // No software compensation for the tilt-axis defect around DMX tilt ~127 (8-bit) -- see
+        // mapping_sheds_160w_3in1_gobo.md / history.md 2026-08-20 for the full diagnosis. A prior
+        // attempt auto-shifted a pattern's tilt center away from that point, but a static-position
+        // sweep (held, not moving) tracked the fixture's own tilt encoder perfectly monotonically
+        // straight through that DMX region -- proving it's not a DMX-to-angle mapping fault. The
+        // real defect is a fixed *physical* fault at one absolute tilt angle that only manifests
+        // while the mechanism is actually rotating through it (any speed, confirmed live -- not a
+        // tracking-rate issue either), which no choice of DMX value can route around when a
+        // pattern is deliberately meant to sweep through that angle. Auto-shifting fought the
+        // user's own intentional positioning (e.g. a Clover pattern meant to reach over that exact
+        // point) worse than it helped, so this is left to the user to route around by choosing
+        // pattern centers/sizes that avoid the affected angle when a clean shape matters more than
+        // exact positioning.
         outP = constrain(centerP + (int)rx, 0, 65535);
-        outT = constrain(adjCenterT + (int)ry, 0, 65535);
+        outT = constrain(centerT + (int)ry, 0, 65535);
     }
 };

@@ -221,21 +221,15 @@ Parametric pan/tilt pattern generator (circles, figure-8s, etc.).
   Evaluates the shape selected by `type` (1–12: circle, figure-8, various
   Lissajous-style curves, square, line, etc.) at phase `enginePhase +
   fixturePhase`, scales by `currentSize`, applies the `rot` rotation matrix,
-  applies inversion, and offsets from `centerP`/`centerT`.
-
-  Before that final offset, the tilt axis gets one more adjustment: a
-  confirmed hardware defect on the deployed fixture unit (its tilt
-  response is non-monotonic below 16-bit DMX 32768, ~8-bit tilt 127/128 —
-  see `mapping_sheds_160w_3in1_gobo.md` for the full diagnosis, ruled out
-  as a calibration/projection/software issue) means any pattern whose full
-  tilt excursion would dip below that point comes out as a self-crossing
-  figure-8 on the real fixture instead of the shape actually requested.
-  `centerT` is shifted up (never down) by just enough that the pattern's
-  conservative worst-case tilt swing (`currentSize * 32767 * (|sin(rot)| +
-  |cos(rot)|)`) never needs to cross 32768 — the shape comes out correct,
-  just centered a bit higher than the raw `centerT` argument when that
-  argument alone would have crossed the fold. Only applied here (Movement
-  FX), not to manual/joystick tilt.
+  applies inversion, and offsets from `centerP`/`centerT`. No software
+  compensation for the tilt-axis physical defect around DMX tilt ~127 (see
+  `mapping_sheds_160w_3in1_gobo.md` for the full diagnosis) — an earlier
+  attempt auto-shifted the pattern's tilt center to avoid it, but a static-
+  position sweep proved the defect isn't a DMX-to-angle mapping fault (the
+  fixture's own tilt encoder tracked perfectly monotonically straight
+  through that region when held still), and the shift fought intentional
+  user positioning worse than it helped. Left to the user to route around
+  by choosing centers/sizes that avoid the affected angle when needed.
 
 ---
 
