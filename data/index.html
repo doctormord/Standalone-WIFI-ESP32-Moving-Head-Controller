@@ -1472,6 +1472,139 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 </script>
 
 <script type="text/babel">
+// horizon-audio-debug.jsx
+// Real-time "EKG" view of the mic's 3-band envelope pipeline (this project's stand-in for a real
+// FFT) plus live tuning for it -- added 2026-08-20 after a movement beat-sync bug turned out to be
+// impossible to diagnose blind. Polls /api/audio_debug at ~15Hz (independent of the ~2s state poll
+// the rest of the app uses -- far too slow for a scrolling waveform) and posts changes to
+// /audio_tune immediately, matching this file's established fetch-on-change pattern elsewhere.
+(function () {
+  const { useState, useEffect, useRef, useCallback } = React;
+
+  const HISTORY_LEN = 200; // ~13s at the 66ms poll below
+
+  function AudioDebugTab({ accent, micOn, onMicToggle, hwSens, setHwSens }) {
+    const canvasRef = useRef(null);
+    const bufRef = useRef({ lo: [], mi: [], hi: [], th: [], xb: [], xm: [], xh: [] });
+    const [live, setLive] = useState({ lo: 0, mi: 0, hi: 0, th: 0 });
+    const [tune, setTune] = useState(null); // null until first poll seeds it from the device
+    const [paused, setPaused] = useState(false);
+
+    const draw = useCallback(() => {
+      const cv = canvasRef.current; if (!cv) return;
+      const ctx = cv.getContext('2d');
+      const w = cv.width, h = cv.height;
+      ctx.clearRect(0, 0, w, h);
+      const buf = bufRef.current;
+      const n = buf.lo.length;
+      if (n < 2) return;
+      const maxVal = Math.max(60, ...buf.lo, ...buf.mi, ...buf.hi, ...buf.th);
+      const stepX = w / (HISTORY_LEN - 1);
+      const yOf = (v) => h - 6 - (Math.min(v, maxVal) / maxVal) * (h - 12);
+
+      // Beat ticks first so the trace lines draw on top of them.
+      buf.xb.forEach((v, i) => { if (v) { const x = w - (n - i) * stepX; ctx.fillStyle = 'rgba(34,197,94,0.22)'; ctx.fillRect(x - 1, 0, 2, h); } });
+
+      const plot = (arr, color, lw, dash) => {
+        ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.setLineDash(dash || []);
+        arr.forEach((v, i) => { const x = w - (n - i) * stepX; const y = yOf(v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+        ctx.stroke(); ctx.setLineDash([]);
+      };
+      // Threshold drawn dashed/bold and last (on top) -- this is the ONLY line the sensitivity
+      // slider moves (it shifts thBass, not the lo/mi/hi bands themselves), so it needs to read as
+      // clearly separate from the band traces or "does sensitivity do anything?" is a fair
+      // question just from looking at the graph. Reported live 2026-08-20.
+      plot(buf.hi, '#22d3ee', 1.6);
+      plot(buf.mi, '#fbbf24', 1.6);
+      plot(buf.lo, '#22c55e', 1.8);
+      plot(buf.th, '#f87171', 2.2, [6, 4]);
+    }, []);
+
+    useEffect(() => {
+      let active = true;
+      const poll = async () => {
+        if (paused) return;
+        try {
+          const r = await fetch('/api/audio_debug'); const d = await r.json();
+          if (!active) return;
+          setLive({ lo: d.lo, mi: d.mi, hi: d.hi, th: d.th });
+          setTune((prev) => prev || { nf: d.nf, fa: d.fa, fd: d.fd, ma: d.ma, md: d.md, sa: d.sa, sd: d.sd, mtd: d.mtd, htd: d.htd });
+          const buf = bufRef.current;
+          buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi); buf.th.push(d.th);
+          buf.xb.push(d.xb); buf.xm.push(d.xm); buf.xh.push(d.xh);
+          if (buf.lo.length > HISTORY_LEN) { buf.lo.shift(); buf.mi.shift(); buf.hi.shift(); buf.th.shift(); buf.xb.shift(); buf.xm.shift(); buf.xh.shift(); }
+          draw();
+        } catch (e) {}
+      };
+      poll(); const id = setInterval(poll, 66);
+      return () => { active = false; clearInterval(id); };
+    }, [paused, draw]);
+
+    // Every tune param round-trips through the device (not just local state) so the slider always
+    // reflects what's actually running -- same "don't trust the optimistic value alone" discipline
+    // as the rest of this app's outbound sync.
+    const applyTune = (key, val) => {
+      setTune((t) => ({ ...t, [key]: val }));
+      fetch(`/audio_tune?${key}=${val}`).catch(() => {});
+    };
+
+    const shiftLabel = (v) => `÷${1 << v}`; // a bit-shift of v is a division by 2^v -- show the actual factor, not the raw shift count
+    const row = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 };
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
+        <Panel title="Live bands · low / mid / high" accentDot={accent}
+          right={<button onClick={() => setPaused((p) => !p)} style={{ padding: '5px 12px', background: paused ? 'rgba(220,38,38,0.18)' : 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, color: paused ? '#fca5a5' : 'rgba(255,255,255,0.6)', fontSize: 10, fontWeight: 700, letterSpacing: 1, cursor: 'pointer' }}>{paused ? 'PAUSED' : 'LIVE'}</button>}>
+          <canvas ref={canvasRef} width={640} height={190} style={{ width: '100%', height: 190, display: 'block', background: 'rgba(0,0,0,0.35)', borderRadius: 10 }} />
+          <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 11, fontFamily: '"JetBrains Mono", monospace', flexWrap: 'wrap' }}>
+            <span style={{ color: '#22c55e' }}>■ LOW {live.lo}</span>
+            <span style={{ color: '#fbbf24' }}>■ MID {live.mi}</span>
+            <span style={{ color: '#22d3ee' }}>■ HIGH {live.hi}</span>
+            <span style={{ color: 'rgba(248,113,113,0.8)' }}>■ THRESHOLD {live.th}</span>
+            <span style={{ color: 'rgba(34,197,94,0.6)', marginLeft: 'auto' }}>▌ beat detected</span>
+          </div>
+        </Panel>
+
+        <Panel title="Sensitivity" accentDot={accent}>
+          <LabeledSlider label="Mic sensitivity" value={hwSens} onChange={setHwSens} min={0} max={100} unit="%" accent={accent} />
+          <button onClick={onMicToggle} style={{ marginTop: 10, width: '100%', padding: '10px 0', background: micOn ? 'rgba(34,197,94,0.22)' : 'rgba(255,255,255,0.05)', border: `1px solid ${micOn ? 'rgba(34,197,94,0.5)' : 'rgba(255,255,255,0.08)'}`, borderRadius: 9, color: micOn ? '#86efac' : 'rgba(255,255,255,0.6)', fontWeight: 700, fontSize: 12, letterSpacing: 1, cursor: 'pointer' }}>{micOn ? '● MIC ON' : '○ MIC OFF'}</button>
+        </Panel>
+
+        <Panel title="Fake-FFT tuning · envelope followers" accentDot={accent}>
+          {!tune ? (
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', padding: '8px 0' }}>Waiting for device…</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginBottom: 10, lineHeight: 1.6 }}>
+                Each band is a leaky-integrator envelope (attack/decay), not a real frequency-domain
+                filter. Attack/decay are shown as their actual divisor (higher = slower to react).
+                Threshold divisors set how much smaller mid/high energy can be than the live bass
+                threshold and still count as a hit.
+              </div>
+              <div style={row}>
+                <LabeledSlider label={`Low attack ${shiftLabel(tune.sa)}`} value={tune.sa} onChange={(v) => applyTune('sa', v)} min={0} max={8} accent={accent} compact />
+                <LabeledSlider label={`Low decay ${shiftLabel(tune.sd)}`} value={tune.sd} onChange={(v) => applyTune('sd', v)} min={0} max={8} accent={accent} compact />
+                <LabeledSlider label={`Mid attack ${shiftLabel(tune.ma)}`} value={tune.ma} onChange={(v) => applyTune('ma', v)} min={0} max={8} accent={accent} compact />
+                <LabeledSlider label={`Mid decay ${shiftLabel(tune.md)}`} value={tune.md} onChange={(v) => applyTune('md', v)} min={0} max={8} accent={accent} compact />
+                <LabeledSlider label={`High attack ${shiftLabel(tune.fa)}`} value={tune.fa} onChange={(v) => applyTune('fa', v)} min={0} max={8} accent={accent} compact />
+                <LabeledSlider label={`High decay ${shiftLabel(tune.fd)}`} value={tune.fd} onChange={(v) => applyTune('fd', v)} min={0} max={8} accent={accent} compact />
+                <LabeledSlider label={`Mid threshold ${shiftLabel(tune.mtd)}`} value={tune.mtd} onChange={(v) => applyTune('mtd', v)} min={0} max={6} accent={accent} compact />
+                <LabeledSlider label={`High threshold ${shiftLabel(tune.htd)}`} value={tune.htd} onChange={(v) => applyTune('htd', v)} min={0} max={6} accent={accent} compact />
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <LabeledSlider label="Noise floor" value={tune.nf} onChange={(v) => applyTune('nf', v)} min={0} max={500} accent={accent} compact />
+              </div>
+            </>
+          )}
+        </Panel>
+      </div>
+    );
+  }
+  window.HorizonAudioDebugTab = AudioDebugTab;
+})();
+</script>
+
+<script type="text/babel">
 // ROOT APP
 (function () {
   const { useState, useEffect, useRef, useCallback } = React;
@@ -1502,8 +1635,16 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 
   const CH = { DIMMER:1, STROBE:2, PAN:3, TILT:4, SPEED:5, COLOR:6, GOBO:7, GOBO_ROT:8, GOBO_IDX:9, PRISM:10, PRISM_ROT:11, FROST:12, FOCUS:13, ZOOM:14, PAN_FINE:15, TILT_FINE:16, MACRO:17 };
   const COLORS = [{n:'White',v:0},{n:'W/R',v:50},{n:'Red',v:5},{n:'R/Y',v:55},{n:'Yellow',v:10},{n:'Y/B',v:60},{n:'Blue',v:15},{n:'B/G',v:65},{n:'Green',v:20},{n:'G/P',v:70},{n:'Purple',v:25},{n:'P/A',v:75},{n:'Amber',v:30},{n:'A/C',v:80},{n:'Cyan',v:35},{n:'C/E',v:85},{n:'Emerald',v:40},{n:'E/O',v:90},{n:'Orange',v:45},{n:'O/W',v:95}];
+  // Zone-start/width tables for CH.GOBO/CH.GOBO_ROT, so the poll below can read the device's actual
+  // gobo wheel position back into sgoboBase/rgoboBase (and their offsets) -- mirrors SGOBO_BASES/
+  // RGOBO_BASES in the Programmer tab's script block, duplicated here per this project's per-block
+  // scoping (see CLAUDE.md). Before this, a preset/chaser/Art-Net-driven gobo change never reflected
+  // back into the Live/Programmer dropdown, which stayed showing whatever was last manually picked.
+  const SGOBO_ZONES = [{v:0,range:0},{v:10,range:0},{v:20,range:0},{v:30,range:0},{v:40,range:0},{v:50,range:0},{v:60,range:0},{v:70,range:0},{v:80,range:0},{v:90,range:0},{v:100,range:29},{v:130,range:4},{v:135,range:75},{v:211,range:44}];
+  const RGOBO_ZONES = [{v:0,range:0},{v:10,range:0},{v:20,range:0},{v:30,range:0},{v:40,range:0},{v:50,range:0},{v:60,range:0},{v:70,range:57},{v:128,range:1},{v:130,range:62},{v:193,range:62}];
+  const findGoboZone = (zones, val) => { let z = zones[0]; for (const b of zones) { if (val >= b.v) z = b; else break; } return z; };
 
-const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'PATCH'];
+const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
  function App() {
     const [tab, setTabState] = useState(() => { const saved = localStorage.getItem('hz_tab'); return VALID_TABS.includes(saved) ? saved : 'LIVE'; });
     const setTab = useCallback((t) => { setTabState(t); try { localStorage.setItem('hz_tab', t); } catch(e) {} }, []);
@@ -1567,6 +1708,12 @@ const isReceiving = useRef(false);
             // silently overwritten by the next poll before Stop is even pressed. Reported live 2026-08-18.
             next.dimmer = prev.dimFxRunning ? prev.dimmer : (d[CH.DIMMER] ?? prev.dimmer); next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d.cp != null ? Math.round(d.cp / 257) : prev.pan; next.tilt = d.ct != null ? Math.round(d.ct / 257) : prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = prev.grFxRunning ? prev.goboRot : (d[CH.GOBO_IDX] ?? prev.goboRot); next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = prev.prFxRunning ? prev.prismRot : (d[CH.PRISM_ROT] ?? prev.prismRot); next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
             if (colorEntry && !prev.colFxRunning) next.colorBase = colorEntry.v;
+            // Gobo dropdowns are otherwise frontend-authoritative (nothing else read them back) --
+            // without this, recalling a preset/chaser slot (or an Art-Net takeover) silently applied
+            // the new gobo on the actual fixture while the Live/Programmer dropdown kept showing
+            // whichever gobo was last picked by hand. Reported live 2026-08-20.
+            if (d[CH.GOBO] != null && !prev.sgFxRunning) { const z = findGoboZone(SGOBO_ZONES, d[CH.GOBO]); next.sgoboBase = z.v; next.sgoboOff = d[CH.GOBO] - z.v; }
+            if (d[CH.GOBO_ROT] != null && !prev.rgFxRunning) { const z = findGoboZone(RGOBO_ZONES, d[CH.GOBO_ROT]); next.rgoboBase = z.v; next.rgoboOff = d[CH.GOBO_ROT] - z.v; }
             if (d.pn) next.presetNames = d.pn; next.presetActive = d.pr > 0 ? d.pr : null;
             if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
             if (d.dSm !== undefined) next.damping = d.dSm;
@@ -1638,8 +1785,14 @@ const isReceiving = useRef(false);
       const syncFx = (stateKey, runningKey, fields, urlBuilder, fetchId) => {
         const snapshot = JSON.stringify(fields);
         if (p[stateKey] !== snapshot) {
-          p[stateKey] = snapshot;
+          // Only mark the snapshot "seen" once it's actually sent -- same discipline as track()'s own
+          // comment above explains. Updating p[stateKey] unconditionally (as this used to) meant a
+          // Start/Stop press landing inside the post-poll isReceiving window got marked as handled
+          // without ever reaching the device: dirtyUntilRef was never armed, so the very next poll
+          // (device still reporting "not running") flipped the button back within ~2s. Reported live
+          // 2026-08-20: "FX-Start-Button wird kurz gruen, geht nach 2 Sekunden wieder auf rot."
           if (!isReceiving.current) {
+            p[stateKey] = snapshot;
             dirtyUntilRef.current[runningKey] = Date.now() + 2500;
             const url = urlBuilder();
             if (!fields[0]) tFetchImmediate(url, fetchId); else tFetch(url, fetchId);
@@ -1663,17 +1816,20 @@ const isReceiving = useRef(false);
       syncFx('chaserState', 'showRunning', [s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync],
         () => `/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog');
       
-      if (p.transMode !== s.transMode) { p.transMode = s.transMode; if(!isReceiving.current) tFetch('/trans?dip=' + s.transMode, 'trans'); }
-      if (p.master !== s.master) { p.master = s.master; if(!isReceiving.current) tFetch(`/masterdim?v=${s.master}`, 'master'); }
-      if (p.damping !== s.damping) { p.damping = s.damping; if(!isReceiving.current) tFetch('/smooth?v=' + s.damping, 'smth'); }
-      
+      // Same "only mark it seen once it's actually sent" discipline as track()/syncFx() above -- these
+      // four used to update p.xxx unconditionally, so a change landing inside the isReceiving window
+      // got silently dropped with no retry until this exact field happened to change again.
+      if (p.transMode !== s.transMode && !isReceiving.current) { p.transMode = s.transMode; tFetch('/trans?dip=' + s.transMode, 'trans'); }
+      if (p.master !== s.master && !isReceiving.current) { p.master = s.master; tFetch(`/masterdim?v=${s.master}`, 'master'); }
+      if (p.damping !== s.damping && !isReceiving.current) { p.damping = s.damping; tFetch('/smooth?v=' + s.damping, 'smth'); }
+
       // KORREKTUR: joyCurve durch 10 teilen, bevor es an den ESP32 geht!
       const crvFixed = (s.joyCurve / 10).toFixed(1);
       const joyKey = `${s.joySpeed}|${crvFixed}|${s.joyMomentum}|${s.panRev?1:0}|${s.tiltRev?1:0}|${s.panMin}|${s.panMax}|${s.tiltMin}|${s.tiltMax}`;
-      
-      if (p.joyKey !== joyKey) { 
-        p.joyKey = joyKey; 
-        if(!isReceiving.current) tFetch(`/joy_cfg?spd=${s.joySpeed}&crv=${crvFixed}&mom=${s.joyMomentum}&pr=${s.panRev?1:0}&tr=${s.tiltRev?1:0}&pmin=${s.panMin}&pmax=${s.panMax}&tmin=${s.tiltMin}&tmax=${s.tiltMax}`, 'joy_cfg'); 
+
+      if (p.joyKey !== joyKey && !isReceiving.current) {
+        p.joyKey = joyKey;
+        tFetch(`/joy_cfg?spd=${s.joySpeed}&crv=${crvFixed}&mom=${s.joyMomentum}&pr=${s.panRev?1:0}&tr=${s.tiltRev?1:0}&pmin=${s.panMin}&pmax=${s.panMax}&tmin=${s.tiltMin}&tmax=${s.tiltMax}`, 'joy_cfg');
       }
     }, [state]);
 
@@ -1713,11 +1869,12 @@ const isReceiving = useRef(false);
     return (
       <div style={{ width: '100%', height: '100vh', display: 'flex', flexDirection: 'column', background: night ? '#0a0606' : '#0b0b0e', color: '#fff', fontFamily: '"Inter", -apple-system, system-ui, sans-serif', overflow: 'hidden', filter: night ? 'brightness(0.85) sepia(0.5) hue-rotate(-50deg) saturate(2.2)' : 'none', position: 'relative' }}>
         <StatusBar accent={accent} onAccentChange={handleAccentChange} night={night} onNightToggle={() => setNight(n => { const next = !n; try { localStorage.setItem('hz_night', next ? '1' : '0'); } catch(e) {} return next; })} telemetry={tele} bpm={bpm} micOn={micOn} fixtureCount={fixtureCount} />
-        <Tabs tab={tab} setTab={setTab} accent={accent} tabs={['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'PATCH']} />
+        <Tabs tab={tab} setTab={setTab} accent={accent} tabs={['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH']} />
         <div className="tab-scroll">
           {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
           {tab === 'FOLLOWSPOT' && <HorizonFollowspotTab accent={accent} joystickSize={195} state={state} setState={setState} onJoystick={joystickHandler} onMapTap={handleMapTap} keyJoyRef={keyJoyRef} />}
           {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
+          {tab === 'AUDIO' && <HorizonAudioDebugTab accent={accent} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'PATCH' && <HorizonPatchTab accent={accent} />}
         </div>
         <MutedWarning show={muted} onUnmute={handleMute} />

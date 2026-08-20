@@ -24,28 +24,44 @@
 // --- AUDIO PROCESSING & ENVELOPES ---
 // =========================================================
 #define SAMPLE_DOWNSCALE_SHIFT 14
-#define NOISE_FLOOR 100
 
-// Attack/Decay Speeds (bit-shifts for division: 1= /2, 2= /4, 3= /8, 4= /16)
-#define ENV_FAST_ATTACK_SHIFT 1
-#define ENV_FAST_DECAY_SHIFT 2
-#define ENV_MID_ATTACK_SHIFT 2
-#define ENV_MID_DECAY_SHIFT 3
-#define ENV_SLOW_ATTACK_SHIFT 2
-#define ENV_SLOW_DECAY_SHIFT 4 
-#define DYN_THRESH_SMOOTH_SHIFT 4
+// Attack/Decay speeds (bit-shifts: 1=/2, 2=/4, 3=/8, 4=/16), the mid/high threshold divisors, and
+// the noise floor together are this project's "fake FFT" -- three leaky-integrator envelope
+// followers at different attack/decay speeds standing in for a real frequency-domain split (see
+// bassEnergy/midEnergy/highEnergy below). Runtime-tunable (not #define) so the new AUDIO DEBUG tab
+// can adjust them live via /audio_tune without a reflash -- added 2026-08-20 after live movement
+// beat-sync debugging showed there was no way to see or tune this pipeline except by guessing.
+// Defaults match the previous #define values exactly.
+inline int tuneNoiseFloor = 100;
+inline int tuneFastAttackShift = 1;
+inline int tuneFastDecayShift = 2;
+inline int tuneMidAttackShift = 2;
+inline int tuneMidDecayShift = 3;
+// Was 2 (same as tuneMidAttackShift) -- since midEnergy = max(0, envMid - envSlow), an equal
+// attack speed meant envMid and envSlow rose in perfect lockstep on every attack (identical
+// coefficient), and envMid's faster decay only ever pulled it BELOW envSlow afterward -- so
+// envMid could never exceed envSlow and midEnergy was structurally ~0 by construction, no matter
+// what the mid threshold or sensitivity were set to. Same issue would apply to high vs mid once
+// fixed unless kept distinct; fast/mid already differ (shift 1 vs 2). Slowing only the slow band's
+// attack restores a strict fast<mid<slow attack-speed ordering that mirrors the decay ordering
+// already in place, giving mid (and by extension high) a real signal to work with. Confirmed via
+// the AUDIO DEBUG tab live 2026-08-20: mid/high read ~0 the entire session with active, audible
+// music playing, while low tracked the beat clearly.
+inline int tuneSlowAttackShift = 3;
+inline int tuneSlowDecayShift = 4;
+inline int tuneDynThreshSmoothShift = 4;
+inline int tuneMidThreshDivShift = 1;
+inline int tuneHighThreshDivShift = 2;
 
 // =========================================================
 // --- BEAT DETECTION THRESHOLDS ---
 // =========================================================
 #define MS_PER_MINUTE 60000
-#define MIN_BEAT_INTERVAL_MS 280  
-#define MAX_BEAT_INTERVAL_MS 1000 
+#define MIN_BEAT_INTERVAL_MS 280
+#define MAX_BEAT_INTERVAL_MS 1000
 #define SILENCE_TIMEOUT_MS 2500
 
-#define MID_THRESH_DIV_SHIFT 1
 #define MID_DEBOUNCE_MS 150
-#define HIGH_THRESH_DIV_SHIFT 2
 #define HIGH_DEBOUNCE_MS 80
 
 // =========================================================
@@ -75,6 +91,17 @@ inline bool guiBass = false;
 inline bool guiMid  = false;
 inline bool guiHigh = false;
 
+// Latched-until-read hit flags for the AUDIO DEBUG tab's fast (~66ms) /api/audio_debug poll.
+// Deliberately separate from guiBass/guiMid/guiHigh (which /api/state already latches-and-clears
+// on its own independent ~500ms poll) -- two pollers clearing the same flag would race each other
+// for whichever request happens to land first, dropping hits for the other. triggerBass/Mid/High
+// themselves are NOT pollable at all: pollAudioEngine() unconditionally zeroes them at the top of
+// every call, and loop() calls it far more often than the 40ms internal audio-processing throttle,
+// so a "true" set here survives only until the very next loop() iteration -- microseconds, not
+// something an HTTP request arriving from outside can ever realistically catch. Reported live
+// 2026-08-20 as "graph zeigt so gut wie keine beat detects an" despite audible, obvious beats.
+inline bool dbgBassHit = false, dbgMidHit = false, dbgHighHit = false;
+
 extern int globalBPM;
 extern unsigned long lastBeatTime;
 extern bool manualTap;
@@ -101,6 +128,10 @@ inline int32_t envMid  = 0;
 inline int32_t envSlow = 0;
 inline int32_t dynThreshold = 1000;
 
+// Latest band energies + threshold, held here (not just local to pollAudioEngine()) so the AUDIO
+// DEBUG tab's /api/audio_debug poll can read the same numbers the beat detector just acted on.
+inline int32_t lastBassEnergy = 0, lastMidEnergy = 0, lastHighEnergy = 0, lastThBass = 0;
+
 void pollAudioEngine() {
   triggerBass = false;
   triggerMid  = false;
@@ -120,23 +151,24 @@ void pollAudioEngine() {
     for (int i = 0; i < count; i++) {
       int32_t s = std::abs(raw_samples[i] >> SAMPLE_DOWNSCALE_SHIFT);
       
-      if (s > envFast) envFast += (s - envFast) >> ENV_FAST_ATTACK_SHIFT; 
-      else envFast -= (envFast - s) >> ENV_FAST_DECAY_SHIFT;
-      
-      if (s > envMid)  envMid  += (s - envMid)  >> ENV_MID_ATTACK_SHIFT; 
-      else envMid  -= (envMid - s)  >> ENV_MID_DECAY_SHIFT;
-      
-      if (s > envSlow) envSlow += (s - envSlow) >> ENV_SLOW_ATTACK_SHIFT; 
-      else envSlow -= (envSlow - s) >> ENV_SLOW_DECAY_SHIFT;
+      if (s > envFast) envFast += (s - envFast) >> tuneFastAttackShift;
+      else envFast -= (envFast - s) >> tuneFastDecayShift;
+
+      if (s > envMid)  envMid  += (s - envMid)  >> tuneMidAttackShift;
+      else envMid  -= (envMid - s)  >> tuneMidDecayShift;
+
+      if (s > envSlow) envSlow += (s - envSlow) >> tuneSlowAttackShift;
+      else envSlow -= (envSlow - s) >> tuneSlowDecayShift;
     }
 
     int32_t bassEnergy = envSlow;
     int32_t midEnergy  = std::max((int32_t)0, (int32_t)(envMid - envSlow));
     int32_t highEnergy = std::max((int32_t)0, (int32_t)(envFast - envMid));
 
-    dynThreshold += (envSlow - dynThreshold) >> DYN_THRESH_SMOOTH_SHIFT;
+    dynThreshold += (envSlow - dynThreshold) >> tuneDynThreshSmoothShift;
     float sens = 2.0f - (hwAudioSensitivity * 0.01f);
-    int32_t thBass = (dynThreshold * sens) + NOISE_FLOOR;
+    int32_t thBass = (dynThreshold * sens) + tuneNoiseFloor;
+    lastBassEnergy = bassEnergy; lastMidEnergy = midEnergy; lastHighEnergy = highEnergy; lastThBass = thBass;
 
     bool beatDetected = (bassEnergy > thBass && (now - lastBassTime) > MIN_BEAT_INTERVAL_MS);
 
@@ -145,6 +177,7 @@ void pollAudioEngine() {
       lastBassTime = now;
       triggerBass = true;
       guiBass = true;
+      dbgBassHit = true;
 
       if (diff < MAX_BEAT_INTERVAL_MS) {
         unsigned long currentInterval = MS_PER_MINUTE / globalBPM;
@@ -204,7 +237,17 @@ void pollAudioEngine() {
       // within a single beat and visibly jerked backward on every detection ("juggling").
       beatCount++;
       masterSyncTime = now;
-      manualTap = true;
+      // Deliberately NOT setting manualTap here (that used to happen on every real beat, not just
+      // an actual tap-tempo button press). manualTap's handler in the .ino unconditionally does
+      // `beatCount = 0`, meant for a literal user tap re-establishing the downbeat -- firing it on
+      // every ongoing audio-detected beat zeroed beatCount back out on the very same loop()
+      // iteration it was just incremented above (pollAudioEngine() runs immediately before
+      // updateEngines() in loop()), permanently pinning multi-beat sync (Movement FX "Global BPM
+      // Sync" with e.g. 32 beats/rev) inside a single beat -- the pattern only ever traced 1/32 of
+      // a revolution before snapping back, looking like a left-right twitch with no real sweep.
+      // Reported live 2026-08-20. The beatCount++/lastBeatTime/masterSyncTime updates above are
+      // the correct incremental resync for an ongoing beat stream; a full phase-zeroing resync is
+      // still exactly what /beat (the actual tap-tempo endpoint) sets manualTap=true for.
     }
 
     if (now - lastBassTime > SILENCE_TIMEOUT_MS) {
@@ -218,11 +261,11 @@ void pollAudioEngine() {
         }
     }
 
-    if (midEnergy > (thBass >> MID_THRESH_DIV_SHIFT) && (now - lastMidTime) > MID_DEBOUNCE_MS) { 
-        lastMidTime = now; triggerMid = true; guiMid = true; 
+    if (midEnergy > (thBass >> tuneMidThreshDivShift) && (now - lastMidTime) > MID_DEBOUNCE_MS) {
+        lastMidTime = now; triggerMid = true; guiMid = true; dbgMidHit = true;
     }
-    if (highEnergy > (thBass >> HIGH_THRESH_DIV_SHIFT) && (now - lastHighTime) > HIGH_DEBOUNCE_MS) { 
-        lastHighTime = now; triggerHigh = true; guiHigh = true; 
+    if (highEnergy > (thBass >> tuneHighThreshDivShift) && (now - lastHighTime) > HIGH_DEBOUNCE_MS) {
+        lastHighTime = now; triggerHigh = true; guiHigh = true; dbgHighHit = true;
     }
   }
 }

@@ -2905,3 +2905,133 @@ vor dem gemergten-Blob-Fehler und verweist auf das Script; Script
 verwendet ausserdem `--before no-reset`, damit `esptool` den manuell
 erzwungenen Bootloader-Zustand nicht selbst wieder aufhebt (siehe voriger
 Eintrag für dieses zweite, unabhängige Problem).
+
+## 2026-08-20, dritte Fortsetzung — Gerät neu konfiguriert, drei GUI-Sync-Bugs gefixt, echter Root-Cause für Movement-Jitter gefunden, neuer AUDIO-DEBUG-Tab gebaut, zwei Fake-FFT-Bugs damit aufgedeckt
+
+Das Gerät wurde zwischen Sessions über den AP-Fallback manuell neu
+konfiguriert (WLAN/Patch/Presets) und ist seither über `movinghead.local`
+bzw. direkte IP erreichbar — diese Session bestätigt live per `curl`.
+
+**Teil 1 — drei vom User gemeldete Frontend/Backend-Sync-Bugs.** User
+meldete: (1) Gobo-1-Auswahl direkt nach „White Open" wirkungslos, erst
+Gobo-2-dann-Gobo-1 funktioniert; (2) FX-Start-Button wird kurz grün, fällt
+nach ~2s wieder auf rot zurück; (3) Preset-Recall im Live-Executor lädt
+nicht alle Werte (Gobo/Zoom fehlen), zweites Drücken vervollständigt es.
+Root Cause für (1)/(2): der ausgehende State-Sync-Effect in
+`data/index.html` setzt `isReceiving.current` für ~300ms nach jedem
+2s-Poll, um zu verhindern, dass gerade empfangene Werte sofort wieder
+zurückgeschickt werden — landet eine Nutzeraktion in diesem Fenster, wird
+sie beim bestehenden `track()`-Helper korrekt verworfen (kein permanenter
+Schaden, nächste unabhängige Aktion holt es nach), aber `syncFx()`
+markierte den Snapshot als „gesendet", obwohl der Fetch übersprungen
+wurde — der Button blieb lokal „an", das Backend erfuhr nie davon, der
+nächste Poll (Gerät meldet weiter „aus") zog ihn zurück. Fix:
+`syncFx()`s Baseline-Update jetzt nur noch im selben Zweig wie der
+tatsächliche Fetch, identisch zur bereits vorhandenen Disziplin in
+`track()`. Gleicher Fix für `master`/`damping`/`transMode`/`joyKey`
+(dasselbe Muster, noch nicht gemeldet, aber genauso betroffen). Für (3):
+`sgoboBase`/`rgoboBase` wurden im Gegensatz zu `colorBase` nie vom
+`/api/get_dmx`-Poll zurückgelesen — nach einem Preset-Recall änderte sich
+das Gobo auf dem echten Gerät korrekt, das Dropdown zeigte aber dauerhaft
+die zuletzt manuell gewählte Position. Fix: neue Zonen-Lookup-Tabellen
+(`SGOBO_ZONES`/`RGOBO_ZONES`) plus Readback im Poll, analog zum
+bestehenden `colorEntry`-Muster.
+
+**Zwischenfund — Browser-Cache verschleierte den ersten Test.** Nach dem
+ersten Flash meldete der User Symptome, die genau wie die alten,
+eigentlich gefixten Bugs aussahen (Dimmer-FX zeigt „RUN" obwohl
+`/api/get_dmx` `dA:0` lieferte). Per `curl` verifiziert: das Gerät
+servierte bereits die korrigierte Datei (MD5-Abgleich lokal vs. Gerät
+identisch) — der Browser-Tab hatte einfach die alte JS im Speicher
+behalten, weil `server.serveStatic("/", LittleFS, "/index.html")` ganz
+ohne Cache-Header auslieferte (kein `ETag`, kein `Last-Modified`, aber
+manche Browser cachen trotzdem ohne Validatoren). Fix:
+`Cache-Control: no-store` ergänzt.
+
+**Teil 2 — echter Root-Cause für Movement-Multi-Beat-Sync-Jitter
+gefunden.** User meldete: „Circle" bei 32-Beats-Sync zuckt nur links-
+rechts, keine echte Umdrehung — tritt bei Global-BPM-Sync auf, nicht bei
+direktem Audio-Trigger. `pollAudioEngine()` (`Audio_Engine.h`) setzte bei
+jedem echten erkannten Beat `manualTap = true` — dieselbe Flag, die der
+echte Tap-Tempo-Button (`/beat`) nutzt. Der `.ino`-Handler dafür macht
+`beatCount = 0` (richtig für einen bewussten User-Tap, der die
+Taktreferenz neu setzen will). Da `loop()` `pollAudioEngine()` direkt vor
+`updateEngines()` aufruft, wurde `beatCount` im **selben** Loop-Durchlauf,
+in dem es gerade erst durch `pollAudioEngine()`s eigenen (bereits aus
+einer früheren Session vorhandenen) `beatCount++` hochgezählt worden war,
+sofort wieder auf 0 genullt — bei z. B. 32 Beats/Umdrehung kam das
+Pattern dadurch nie über 1/32 einer Umdrehung hinaus. Fix: `manualTap =
+true` aus dem Audio-Beat-Pfad entfernt; die inkrementellen
+`beatCount++`/`lastBeatTime`/`masterSyncTime`-Updates bleiben (korrekt für
+einen laufenden Beat-Strom), der volle Phasen-Reset bleibt exklusiv
+`/beat` vorbehalten. Zusätzlich in derselben Session gefixt (unabhängiger
+Bug, gefunden beim Nachlesen von `MovementEngine::process()`):
+`modSp`/`modPhase`s Size/Speed-Modulator nutzte eine falsche Formel
+(behandelte die UI-Millisekunden als beliebigen Ratenfaktor statt als
+Periodendauer) — bei Size/Speed Start==End (Default) folgenlos, sonst
+lief der Modulator ~20× zu schnell. Fix: identische Formel wie
+`Modulator::process()` übernommen.
+
+**Figure-8-Untersuchung — kein Code-Bug gefunden, vermutlich
+Projektionsgeometrie.** User meldete danach weiterhin eine „Acht" statt
+eines Kreises, reproduzierbar bei Pan/Tilt 127/127, unabhängig vom
+Trigger-Modus (schließt den `manualTap`-Fix als Ursache aus) und bei
+mehreren Size-Werten, verschwindet beim Wegbewegen von dieser Position.
+`getValues()` wurde erneut Zeile für Zeile gegengerechnet (Rotation,
+Invertierung, Skalierung sind alle formerhaltend, `case 1` ist ein exakter
+Kreis), Patch geprüft (ein Fixture, Phase 0). Für die Video-Analyse wurde
+lokal `ffmpeg` via Homebrew installiert (vorher nicht vorhanden), Frames
+aus zwei vom User gelieferten Videos extrahiert und per PIL/`qlmanage`
+inspiziert: beide Videos filmen den rotierenden Fixture-Kopf selbst aus
+der Nähe (Pan 540°/Tilt 270°, verschachtelte Doppelachse), nicht einen
+projizierten Lichtpunkt auf einer entfernten Wand. Ein mathematisch
+perfekter Kreis in (Pan-Winkel, Tilt-Winkel)-Raum sieht für einen
+Beobachter seitlich der Rotationsachsen generell nicht wie ein Kreis aus —
+reine 3D-Projektionsgeometrie jeder Pan/Tilt-Fixture, unabhängig von
+Software. Nächster Schritt (an User delegiert, siehe `backlog.md`):
+Fixture auf eine entfernte Fläche richten und den projizierten Punkt
+filmen statt das Gehäuse.
+
+**Teil 3 — neuer AUDIO-DEBUG-Tab, live zwei echte Fake-FFT-Bugs damit
+gefunden.** Auf User-Wunsch („kannst du ein Debug-Tab einbauen, wo man
+einen rollenden Graphen sieht") neuer Tab in `data/index.html`: Canvas-
+basierter ~15Hz-EKG-Graph für Low/Mid/High-Bänder plus Threshold-Linie,
+Sensitivity-Regler, und Live-Tuning für die vorher hartkodierten
+Envelope-Follower-Parameter (jetzt `inline int tune*`-Variablen in
+`Audio_Engine.h` statt `#define`s). Neue Routen `/api/audio_debug`
+(liest, per fixem `snprintf`-Puffer statt der sonst üblichen `String +=`-
+Kette wegen der hohen Poll-Frequenz) und `/audio_tune` (schreibt) in
+`WebAPI.h`. Direkt beim ersten Live-Test mit echter Musik zeigte der neue
+Graph zwei vorher unsichtbare Bugs:
+
+1. **Beat-Tick-Anzeige fast immer leer, obwohl Bass sichtbar über der
+   Threshold-Linie lag.** `/api/audio_debug` las `triggerBass` &Co. —
+   diese werden am Kopf von `pollAudioEngine()` bei jedem `loop()`-
+   Durchlauf auf `false` gesetzt, weit öfter als das interne 40ms-Audio-
+   Throttle; ein `true` überlebt nur Mikrosekunden, ein von außen
+   kommender HTTP-Request kann das praktisch nie einfangen. Fix: eigene,
+   dedizierte Latch-Flags `dbgBassHit`/`dbgMidHit`/`dbgHighHit`
+   (bewusst getrennt von den bestehenden `guiBass`/`guiMid`/`guiHigh`,
+   die `/api/state` mit seinem eigenen 500ms-Poll schon latcht-und-
+   löscht — zwei Poller auf demselben Flag hätten sich gegenseitig die
+   Treffer weggeschnappt).
+2. **Mid-Band strukturell tot (~0) trotz laufender Musik, User meldete
+   „Mid und High bekommen quasi gar kein Signal".** Alle drei Bänder
+   sind Hüllkurven desselben unbandgefilterten Rohsignals mit
+   unterschiedlichen Attack/Decay-Shifts, keine echte Frequenztrennung.
+   `midEnergy = max(0, envMid − envSlow)` — Mid- und Slow-Attack hatten
+   denselben Default-Shift (beide ÷4), stiegen bei jeder Flanke also im
+   exakten Gleichlauf (Differenz strukturell 0), Mids schnellerer Decay
+   zog `envMid` danach nur unter `envSlow`. Fix:
+   `tuneSlowAttackShift`-Default von 2 auf 3 (÷8) geändert, stellt eine
+   echte fast<mid<slow-Attack-Ordnung her (spiegelt die schon korrekte
+   Decay-Ordnung). Live per `curl` bestätigt: `hi`-Wert reagierte danach
+   auf reines Raumrauschen statt bei 0 zu bleiben.
+
+Alle Code-Fixes dieser Session mit `pio run` + `pio run -t buildfs`
+gegenkompiliert, Firmware und Filesystem mehrfach per `pio run -t
+upload`/`-t uploadfs` geflasht (normaler Auto-Reset funktionierte diesmal
+durchgehend, kein `scripts/flash_esptool.sh`-Workaround nötig) und live
+per `curl` gegengeprüft. Details siehe `backlog.md` → „Kürzlich gefixt"
+für die vollständige, technische Fix-Liste und „Offen" für den einzigen
+noch unbestätigten Punkt (Figure-8, wartet auf den Wand-Projektions-Test).

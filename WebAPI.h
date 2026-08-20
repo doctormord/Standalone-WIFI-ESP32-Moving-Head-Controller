@@ -23,7 +23,12 @@ void setupAPI() {
       else if (upload.status == UPLOAD_FILE_END) { if (fsUploadFile) fsUploadFile.close(); }
     });
   } else {
-    server.serveStatic("/", LittleFS, "/index.html");
+    // no-store: index.html changes with every UI fix/flash, and this library sends neither
+    // ETag nor Last-Modified for it, so a plain browser reload had nothing to revalidate against
+    // and could keep serving a stale, already-open tab's in-memory bundle indefinitely -- looked
+    // like a live frontend/backend desync bug when it was actually just stale JS. Reported live
+    // 2026-08-20 (dimFxRunning shown as active locally while /api/get_dmx's "dA" was already 0).
+    server.serveStatic("/", LittleFS, "/index.html", "no-store");
   }
 
   // React/ReactDOM/Babel, stored gzip-compressed on LittleFS and served locally so the
@@ -287,7 +292,44 @@ void setupAPI() {
   server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "OK"); });
   server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "OK"); });
   server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); server.send(200, "OK"); });
-  
+
+  // Live band-energy telemetry for the AUDIO DEBUG tab's scrolling graph. Polled fast (frontend
+  // targets ~15Hz) so build the response with one snprintf into a fixed buffer instead of this
+  // file's usual sequential String += pattern -- that pattern is fine at the ~0.5-2Hz other
+  // endpoints poll at, but repeated String heap churn at 15Hz is wasteful for a value that's just
+  // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
+  // th is the live bass detection threshold they're compared against.
+  server.on("/api/audio_debug", []() {
+    char buf[420];
+    snprintf(buf, sizeof(buf),
+      "{\"lo\":%ld,\"mi\":%ld,\"hi\":%ld,\"th\":%ld,\"xb\":%d,\"xm\":%d,\"xh\":%d,"
+      "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d}",
+      (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
+      dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
+      tuneNoiseFloor, tuneFastAttackShift, tuneFastDecayShift, tuneMidAttackShift, tuneMidDecayShift,
+      tuneSlowAttackShift, tuneSlowDecayShift, tuneMidThreshDivShift, tuneHighThreshDivShift, hwAudioSensitivity);
+    server.send(200, "application/json", buf);
+    // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
+    // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
+    // iteration regardless of whether this handler ever runs.
+    dbgBassHit = false; dbgMidHit = false; dbgHighHit = false;
+  });
+
+  // Shift amounts are clamped 0-10: >=32 (word width) is undefined behavior for a right-shift, and
+  // this project's int32_t band energies stay well inside that range in practice anyway.
+  server.on("/audio_tune", []() {
+    if (server.hasArg("nf"))  tuneNoiseFloor        = constrain(server.arg("nf").toInt(), 0, 2000);
+    if (server.hasArg("fa"))  tuneFastAttackShift    = constrain(server.arg("fa").toInt(), 0, 10);
+    if (server.hasArg("fd"))  tuneFastDecayShift     = constrain(server.arg("fd").toInt(), 0, 10);
+    if (server.hasArg("ma"))  tuneMidAttackShift     = constrain(server.arg("ma").toInt(), 0, 10);
+    if (server.hasArg("md"))  tuneMidDecayShift      = constrain(server.arg("md").toInt(), 0, 10);
+    if (server.hasArg("sa"))  tuneSlowAttackShift    = constrain(server.arg("sa").toInt(), 0, 10);
+    if (server.hasArg("sd"))  tuneSlowDecayShift     = constrain(server.arg("sd").toInt(), 0, 10);
+    if (server.hasArg("mtd")) tuneMidThreshDivShift  = constrain(server.arg("mtd").toInt(), 0, 10);
+    if (server.hasArg("htd")) tuneHighThreshDivShift = constrain(server.arg("htd").toInt(), 0, 10);
+    server.send(200, "OK");
+  });
+
   server.on("/colfx", []() {
       colFX.active = (server.arg("a") == "1"); colFX.startVal = constrain(server.arg("st").toInt(), 0, 19); colFX.endVal = constrain(server.arg("en").toInt(), 0, 19);
       if (colFX.startVal > colFX.endVal) { int t = colFX.startVal; colFX.startVal = colFX.endVal; colFX.endVal = t; }

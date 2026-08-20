@@ -1,95 +1,76 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-20)
-> **Gerät braucht manuelle Neukonfiguration, bevor irgendetwas anderes
-> Sinn macht.** Ein `esptool`-Flash-Workaround hat versehentlich die
-> komplette `nvs`-Partition gelöscht (WLAN-Zugangsdaten, Fixture-Patch,
-> Master-Brightness, Smoothing, alle 10 Preset-/Chaser-Slots) — Details/
-> Root-Cause siehe `history.md` (2026-08-20, Fortsetzung) und `backlog.md`
-> → „Kürzlich gefixt" (Post-Mortem-Eintrag). Kein Firmware-Bug: die neue
-> Firmware läuft korrekt, fällt aber mangels gespeicherter WLAN-Daten auf
-> den AP-Fallback zurück. **Schritte:**
-> 1. Mit WiFi `Moving_Head_Ctrl` / `12345678` verbinden.
-> 2. `http://192.168.4.1` (oder `http://movinghead.local` im selben Netz)
->    öffnen, echte WLAN-Zugangsdaten über das Settings-Panel setzen.
-> 3. Fixture-Patch neu eintragen.
-> 4. Alle vorher gespeicherten Presets/Chaser-Szenen neu anlegen — kein
->    Backup vorhanden.
-> 5. Erst danach: die acht `/ultrareview`-Fixes und der `beatCount`-Fix
->    von unten live gegenprüfen (besonders Hard Sync, `/colfx`-`mv`,
->    Rotation-Pulse-Timing, 16-Beat-Movement-Sync).
+> **Gerät ist konfiguriert, erreichbar und läuft mit der neuesten Firmware.**
+> Kein offener Blocker. Der einzige unbestätigte Punkt: der User sollte die
+> Movement-„Figure 8"-Optik nochmal testen, diesmal mit dem Fixture auf eine
+> entfernte Wand/Fläche gerichtet (projizierter Punkt, nicht das Gehäuse
+> selbst filmen) — siehe „Offener Punkt" unten und `backlog.md` → „Offen".
 >
-> **Guard gegen eine Wiederholung ist bereits gebaut und committed:**
-> `scripts/flash_esptool.sh` flasht Bootloader/Partitionstabelle/
-> `boot_app0`/Firmware jetzt einzeln an ihren echten Offsets statt als
-> einen gemergten Blob — die `nvs`-Lücke bleibt dabei unangetastet.
-> `CLAUDE.md` warnt jetzt explizit vor dem gemergten-Blob-Fehler.
+> **Was in dieser Session gemacht wurde (alles geflasht, live per `curl`
+> gegengeprüft, Details in `history.md` 2026-08-20 „dritte Fortsetzung" und
+> `backlog.md` → „Kürzlich gefixt"):**
+>
+> 1. Drei vom User gemeldete Frontend/Backend-Sync-Bugs gefixt: `syncFx()`
+>    markierte FX-Start/Stop als „gesendet", obwohl der Request wegen des
+>    Poll-Zeitfensters übersprungen wurde (Button sprang nach ~2s zurück);
+>    Gobo-Dropdown wurde nie vom Gerät zurückgelesen (zeigte nach Preset-
+>    Recall die falsche Position); `master`/`damping`/`transMode`/`joyKey`
+>    hatten dasselbe Snapshot-Bug-Muster wie `syncFx()`.
+> 2. `index.html` bekam `Cache-Control: no-store` — vorher konnte ein
+>    offener Browser-Tab beliebig lange alte JS im Speicher behalten und
+>    sah wie ein Backend-Bug aus.
+> 3. **Echter Root Cause für „Movement zuckt nur, keine Umdrehung" bei
+>    Global-BPM-Sync gefunden:** jeder echte Mic-Beat setzte `manualTap =
+>    true`, dessen Handler `beatCount = 0` macht — nullte den Beat-Zähler
+>    im selben Loop-Durchlauf, in dem er gerade erst hochgezählt worden
+>    war. Fix in `Audio_Engine.h`. Plus ein zweiter, unabhängiger Bug in
+>    `MovementEngine::process()`s Size/Speed-Modulator (`modSp`-Formel).
+> 4. **Figure-8-Meldung untersucht, kein Code-Bug gefunden.** Video-Frames
+>    analysiert (dafür `ffmpeg` lokal installiert) — beide Videos zeigen
+>    den Fixture-Kopf aus der Nähe, nicht einen projizierten Punkt auf
+>    einer Wand. Wahrscheinlichste Erklärung: 3D-Projektionsgeometrie
+>    einer Doppelachs-Rotation aus einem seitlichen Blickwinkel, kein
+>    Software-Bug — unbestätigt, siehe oben.
+> 5. **Neuer AUDIO-Tab gebaut** (auf User-Wunsch): Echtzeit-EKG-Graph
+>    (Low/Mid/High + Threshold, ~15Hz) plus Live-Tuning für die vorher
+>    hartkodierten Envelope-Follower-Parameter. Direkt beim ersten Live-
+>    Test zwei echte, vorher unsichtbare Bugs damit gefunden und gefixt:
+>    Beat-Tick-Anzeige las die falschen (nicht latchbaren) Flags; Mid-Band
+>    war strukturell auf ~0 geklammert (Mid-/Slow-Attack hatten denselben
+>    Shift-Wert).
+>
+> Alles mit `pio run` + `pio run -t buildfs` gegenkompiliert, Firmware +
+> Filesystem mehrfach per `pio run -t upload`/`-t uploadfs` geflasht (der
+> normale Auto-Reset funktionierte diesmal durchgehend).
 >
 > ---
 >
-> **Was vor dem Flash-Vorfall fertig war (Code-seitig unverändert gültig):**
-> `/ultrareview` gegen `origin/main` (kein lokaler `main`, siehe
-> `history.md`) fand acht Findings im aktuellen Code, alle gefixt:
+> **Offener Punkt:** Figure-8-Test mit Wand-Projektion (siehe oben). Falls
+> die Acht dort weiterhin auftritt, ist es ein echter Bug und braucht eine
+> neue Untersuchung (dann bitte auch: exakte Size-%/Rotation-Werte, Anzahl
+> Fixtures, Kamera-Position relativ zur Wand).
 >
-> 1. `triggerSceneFX()`/`onArtDmx()` liessen `colWasActive`/`sgWasActive`/
->    `rgWasActive` stehen — Preset-Recall bzw. Art-Net-Übernahme konnten
->    einen Tick später vom `runStep()`-Stop-Fallback überschrieben werden.
-> 2. `/modfx` klammerte `st`/`en` nicht (jetzt 0–255, wie alle Schwester-
->    Routen).
-> 3. `/colfx` bekam die `mv`-Restore-on-Stop-Logik, die `/sgobfx`/
->    `/rgobfx` schon hatten (Frontend sendet jetzt `colorBase + colorOff`).
-> 4. Hard Sync (`/sync`) war für `trigger==1` (BPM-sync) FX wirkungslos —
->    `/sync` und `manualTap` setzen jetzt zusätzlich `beatCount = 0;
->    lastBeatTime = now`, das die tatsächlich massgebliche Phase treibt.
-> 5. `float(millis())`-Präzisionsverlust im Rotation-Pulse-Shake nach
->    ~4,66 h Laufzeit behoben (Modulo jetzt im Integer-Bereich).
-> 6. Totes `d.fw`-Feld im Settings-Panel — neues `FW_VERSION`-Define jetzt
->    über `/api/state` exponiert.
-> 7. (Simplification) Acht fast identische Diff/Fetch-Blöcke in
->    `data/index.html` zu einem `syncFx()`-Helper zusammengefasst.
->
-> `functions.md` für die geänderten Routen-Parameter aktualisiert.
-> `pio run` + `pio run -t buildfs` beide `[SUCCESS]`. Alles **committed und
-> gepusht** (`future` == `origin/future`).
->
-> **Nächste Schritte (nach der Neukonfiguration oben, keine feste
-> Reihenfolge):**
-> 1. Zeit-Rampen für den Shake ("wa-wa-wosh"), falls weiterhin gewünscht.
-> 2. Klären, ob ein separates Followspot-Joystick-Profil gewünscht ist.
-> 3. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
-> 4. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
-> 5. Danach frei: zurückgestellte Restrukturierungen, Preset-Engine-Split,
->    ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder entfernen,
->    übrige Tech-Debt-Punkte.
+> **Danach frei (keine feste Reihenfolge):**
+> 1. Mic-Sensitivity subjektiv mit echter Musik über den neuen AUDIO-Tab
+>    gegenprüfen (Wirkung ist per `curl` bestätigt, Wertebereich ggf. zu
+>    fein — siehe `backlog.md`).
+> 2. Mic-BPM-Oktave-Korrektur (aus einer früheren Session) noch nicht mit
+>    echtem Audio verifiziert.
+> 3. Zeit-Rampen für den Shake ("wa-wa-wosh"), falls weiterhin gewünscht.
+> 4. Separates Followspot-Joystick-Profil?
+> 5. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
+> 6. Übrige Tech-Debt-Punkte in `backlog.md` (Preset-Engine-Split,
+>    ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder entfernen, etc.)
 
 ## Aktueller Status
 
-Neunzehn-plus Review-/Test-Runden durch (Details siehe `history.md`),
-inklusive eines offiziellen Herstellerdatenblatts als Referenz
-(`mapping_sheds_160w_3in1_gobo.md`), einer erfolgreichen, mehrstufigen
-interaktiven Hardware-Kalibrierung für den Gobo-Shake, und — neu in dieser
-Session — dem ersten vollständigen `/ultrareview`-Durchlauf gegen den
-realen aktuellen Quellcode. Zielhardware: **ESP32-C3 Supermini** (Fixture:
-SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl lokal als
-auch auf GitHub (`future`-Branch) git-versioniert und aktuell deckungsgleich
-mit `origin/future`. **Gerät selbst ist aktuell nicht konfiguriert** — läuft
-mit korrekter neuer Firmware, aber ohne WLAN-Zugangsdaten/Patch/Presets
-(siehe Banner oben) im AP-Fallback-Modus (`Moving_Head_Ctrl`).
-
-## Was in dieser Session (2026-08-20) gemacht wurde
-
-1. `/ultrareview` gegen `origin/main` (Altlasten/Docs/Vendor-Binaries
-   ausgeschlossen) lief nach zwei fehlgeschlagenen Versuchen beim dritten
-   Mal durch, fand acht Findings — alle gefixt, `functions.md`
-   aktualisiert, kompiliert, committed, gepusht.
-2. Beim Versuch, das Gerät zu flashen, scheiterte `pio run -t upload`
-   zweimal am Reset-Handling. Der `esptool`-Workaround dafür hat
-   versehentlich die `nvs`-Partition gelöscht (siehe Banner oben) —
-   Post-Mortem in `history.md`/`backlog.md`, Guard-Script
-   `scripts/flash_esptool.sh` gebaut und `CLAUDE.md` entsprechend ergänzt,
-   beides committed.
-
-Details zu allem: `history.md` (mehrere Einträge vom 2026-08-20).
+Repository ist sowohl lokal als auch auf GitHub (`future`-Branch)
+git-versioniert. Zielhardware: **ESP32-C3 Supermini** (Fixture: SHEHDS 160W
+3in1 GOBO / „Pro Beam 280", Pan 540°/Tilt 270°). Gerät ist konfiguriert,
+über `movinghead.local` erreichbar, läuft mit der neuesten Firmware und dem
+neuesten Filesystem-Image (beide in dieser Session geflasht). Kein
+Backup-/Config-Verlust mehr offen.
 
 ## Doku-Hinweis
 

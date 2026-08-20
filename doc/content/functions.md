@@ -170,32 +170,46 @@ LFO used for dimmer, prism-rotation, and gobo-rotation channels.
     `1` = quadratic, `2` = cubic, `3` = sine ease, `4` = gaussian,
     `5` = random (re-rolled every call).
   - Returns the shaped 0.0–1.0 value for the given phase/mode/curve.
-- **`void process(unsigned long now, unsigned long masterSyncTime, int globalBPM, const float* syncBeats, float &outVal)`**
+- **`void process(unsigned long now, float beatsElapsedTotal, const float* syncBeats, float &outVal)`**
   - `now` — current `millis()`.
-  - `masterSyncTime` — timestamp of the last tap/beat/sync reset, used as
-    phase-zero reference for BPM-synced mode.
-  - `globalBPM` — current tempo.
+  - `beatsElapsedTotal` — the shared beat clock's continuous "how many real
+    beats have elapsed" reference (`beatCount` + fractional progress within
+    the current beat, computed once per `updateEngines()` tick in the
+    `.ino`) — **not** `masterSyncTime`/`globalBPM` directly (see 2026-08-20
+    in `history.md` for why: `masterSyncTime`/a naive `% interval` both
+    broke every multi-beat `sync` divisor, since they get re-anchored on
+    every single detected beat).
   - `syncBeats` — pointer to the 7-entry beat-division table (`syncBeats[]`
     in the `.ino`); indexed by `sync` — **not bounds-checked here**, see
     `backlog.md`.
   - `outVal` — **output parameter**: receives `startVal + (endVal - startVal) * getLFO(...)`.
 
-  Advances `phase` either freely (time-based, `trigger == 0` or `>= 2`) or
-  by deriving it from `(now - masterSyncTime) % interval` when
-  `trigger == 1` (BPM-synced), wraps `phase` into 0–1, then computes
-  `outVal` via `getLFO`.
+  Advances `phase` either freely (time-based, `trigger == 0` or `>= 2`,
+  `speed` treated as the LFO's full cycle duration in ms) or, for
+  `trigger == 1` (BPM-synced), sets it directly from
+  `(beatsElapsedTotal / syncBeats[sync])`'s fractional part — phase-exact,
+  independent of how often the beat clock itself gets re-anchored — then
+  wraps `phase` into 0–1 and computes `outVal` via `getLFO`.
 
 ### `class MovementEngine`
 Parametric pan/tilt pattern generator (circles, figure-8s, etc.).
 
 - **`void start()`** / **`void stop()`** — same semantics as `Modulator`.
-- **`void process(unsigned long now, unsigned long masterSyncTime, int globalBPM, const float* syncBeats)`**
-  Same parameter meanings as `Modulator::process`. Advances `modPhase`
-  (time- or BPM-synced), shapes it into `mVal` via `modMo`/`modCu`, derives
+- **`void process(unsigned long now, float beatsElapsedTotal, const float* syncBeats)`**
+  Same parameter meanings as `Modulator::process`, except `syncBeats` here
+  is `moveSyncBeats[8] = {1,2,4,8,16,32,64,128}` (beats/revolution — a
+  separate table from `Modulator`'s short sub-beat divisors, since a
+  movement pattern takes real time to trace and can't lock to a sub-beat
+  divisor). Advances `modPhase` (time- or BPM-synced — `modSp` is a period
+  in ms, same units/formula as `Modulator::speed`, not a raw rate
+  multiplier), shapes it into `mVal` via `modMo`/`modCu`, derives
   `currentSize`/`currentSpeed` from `szSt/szEn`/`spdSt/spdEn` blended by
-  `mVal`, then integrates `enginePhase` by `currentSpeed * dt * 5.0`
-  (wrapped to 0–2π). This is the shape's animation clock, independent of
-  the size/speed modulation phase.
+  `mVal`. For `trigger == 1` (BPM-synced), `enginePhase` is set directly
+  from `modPhase * 2π` (phase-exact, one revolution starts exactly on a
+  beat and ends exactly at the end of the `sync` beat count); otherwise
+  it's integrated by `currentSpeed * dt * 5.0` (wrapped to 0–2π). This is
+  the shape's animation clock, independent of the size/speed modulation
+  phase.
 - **`void getValues(int centerP, int centerT, int fixturePhase, bool invP, bool invT, int &outP, int &outT)`**
   - `centerP`/`centerT` — center pan/tilt (16-bit, 0–65535) to offset from.
   - `fixturePhase` — per-fixture phase offset in degrees (0–360), lets
@@ -217,23 +231,41 @@ Parametric pan/tilt pattern generator (circles, figure-8s, etc.).
 No parameters. Called every `loop()` iteration; internally rate-limited to
 once per `AUDIO_POLL_INTERVAL_MS` (40 ms) and no-ops entirely if
 `hwAudioEnabled` is false. Reads `SAMPLES` (64) 32-bit I2S samples, updates
-three envelope followers (`envFast`/`envMid`/`envSlow`, different
-attack/decay time constants), derives bass/mid/high energy bands, and:
+three envelope followers (`envFast`/`envMid`/`envSlow` — leaky integrators
+at different attack/decay bit-shift speeds over the *same* unfiltered
+signal, not a real frequency-domain split; this project's "fake FFT"),
+derives bass/mid/high energy bands (`lastBassEnergy`/`lastMidEnergy`/
+`lastHighEnergy`, held for `/api/audio_debug` to read), and:
 - Detects bass beats against a dynamically smoothed threshold
-  (`dynThreshold`, adjusted by `hwAudioSensitivity`), enforcing a minimum
-  gap of `MIN_BEAT_INTERVAL_MS`. On detection, updates a rolling median-
-  filtered BPM estimate (`beatIntervals[]`, `BPM_HISTORY_SIZE` = 16 samples,
-  needs `BPM_MIN_VALID_SAMPLES` = 6 to compute), smooths it into
-  `globalBPM`, and resets `masterSyncTime`/`lastBeatTime` (equivalent to a
-  tap-tempo hit).
+  (`dynThreshold`, adjusted by `hwAudioSensitivity`, held as
+  `lastThBass`), enforcing a minimum gap of `MIN_BEAT_INTERVAL_MS`. On
+  detection, updates a rolling median-filtered BPM estimate
+  (`beatIntervals[]`, `BPM_HISTORY_SIZE` = 16 samples, needs
+  `BPM_MIN_VALID_SAMPLES` = 6 to compute), smooths it into `globalBPM`,
+  advances the shared `beatCount`/`lastBeatTime`/`masterSyncTime` beat
+  clock incrementally. Deliberately does **not** set `manualTap` (that's
+  reserved for an actual tap-tempo gesture via `/beat` — see 2026-08-20 in
+  `history.md` for why reusing it here broke every multi-beat BPM-sync
+  divisor: `manualTap`'s handler in the `.ino` unconditionally zeroes
+  `beatCount`, which happened on every single detected beat, one loop()
+  iteration after `beatCount` had just been incremented).
 - Falls back to `BPM_DEFAULT_FALLBACK` (120) after `SILENCE_TIMEOUT_MS`
   (2500 ms) of no detected beats.
 - Sets `triggerMid`/`triggerHigh` (and the sticky `guiMid`/`guiHigh` flags
-  for the UI) when mid/high energy crosses their thresholds, each with its
-  own debounce (`MID_DEBOUNCE_MS`/`HIGH_DEBOUNCE_MS`).
-- `triggerBass`/`triggerMid`/`triggerHigh` are cleared at the start of every
-  call and only set again if a new event fires this cycle — they act as
-  one-shot pulses consumed by `updateEngines()`.
+  for the UI, latched-until-read by `/api/state`) when mid/high energy
+  crosses their thresholds, each with its own debounce
+  (`MID_DEBOUNCE_MS`/`HIGH_DEBOUNCE_MS`).
+- `triggerBass`/`triggerMid`/`triggerHigh` are cleared at the start of
+  *every* call (far more often than the 40ms audio-processing throttle
+  lets them actually change) and only set again if a new event fires this
+  cycle — they're one-shot pulses meant only for the same-tick
+  `updateEngines()` consumer, **not** pollable from outside (an HTTP
+  request can't realistically catch a value that survives microseconds).
+  `dbgBassHit`/`dbgMidHit`/`dbgHighHit` are the separate, actually-latched
+  equivalents `/api/audio_debug` uses instead.
+- All of the above tuning (attack/decay shifts, threshold divisors, noise
+  floor) lives in runtime `inline int tune*` variables (not `#define`s),
+  settable live via `/audio_tune` — see below.
 
 ### `void initAudioEngine()`
 No parameters. Configures and installs the I2S driver (master/RX, 8 kHz,
@@ -282,6 +314,8 @@ Query parameters are read via `server.arg(name)`; parameters marked
 | `/unmute` | GET | — | Immediately cancels any active fade and forces full brightness (`fadeMultiplier = 1.0`). |
 | `/trans` | GET | `dip` (`"1"`=enable) | Sets `dipToBlack` (fade-to-black before preset/chaser loads) and persists to NVS `"sys"`. |
 | `/hwaudio` | GET | `en` (`"1"`=enable), `sens` (0–100 sensitivity) | Enables/disables the I2S audio-reactive engine and sets its sensitivity. |
+| `/api/audio_debug` | GET | — | Returns live band energies (`lo`/`mi`/`hi`), the live bass threshold (`th`), one-shot latched beat-hit flags (`xb`/`xm`/`xh`, cleared on read), and every current `tune*` value (`nf`/`fa`/`fd`/`ma`/`md`/`sa`/`sd`/`mtd`/`htd`) plus `sens`. Built with a fixed-buffer `snprintf` (not this file's usual sequential `String +=`) since the AUDIO DEBUG tab polls it at ~15Hz. Added 2026-08-20 for the AUDIO DEBUG tab's scrolling graph. |
+| `/audio_tune` | GET | `nf` (0–2000), `fa`/`fd`/`ma`/`md`/`sa`/`sd` (0–10, attack/decay bit-shifts), `mtd`/`htd` (0–10, threshold divisor shifts) — all optional, each only applied if present | Sets the runtime-tunable envelope-follower parameters in `Audio_Engine.h` (`tuneFastAttackShift` etc.) that used to be compile-time `#define`s. Added 2026-08-20 alongside `/api/audio_debug`. |
 | `/colfx` | GET | `a`, `st`/`en` (wheel index range), `ho` (hold time ms), `tr`, `sy`, `mv` (manual CH6 value to restore on stop) | Configures `colFX` (color wheel `StepFX`); auto-derives `step` (1 or 2) from start/end parity so odd/even wheel positions aren't mixed. |
 | `/sgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch), `spd`/`rng` (shake rate/intensity), `mv` (manual CH7 value to restore on stop) | Configures `sgobFX` (static gobo `StepFX`). |
 | `/rgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch), `spd` (shake stage 1–5), `mv` (manual CH8 value to restore on stop) | Configures `rgobFX` (rotating gobo `StepFX`). |

@@ -57,9 +57,10 @@ graph TD
         T1[LIVE Tab<br>Executors, Bumps, BPM Tap]
         T2[FOLLOWSPOT Tab<br>2D Stage Map, Smart Dimmer]
         T3[PROGRAMMER Tab<br>Precision Joystick, FX, Macros]
+        T5[AUDIO Tab<br>Live Band Graph, Fake-FFT Tuning]
         T4[PATCH Tab<br>Fixture Matrix, Fanning Generator]
         
-        UI --> T1 & T2 & T3 & T4
+        UI --> T1 & T2 & T3 & T5 & T4
     end
 
     subgraph Core_Architecture [ESP32 C++ Core Architecture]
@@ -86,7 +87,7 @@ graph TD
         DMXOUT((UART DMX Out<br>FreeRTOS Task @ 40Hz))
     end
 
-    T1 & T2 & T3 & T4 -->|Fetch / POST| API
+    T1 & T2 & T3 & T5 & T4 -->|Fetch / POST| API
     API --> DMX
     API --> SYNC
     API --> FX_Engine
@@ -114,7 +115,7 @@ graph TD
 
 ## 🎛️ User Interface Architecture
 
-The web application is divided into three main operational tabs, allowing for flexible live performance and deep programming.
+The web application is divided into several operational tabs, allowing for flexible live performance and deep programming.
 
 ### 1. LIVE Tab (Performance Mode)
 Designed for high-stress live environments, focusing on rapid access and execution.
@@ -143,6 +144,12 @@ The deep-dive configuration layer for building scenes and tweaking modulators.
 * **Compound Dropdowns:** Merges base index selections (e.g., "Gobo 2") with continuous offset sliders (e.g., "Gobo Shake") into single UI elements.
 
 ![Programmer tab GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_3.png)
+
+### 4. AUDIO Tab (Diagnostics Mode)
+A live oscilloscope-style view into the mic-reactive pipeline, added to make the "fake FFT" (three envelope followers standing in for a real frequency split) actually observable and tunable instead of a black box.
+* **Live Band Graph:** Scrolling ~15Hz canvas plot of the Low/Mid/High energy bands plus the live bass detection threshold, with beat-hit tick marks.
+* **Sensitivity Control:** Same mic sensitivity/on-off control as Live and Programmer, shared state across tabs.
+* **Fake-FFT Tuning:** Live sliders for each band's attack/decay speed, the mid/high threshold divisors, and the noise floor — previously hardcoded `#define`s, now adjustable without a reflash via `/audio_tune`.
 
 ---
 

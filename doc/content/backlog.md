@@ -15,29 +15,31 @@ dauerhaft bei der Hälfte hängen bleiben. Falls immer noch zu langsam: weitere 
 nötig (z. B. `BPM_DEVIATION_TOLERANCE_DIVISOR` lockern oder `MIN_BEAT_INTERVAL_MS`/Schwellwert-
 Empfindlichkeit prüfen), nicht blind vorwegnehmen.
 
-**Offen: `beatCount`-Fix (Movement-Multi-Beat-Sync) und neue FX-Defaults jetzt geflasht
-(2026-08-20), aber noch nicht live verifiziert.** Im selben Flash-Vorgang wie die acht
-`/ultrareview`-Fixes unten mit auf das Gerät gespielt (siehe dort). Zwei Dinge prüfen: (1)
-Movement-Sync bei z. B. 16 Beats/120 BPM sollte jetzt eine saubere Umdrehung ohne Rückwärts-
-Zucken schaffen (`beatCount` wird jetzt auch bei echten Mic-erkannten Beats hochgezählt, nicht nur
-beim internen Metronom-Tick). Kleine, auf ≤1 Beat begrenzte Korrektur-Ruckler bei Live-Beat-
-Erkennung sind prinzipbedingt normal, keine große Rückwärts-Sprünge mehr. (2) Movement-FX-Panel
-sollte jetzt frisch mit Speed Start/End und Size Start/End je 10 % und Modulation Speed 1000 ms
-öffnen.
+**Offen: Movement-„Figure 8"-Optik bei zentrierter Pan/Tilt-Position (127/127) — vermutlich
+Projektions-/Blickwinkel-Artefakt, kein Code-Bug, aber unbestätigt (2026-08-20).** User meldete
+live: „Circle"-Pattern bei Pan/Tilt 127/127 zeigt eine Acht statt eines Kreises, unabhängig vom
+Trigger-Modus (Internal Timer und Global BPM Sync gleichermaßen betroffen — schließt den an
+diesem Tag gefixten `beatCount`-Bug als Ursache aus, siehe „Kürzlich gefixt"), reproduzierbar bei
+mehreren Size-%-Werten (13–30 %), verschwindet beim Wegbewegen von dieser Pan/Tilt-Position.
+`getValues()` in `FX_Engine.h` wurde Zeile für Zeile gegengerechnet (Rotation/Invertierung/Skalierung
+sind alle formerhaltende Transformationen, `case 1: x=sinf(p), y=cosf(p)` ist ein exakter Kreis),
+Patch geprüft (ein Fixture, Phase 0, keine Invertierung), `type`-Wert einfach und eindeutig
+verdrahtet (ein Schreib-, ein Lesepfad). Aus zwei vom User gelieferten Videos (`ffmpeg`-Frames
+extrahiert, per `qlmanage`/PIL analysiert) zeigt sich: Video ist Nahaufnahme des rotierenden
+Fixture-Kopfs selbst (Pan 540°/Tilt 270°, verschachtelte Doppelachse), nicht ein projizierter
+Lichtpunkt auf einer entfernten Wand. Ein mathematisch perfekter Kreis in (Pan-Winkel,
+Tilt-Winkel)-Raum sieht für einen Beobachter seitlich der Rotationsachsen generell **nicht** wie
+ein Kreis aus — reine 3D-Projektionsgeometrie, unabhängig von Software. **Nächster Schritt (an
+User delegiert):** Fixture auf eine entfernte Wand/Boden richten, projizierten Lichtpunkt (nicht
+das Gehäuse) etwa entlang der Strahlrichtung filmen. Bleibt es dort eine Acht, ist es ein echter
+Bug und braucht neue Untersuchung; wird es ein sauberer Kreis, war es das Projektions-Artefakt.
 
-**Offen: Gerät braucht Neukonfiguration nach NVS-Löschung durch fehlerhaften manuellen Flash
-(2026-08-20).** Der `esptool`-Workaround für das gescheiterte `pio run -t upload` (siehe „Kürzlich
-gefixt" unten für die vollständige Post-Mortem) hat versehentlich die komplette `nvs`-Partition
-(WiFi-Zugangsdaten, Fixture-Patch, Master-Brightness, Smoothing, alle 10 Preset-/Chaser-Slots)
-gelöscht. Das Gerät läuft mit der neuen Firmware (inkl. aller acht `/ultrareview`-Fixes und dem
-`beatCount`-Fix von oben), aber ohne gespeicherte WiFi-Zugangsdaten fällt es auf den
-AP-Fallback-Modus zurück (`Moving_Head_Ctrl`/`12345678`, siehe `README.md`). **Nötige manuelle
-Schritte, bevor irgendetwas live verifiziert werden kann:** (1) Mit `Moving_Head_Ctrl` verbinden,
-(2) über `http://192.168.4.1` bzw. `http://movinghead.local` die echten WLAN-Zugangsdaten via
-Settings-Panel setzen, (3) Fixture-Patch neu eintragen, (4) alle vorher gespeicherten Presets/
-Chaser-Szenen neu anlegen — es gibt kein Backup der alten NVS-Daten. Erst danach können die acht
-`/ultrareview`-Fixes und der `beatCount`-Fix live gegengeprüft werden (besonders Hard Sync,
-`/colfx`-`mv` und das Rotation-Pulse-Timing).
+**Offen: Mic-Sensitivity-Bereich ggf. zu grob (Noise-Floor dominiert bei niedrigem
+`dynThreshold`).** Live per curl bestätigt, dass die Sensitivity den Threshold tatsächlich
+verschiebt (`sens=0` → `th≈100`, `sens=100` → `th≈60`, bei stabilem Ambient-Rauschen) — die
+Regler-Verdrahtung selbst ist also korrekt (siehe „Kürzlich gefixt" für die zwei tatsächlichen
+Audio-Debug-Bugs, die das ursprünglich verdeckt hatten). Ob der Wertebereich subjektiv „genug"
+Wirkung hat, ist mit echter Musik über den neuen AUDIO-Tab zu prüfen, nicht vorwegzunehmen.
 
 **2026-08-16, `/ultrareview` (Cloud-Multi-Agent):** Hauptorchestrator und
 mehrere Teil-Agenten sind an einem Account-Session-Limit gescheitert, drei
@@ -159,6 +161,81 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   Software lösbar. Nur durch Sichtprüfung am Gerät zu klären.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
+
+- **Gerät nach NVS-Löschung erfolgreich neu konfiguriert und seit dieser Session dauerhaft
+  erreichbar (2026-08-20, Fortsetzung).** Die im vorherigen Eintrag beschriebene manuelle
+  Neukonfiguration (WLAN/Patch/Presets über den AP-Fallback) wurde durchgeführt — das Gerät ist
+  seither über `movinghead.local`/direkte IP erreichbar und wurde in dieser Session wiederholt
+  live per `curl` sowie über mehrere Firmware-/Filesystem-Flashes verifiziert.
+- **Sieben echte Bugs live gefunden und gefixt, plus ein neuer AUDIO-DEBUG-Tab gebaut
+  (2026-08-20, Fortsetzung — Movement-Jitter- und Mic-Sensitivity-Meldungen des Users).**
+  1. **`beatCount`-Reset auf jeden echten Mic-Beat — der tatsächliche Root Cause für
+     „Movement zuckt nur, keine echte Umdrehung" bei Global-BPM-Sync.** `pollAudioEngine()`
+     setzte bei jedem erkannten Beat `manualTap = true` (gedacht für den echten Tap-Tempo-Button,
+     siehe `/beat`) — der `.ino`-Handler dafür setzt `beatCount = 0`, und da `pollAudioEngine()`
+     in `loop()` direkt vor `updateEngines()` läuft, wurde `beatCount` im selben Durchlauf, in dem
+     es gerade erst hochgezählt wurde, sofort wieder auf 0 genullt. Bei z. B. 32 Beats/Umdrehung
+     kam das Pattern dadurch nie über 1/32 einer Umdrehung hinaus, bevor es zurücksprang — sichtbar
+     als reines Links-Rechts-Zucken. Fix: `manualTap = true` aus dem Audio-Beat-Pfad entfernt
+     (`Audio_Engine.h`) — die dort bereits vorhandenen `beatCount++`/`lastBeatTime`/
+     `masterSyncTime`-Updates sind die korrekte inkrementelle Resync-Logik für einen laufenden
+     Beat-Strom; der volle Phasen-Reset bleibt exklusiv dem echten `/beat`-Tap vorbehalten.
+  2. **`MovementEngine::process()`s Size/Speed-Modulator nutzte eine falsche Formel für `modSp`.**
+     Das UI präsentiert `modSp` identisch zu `Modulator::speed` (0–10.000 ms-Regler, „Modulation
+     speed"), aber `MovementEngine` interpretierte den Wert als beliebigen Ratenfaktor statt als
+     Periodendauer in ms — Default 1000 ms ergab real eine Zykluszeit von ~50 ms (20 Zyklen/Sek.
+     statt 1). Bei Size/Speed Start==End (aktueller Default) folgenlos, sobald sie sich
+     unterscheiden lief der Modulator ~20× zu schnell. Fix: identische Formel wie
+     `Modulator::process()` übernommen (`FX_Engine.h`).
+  3. **`syncFx()`-Helper (Frontend) markierte FX-Start/Stop-Snapshots als „gesendet", auch wenn
+     der Request wegen des Poll-`isReceiving`-Fensters übersprungen wurde.** FX-Start-Button
+     wurde lokal grün, Backend erhielt den Befehl nie, nächster Poll (Gerät meldet weiter „aus")
+     zog den Button nach ~2s zurück auf rot. Fix: Snapshot-Baseline nur noch aktualisieren, wenn
+     der Fetch tatsächlich abgeschickt wurde — dieselbe Disziplin, die `track()` im selben File
+     schon hatte (inkl. eigenem erklärendem Kommentar dort). Gleicher Fix für `master`/`damping`/
+     `transMode`/`joyKey`, die dasselbe Muster hatten.
+  4. **Gobo-Dropdown (Static/Rotating) wurde nie vom Gerät zurückgelesen.** Anders als Color
+     wurden `sgoboBase`/`rgoboBase` nur durch manuelle Dropdown-Auswahl gesetzt, nie durch den
+     `/api/get_dmx`-Poll — nach Preset-/Chaser-Recall oder Art-Net-Übernahme zeigte das Dropdown
+     dauerhaft die zuletzt manuell gewählte Position, nicht die tatsächlich aktive. Fix: neue
+     Zonen-Lookup-Tabellen (`SGOBO_ZONES`/`RGOBO_ZONES`) plus Readback im Poll, analog zum
+     bestehenden `colorEntry`-Muster (`data/index.html`).
+  5. **`index.html` wurde ohne jeden Cache-Header ausgeliefert.** Ein bereits offener Browser-Tab
+     (oder ein Reload ohne Hard-Refresh) konnte dadurch beliebig lange die alte, vor-Fix-JS im
+     Speicher behalten — sah wie ein Backend/Frontend-Sync-Bug aus, war aber ein Browser-Cache-
+     Problem. Fix: `server.serveStatic("/", LittleFS, "/index.html", "no-store")` (`WebAPI.h`).
+  6. **Neuer AUDIO-Tab: Echtzeit-EKG-Graph (Low/Mid/High + Threshold, ~15 Hz) mit Live-Tuning
+     für die Envelope-Follower-Parameter, die vorher hartkodierte `#define`s waren.** Neue Routen
+     `/api/audio_debug` (liest) und `/audio_tune` (schreibt) in `WebAPI.h`, Parameter jetzt
+     `inline int`-Variablen in `Audio_Engine.h` (`tuneFastAttackShift` usw.). Direkt beim ersten
+     Live-Test zwei echte, vorher unsichtbare Bugs im „Fake-FFT" aufgedeckt (Punkte 7/8 unten) —
+     ohne dieses Tool wären beide vermutlich weiter unbemerkt geblieben.
+  7. **`/api/audio_debug`s Beat-Tick-Anzeige zeigte so gut wie nie einen Treffer.** Der Endpoint
+     las `triggerBass`/`triggerMid`/`triggerHigh` — die werden am Kopf von `pollAudioEngine()` bei
+     **jedem** `loop()`-Durchlauf auf `false` gesetzt, weit öfter als das interne 40ms-Audio-
+     Throttle, ein `true` überlebt also nur Mikrosekunden. Ein von außen kommender HTTP-Request
+     konnte das praktisch nie einfangen. Fix: neue, dedizierte Latch-Flags `dbgBassHit`/
+     `dbgMidHit`/`dbgHighHit` (separat von den bestehenden `guiBass`/`guiMid`/`guiHigh`, die
+     `/api/state` mit seinem eigenen 500ms-Poll schon latcht-und-löscht — zwei Poller auf demselben
+     Flag hätten sich gegenseitig die Treffer weggeschnappt), gesetzt bei der Erkennung, gelöscht
+     erst nachdem `/api/audio_debug` sie ausgeliefert hat (`Audio_Engine.h`/`WebAPI.h`).
+  8. **Mid-Band strukturell tot (~0 trotz Musik).** Alle drei Bänder (Low/Mid/High) sind
+     Hüllkurven desselben unbandgefilterten Rohsignals mit unterschiedlichen Attack/Decay-Shifts,
+     keine echte Frequenztrennung. `midEnergy = max(0, envMid − envSlow)` — Mid- und Slow-Attack
+     hatten denselben Default-Shift (beide ÷4), stiegen bei jeder Flanke also exakt im Gleichlauf
+     (Differenz 0), und Mids schnellerer Decay-Shift zog `envMid` danach nur unter `envSlow` —
+     `midEnergy` war dadurch strukturell auf ~0 geklammert, unabhängig von Threshold/Sensitivity.
+     Fix: `tuneSlowAttackShift`-Default von 2 auf 3 (÷8) geändert, stellt eine echte
+     fast<mid<slow-Attack-Ordnung her (spiegelt die schon vorhandene, korrekte Decay-Ordnung).
+     Live per curl bestätigt: `hi`-Wert reagierte danach auf reines Raumrauschen statt bei 0 zu
+     bleiben.
+
+  Alle sieben Code-Fixes mit `pio run` + `pio run -t buildfs` gegenkompiliert, Firmware und
+  Filesystem mehrfach per `pio run -t upload`/`-t uploadfs` geflasht und live per `curl`
+  gegengeprüft (u. a. `Cache-Control: no-store`-Header, `sa:3` im `/api/audio_debug`-Response,
+  `xb:1`-Treffer bei Ambient-Rauschen). Browser-seitige Live-Bestätigung durch den User für die
+  Movement-Sync- und AUDIO-Tab-Fixes steht noch aus (siehe „Offen" oben für den einzigen noch
+  unbestätigten Punkt, die Figure-8-Optik).
 
 - **Post-Mortem: manueller `esptool`-Flash hat die `nvs`-Partition gelöscht (2026-08-20),
   Guard ergänzt.** Root Cause: `pio run -t upload` scheiterte zweimal mit „No serial data

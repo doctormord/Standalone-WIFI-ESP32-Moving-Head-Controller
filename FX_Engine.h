@@ -141,7 +141,16 @@ public:
         if(dt <= 0 || dt > 1.0f) dt = 0.02f;
 
         if (trigger == 0 || trigger >= 2) {
-            modPhase += (modSp / 100.0f) * dt * 2.0f;
+            // modSp is presented in the UI identically to Modulator::speed (a 0-10000ms slider,
+            // see TriggerBlock's "Modulation speed" / "Manual speed" labels sharing the same
+            // min/max/unit) but was being treated as an arbitrary rate multiplier here instead of
+            // Modulator::process()'s "period in ms" -- (modSp/100)*dt*2 makes the UI's default
+            // 1000ms complete a full Size/Speed LFO cycle in ~50ms (20 cycles/sec) instead of the
+            // intended 1 second. Harmless while Size/Speed Start==End (the modulator's output
+            // doesn't matter if it doesn't change anything), but with Start!=End the modulator
+            // raced 20x faster than the slider claimed. Match Modulator::process() exactly.
+            float periodMs = modSp < 1.0f ? 1.0f : modSp;
+            modPhase += (dt * 1000.0f) / periodMs;
         } else if (trigger == 1) {
             int safeSync = constrain(sync, 0, 7);
             // See Modulator::process() for why this is beat-count-based rather than
