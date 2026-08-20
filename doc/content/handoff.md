@@ -1,72 +1,56 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-18, Fortsetzung 2)
-> Direkt im Anschluss an den Start/Stop-Race-Fix für alle FX-Typen kamen
-> drei weitere, root-caused und gefixte Meldungen:
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-20)
+> `/ultrareview` (gegen `origin/main`, Details siehe `history.md` 2026-08-20)
+> fand acht Findings im aktuellen Code (`Audio_Engine.h`, `FX_Engine.h`,
+> `Moving_Head_Horizon.ino`, `WebAPI.h`, `data/index.html`), alle gefixt:
 >
-> 1. **„manual speed beim dimmer sollte milliseconds, ist es aktuell
->    nicht."** Bestätigt: `Modulator::process()` (`FX_Engine.h`)
->    interpretierte `speed` als inversen Kehrwert (Periode =
->    `1.000.000/speed` ms), nicht als literalen ms-Wert — obwohl der
->    Slider ("Manual speed", 0–10000/Step 100, `holdUnit=""`) eine
->    ms-Eingabe suggerierte. Gefixt: `speed` ist jetzt buchstäblich die
->    volle Zyklusdauer in ms, für `dimFX`/`gRotFX`/`pRotFX` (gemeinsame
->    `Modulator`-Klasse). `holdUnit=""` im Frontend entfernt (zeigt jetzt
->    "ms"). **Live per curl verifiziert:** gemessene Phasenposition über
->    5 Samples (inkl. zweier Wraps) stimmte exakt mit `speed=1000` →
->    1000ms-Periode überein.
-> 2. **„der sync auf beat nicht sauber, mainly ist das licht iwie aus
->    anstatt an."** Root-Cause: Default `mode=0`(Forward)+`curve=3`(Sine)
->    machte das Licht exakt AUF dem Beat dunkel, kurz davor hell, dann
->    Sprung zurück auf dunkel — Gegenteil vom erwarteten "Flash on beat".
->    Fix: Default auf `mode=2` (Reverse/Decay) geändert (Backend-Klasse +
->    Frontend-Startzustand) → hell exakt auf dem Beat, Abfall bis zum
->    nächsten. Andere Modi bleiben per Dropdown wählbar. Nebenbefund
->    geprüft und ausgeschlossen: `globalBPM` kann nie 0 werden
->    (`constrain(60,180)` in `Audio_Engine.h`, `/beat` schreibt es nie) —
->    kein Divide-by-zero-Risiko. **Live per curl verifiziert:** `/sync` +
->    Start mit `mo=2,cu=3,tr=1` → CH1 direkt nach Sync-Reset bei 245
->    (nahe Maximum), danach abfallend — bestätigt "hell auf dem Beat".
-> 3. **„hw mic im programmer button tut nichts... genauso wue ix
->    sensitity."** Root-Cause: Programmer-Tabs "HW MIC"-Button und
->    "Mic sensitivity"-Slider hingen an `state.micSync`/`state.micSens` —
->    zwei Felder, die *nirgendwo sonst* im Code vorkommen: nie
->    initialisiert, nie gelesen, nie ans Backend geschickt. Kein
->    Sync-Bug zwischen zwei echten Zuständen, sondern zwei tote,
->    rein dekorative Duplikate ohne jede `/hwaudio`-Anbindung. Fix:
->    `ProgrammerTab` bekommt jetzt dieselben Props (`micOn`,
->    `onMicToggle`, `hwSens`, `setHwSens`) wie `LiveTab` von der
->    App-Komponente durchgereicht.
+> 1. `triggerSceneFX()`/`onArtDmx()` liessen `colWasActive`/`sgWasActive`/
+>    `rgWasActive` stehen — Preset-Recall bzw. Art-Net-Übernahme konnten
+>    einen Tick später vom `runStep()`-Stop-Fallback überschrieben werden.
+> 2. `/modfx` klammerte `st`/`en` nicht (jetzt 0–255, wie alle Schwester-
+>    Routen).
+> 3. `/colfx` bekam die `mv`-Restore-on-Stop-Logik, die `/sgobfx`/
+>    `/rgobfx` schon hatten (Frontend sendet jetzt `colorBase + colorOff`).
+> 4. Hard Sync (`/sync`) war für `trigger==1` (BPM-sync) FX wirkungslos —
+>    `/sync` und `manualTap` setzen jetzt zusätzlich `beatCount = 0;
+>    lastBeatTime = now`, das die tatsächlich massgebliche Phase treibt.
+> 5. `float(millis())`-Präzisionsverlust im Rotation-Pulse-Shake nach
+>    ~4,66 h Laufzeit behoben (Modulo jetzt im Integer-Bereich).
+> 6. Totes `d.fw`-Feld im Settings-Panel — neues `FW_VERSION`-Define jetzt
+>    über `/api/state` exponiert.
+> 7. (Simplification) Acht fast identische Diff/Fetch-Blöcke in
+>    `data/index.html` zu einem `syncFx()`-Helper zusammengefasst.
 >
-> **Gebaut:** `FX_Engine.h` (`Modulator::process()` Phasenformel +
-> Default-`mode`), `data/index.html` (`dimMo`-Default, `holdUnit`-Labels,
-> `ProgrammerTab`-Props + Render-Aufruf).
+> `functions.md` für die geänderten Routen-Parameter aktualisiert.
+> `pio run` + `pio run -t buildfs` beide `[SUCCESS]`.
 >
-> `pio run` + `pio run -t buildfs` beide `[SUCCESS]`, auf dem echten
-> Gerät geflasht (`upload` + `uploadfs`), Gerät danach unter
-> `192.168.8.113` erreichbar. Dimmer-Speed-Timing und Beat-Sync-Richtung
-> live per curl bestätigt (Details oben). Änderungen noch NICHT committet
-> — steht als nächstes an.
+> **Geflasht** — aber nicht über `pio run -t upload` (scheiterte zweimal
+> mit „No serial data received", weil PlatformIOs Default-Reset-Logik das
+> Board vor der Verbindung zurücksetzte und damit den manuell erzwungenen
+> Bootloader-Zustand aufhob). Stattdessen `esptool` direkt mit
+> `--before no-reset` aufgerufen — falls das nächste Mal wieder manuell
+> geflasht werden muss, siehe `history.md` 2026-08-20 für den exakten
+> Befehl (Firmware auf `0x0`, LittleFS auf `0x290000`).
 >
-> **Noch NICHT vom User im Browser/an der echten Hardware bestätigt:**
-> - Fühlt sich "Manual speed" jetzt wie eine echte ms-Angabe an (z.B.
->   2000 = 2 Sekunden Zykluszeit, spürbar langsamer als vorher)?
-> - Fühlt sich Beat-Sync jetzt richtig an ("Licht an auf dem Beat" statt
->   "aus")?
-> - Funktioniert der HW-Mic-Button jetzt im Programmer-Tab genauso wie
->   im Live-Tab (beide zeigen denselben Zustand, beide schalten das
->   Mikro tatsächlich um)?
-> - **Aus vorigen Runden weiterhin offen:** Greift Stop jetzt bei allen
->   FX-Typen zuverlässig beim ersten Versuch? Wackeln die CH1/CH6/CH9/
->   CH11-Regler nicht mehr sichtbar während die FX läuft? Shake-Amplitude
->   bei niedriger Speed und das Settle-Fenster (kein Choppy-Effekt) am
->   echten Gerät bestätigt?
+> **Noch NICHT verifiziert:**
+> - Netzwerk-Reachability-Check von der Entwicklungsmaschine aus schlug
+>   fehl (`movinghead.local` nicht erreichbar — vermutlich anderes WLAN,
+>   kein Firmware-Hinweis). Boot-Erfolg über HTTP noch nicht bestätigt.
+> - Live-Verhalten aller acht Fixes am echten Gerät, besonders Hard Sync
+>   und der `/colfx`-Farbglitch-Fix.
+> - Der `beatCount`-Movement-Sync-Fix und die neuen FX-Defaults aus der
+>   vorigen Session (2026-08-19) liefen im selben Flash mit — ebenfalls
+>   noch nicht live nachgetestet (16 Beats/120 BPM sollte jetzt sauber
+>   rotieren, Movement-FX-Panel sollte mit 10 %/1000 ms öffnen).
+>
+> **Noch NICHT committed** — steht als nächstes an, danach `future` gegen
+> `origin/future` push-abgleichen.
 >
 > **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
 > 1. Alle oben genannten offenen Punkte am echten Gerät/im Browser
->    nachtesten, dann committen + pushen.
-> 2. Falls alles sich bestätigt: Zeit-Rampen für den Shake ("wa-wa-wosh"),
->    falls weiterhin gewünscht.
+>    nachtesten (auf demselben WLAN wie das Gerät), dann committen + pushen.
+> 2. Zeit-Rampen für den Shake ("wa-wa-wosh"), falls weiterhin gewünscht.
 > 3. Klären, ob ein separates Followspot-Joystick-Profil gewünscht ist.
 > 4. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
 > 5. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
@@ -76,35 +60,28 @@
 
 ## Aktueller Status
 
-Achtzehn-plus Review-/Test-Runden durch (Details siehe `history.md`),
+Neunzehn-plus Review-/Test-Runden durch (Details siehe `history.md`),
 inklusive eines offiziellen Herstellerdatenblatts als Referenz
-(`mapping_sheds_160w_3in1_gobo.md`) und einer erfolgreichen, mehrstufigen
-interaktiven Hardware-Kalibrierung für den Gobo-Shake — von „Idee
-verworfen" über „User korrigiert die Testtechnik" zu „funktioniert live
-bestätigt" zu „nach echtem UI-Test nachgeschärft" zu „Start/Stop-Race und
-Kanal-Clobber für alle FX-Typen geprüft und gefixt" zu „Dimmer-Speed-
-Einheit, Beat-Sync-Default und HW-Mic-Programmer-Button root-caused und
-gefixt" in derselben fortlaufenden Session. Zielhardware: **ESP32-C3
-Supermini** (Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository
-ist sowohl lokal als auch auf GitHub (`future`-Branch) git-versioniert
-und läuft auf echter Hardware, aktuell erreichbar unter der festen
-LAN-IP `192.168.8.113` (mDNS `movinghead.local` bleibt bekannt-flakey).
+(`mapping_sheds_160w_3in1_gobo.md`), einer erfolgreichen, mehrstufigen
+interaktiven Hardware-Kalibrierung für den Gobo-Shake, und — neu in dieser
+Session — dem ersten vollständigen `/ultrareview`-Durchlauf gegen den
+realen aktuellen Quellcode (nicht gegen den veralteten `origin/main`-Diff
+mit alten V1/V2/V3-Snapshots). Zielhardware: **ESP32-C3 Supermini**
+(Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
+lokal als auch auf GitHub (`future`-Branch) git-versioniert. Gerät wurde
+in dieser Session neu geflasht (siehe oben); IP/mDNS-Erreichbarkeit von
+der Entwicklungsmaschine aus aktuell nicht bestätigt.
 
-## Was in dieser Session (Fortsetzung, 2026-08-15 bis 18) gemacht wurde
+## Was in dieser Session (2026-08-20) gemacht wurde
 
-1–18: siehe vorige Handoff-Snapshots / `history.md`.
-19. Drei neue Meldungen direkt im Anschluss an Punkt 18: Dimmer-"Manual
-    speed" sollte ms sein (war ein inverser Kehrwert) — gefixt für
-    `dimFX`/`gRotFX`/`pRotFX` (gemeinsame `Modulator`-Klasse). Beat-Sync
-    fühlte sich "aus statt an" an — Default-Modus war Forward+Sine
-    (dunkel exakt auf dem Beat), auf Reverse+Sine geändert (hell auf dem
-    Beat, Abfall danach). HW-Mic-Button im Programmer-Tab tat nichts —
-    war an tote, nie ans Backend angebundene Felder gebunden statt an
-    den echten Live-Tab-Zustand. Alle drei kompiliert, geflasht,
-    Backend-Verhalten live per curl bestätigt. Browser-/Hardware-seitige
-    Bestätigung steht noch aus.
-
-Details zu allem: `history.md` (mehrere Einträge vom 2026-08-15 bis 18).
+`/ultrareview` gegen `origin/main` (mit Altlasten/Docs/Vendor-Binaries
+ausgeschlossen) lief nach zwei fehlgeschlagenen Versuchen (Session-Limit,
+Rechner-Sleep) beim dritten Mal durch und fand acht Findings im aktuellen
+Code. Alle acht gefixt (siehe Banner oben und `history.md` für Details je
+Fix), `functions.md` für die geänderten Routen aktualisiert, kompiliert
+(`pio run`, `pio run -t buildfs`) und auf das echte Gerät geflasht (via
+direktem `esptool`-Aufruf, da `pio run -t upload` am Reset-Handling
+scheiterte). Details: `history.md` (2026-08-20).
 
 ## Doku-Hinweis
 

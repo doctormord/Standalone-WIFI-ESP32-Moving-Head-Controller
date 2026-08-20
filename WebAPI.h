@@ -83,7 +83,7 @@ void setupAPI() {
 
   server.on("/api/state", []() {
     String json; json.reserve(600);
-    json += "{\"pr\":" + String(activePresetSlot) + ",\"bpm\":" + String(globalBPM) + ",\"chA\":" + String(chaserActive?1:0);
+    json += "{\"fw\":\"" + String(FW_VERSION) + "\",\"pr\":" + String(activePresetSlot) + ",\"bpm\":" + String(globalBPM) + ",\"chA\":" + String(chaserActive?1:0);
     json += ",\"hwA\":" + String(hwAudioEnabled?1:0) + ",\"fO\":" + String(fadeStateOut?1:0);
     json += ",\"trB\":" + String(guiBass?1:0) + ",\"trM\":" + String(guiMid?1:0) + ",\"trH\":" + String(guiHigh?1:0);
     // Beat-sync/BPM-drift debug fields (2026-08-19): rawBPM/rawMs are the audio engine's
@@ -225,7 +225,12 @@ void setupAPI() {
       if(m) {
         bool startFresh = !m->active && (server.arg("a") == "1");
         m->active = (server.arg("a") == "1");
-        m->startVal = server.arg("st").toInt(); m->endVal = server.arg("en").toInt();
+        // Clamped like /fx's spd/size and /colfx|/sgobfx|/rgobfx's st/en -- defense-in-depth for
+        // values that can also arrive via NVS-persisted presets (see triggerSceneFX), per this
+        // project's established pattern. Unclamped, an out-of-range value reaches the (byte) cast
+        // in updateEngines() (dmxData[9]/dmxData[11] = (byte)t) as a float outside byte range, which
+        // is undefined behavior, not just wraparound.
+        m->startVal = constrain(server.arg("st").toInt(), 0, 255); m->endVal = constrain(server.arg("en").toInt(), 0, 255);
         m->speed = server.arg("sp").toFloat(); m->mode = server.arg("mo").toInt();
         m->curve = server.arg("cu").toInt(); m->trigger = server.arg("tr").toInt();
         m->sync = constrain(server.arg("sy").toInt(), 0, 6);
@@ -289,6 +294,9 @@ void setupAPI() {
       colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
       updateColFXStep();
       if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
+      // See /sgobfx below: on stop, land on the Programmer tab's manual CH6 value instead of the
+      // FX's own last wheel position, and clear colWasActive so runStep() doesn't undo it.
+      if (!colFX.active && server.hasArg("mv")) { dmxData[CH_COLOR] = (byte)constrain(server.arg("mv").toInt(), 0, 255); colWasActive = false; }
       server.send(200, "OK");
   });
 
@@ -370,11 +378,17 @@ void setupAPI() {
     server.send(200, "OK");
   });
   server.on("/sync", []() {
-    masterSyncTime = millis();
-    if(moveFX.active) moveFX.modPhase = 0.0;
-    if(dimFX.active) dimFX.phase = 0.0;
-    if(gRotFX.active) gRotFX.phase = 0.0;
-    if(pRotFX.active) pRotFX.phase = 0.0;
+    unsigned long now = millis();
+    masterSyncTime = now;
+    // Trigger==1 (BPM sync) FX recompute phase from the shared beatCount/lastBeatTime clock every
+    // tick and ignore their own .phase/.modPhase field (see Modulator::process()/
+    // MovementEngine::process()) -- without this reset, Hard Sync was a no-op for exactly the
+    // trigger mode it's meant to fix, since the phase=0 writes below got overwritten on the next tick.
+    beatCount = 0; lastBeatTime = now;
+    if(moveFX.active && moveFX.trigger != 1) moveFX.modPhase = 0.0;
+    if(dimFX.active && dimFX.trigger != 1) dimFX.phase = 0.0;
+    if(gRotFX.active && gRotFX.trigger != 1) gRotFX.phase = 0.0;
+    if(pRotFX.active && pRotFX.trigger != 1) pRotFX.phase = 0.0;
     server.send(200, "OK");
   });
   server.on("/jog", []() {

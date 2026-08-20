@@ -11,6 +11,10 @@
 #include "FX_Engine.h" 
 #include "Audio_Engine.h"
 
+// Shown by the Settings panel's firmware-version line (see /api/state's "fw" field in WebAPI.h) --
+// bump manually when cutting a release.
+#define FW_VERSION "1.0.0"
+
 // =========================================================
 // --- 1. HARDWARE CONFIGURATION ---
 // =========================================================
@@ -208,14 +212,21 @@ void triggerSceneFX(int slot) {
   colFX.holdTime = chaserScenes[slot].cHo; colFX.trigger = chaserScenes[slot].cTr; colFX.sync = chaserScenes[slot].cSy;
   updateColFXStep();
   if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
+  // Sync the *WasActive shadow flag to the state we just set directly (bypassing runStep's own
+  // active->inactive transition) -- otherwise a stale wasActive=true from before this call makes
+  // runStep's stop-fallback overwrite the dmxData value this function (or its caller) just loaded
+  // from the scene snapshot, on the very next updateEngines() tick.
+  colWasActive = colFX.active;
 
   sgobFX.active = chaserScenes[slot].sgA; sgobFX.startVal = constrain(chaserScenes[slot].sgSt, 0, 9); sgobFX.endVal = constrain(chaserScenes[slot].sgEn, 0, 9);
   sgobFX.holdTime = chaserScenes[slot].sgHo; sgobFX.trigger = chaserScenes[slot].sgTr; sgobFX.sync = chaserScenes[slot].sgSy; sgobFX.scratch = chaserScenes[slot].sgSc;
   if(sgobFX.active) { sgobFX.currentIdx = sgobFX.startVal; sgobFX.lastStepTime = millis(); }
+  sgWasActive = sgobFX.active;
 
   rgobFX.active = chaserScenes[slot].rgA; rgobFX.startVal = constrain(chaserScenes[slot].rgSt, 0, 6); rgobFX.endVal = constrain(chaserScenes[slot].rgEn, 0, 6);
   rgobFX.holdTime = chaserScenes[slot].rgHo; rgobFX.trigger = chaserScenes[slot].rgTr; rgobFX.sync = chaserScenes[slot].rgSy; rgobFX.scratch = chaserScenes[slot].rgSc;
   if(rgobFX.active) { rgobFX.currentIdx = rgobFX.startVal; rgobFX.lastStepTime = millis(); }
+  rgWasActive = rgobFX.active;
 }
 
 void executePreset(int slot) {
@@ -266,6 +277,10 @@ void setupDMX() {
 void onArtDmx(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* data) {
   if (universe == 0) {
     chaserActive = false; moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); activePresetSlot = 0;
+    // Clear the *WasActive shadow flags too -- otherwise runStep()'s stop-fallback overwrites the
+    // Art-Net byte just written below with the stopped FX's stale wheel position on this same tick,
+    // violating "external DMX always wins over internal effects while active".
+    colWasActive = false; sgWasActive = false; rgWasActive = false;
     for (int i = 0; i < length && i < NUM_CHANNELS; i++) dmxData[i + 1] = data[i];
   }
 }
@@ -325,7 +340,11 @@ void updateEngines(unsigned long now) {
   }
 
   if (globalBPM > 0) { unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; beatCount++; } }
-  if (manualTap) { if (dimFX.trigger == 1) dimFX.phase = 0.0; if (gRotFX.trigger == 1) gRotFX.phase = 0.0; if (pRotFX.trigger == 1) pRotFX.phase = 0.0; if (moveFX.trigger == 1) moveFX.modPhase = 0.0; masterSyncTime = now; manualTap = false; }
+  // Trigger==1 (BPM sync) FX derive their phase from the shared beatCount/lastBeatTime clock every
+  // tick (see Modulator::process()/MovementEngine::process()), not from their own .phase/.modPhase
+  // field -- a per-FX phase=0 write here used to be silently discarded the very next updateEngines()
+  // call. Resetting the shared clock instead re-aligns every trigger==1 FX to this beat at once.
+  if (manualTap) { beatCount = 0; lastBeatTime = now; if (dimFX.trigger != 1) dimFX.phase = 0.0; if (gRotFX.trigger != 1) gRotFX.phase = 0.0; if (pRotFX.trigger != 1) pRotFX.phase = 0.0; if (moveFX.trigger != 1) moveFX.modPhase = 0.0; masterSyncTime = now; manualTap = false; }
   auto checkAudioTrg = [&](int trg) { return (trg == 2 && triggerBass) || (trg == 3 && triggerMid) || (trg == 4 && triggerHigh); };
   if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
 
@@ -408,7 +427,13 @@ void updateEngines(unsigned long now) {
         float halfPeriod = period / 2.0f;
         const float FIXED_PULSE_S = 0.05f; // 50ms, bounds travel-per-pulse at any speed
         float pulseDur = min(FIXED_PULSE_S, halfPeriod * 0.5f);
-        float t = fmodf(now / 1000.0f, period);
+        // Take the modulo in the integer (ms) domain first, then convert the small remainder to
+        // float -- converting the raw `now` timestamp to float directly loses precision past
+        // ~4.66h of uptime (float's 24-bit mantissa only represents integers exactly up to
+        // 16,777,216), which made this pulse timing silently drift/jitter on long-running shows.
+        unsigned long periodMs = (unsigned long)(period * 1000.0f + 0.5f);
+        if (periodMs < 1) periodMs = 1;
+        float t = (now % periodMs) / 1000.0f;
         int intensity = constrain(fx.scratchRange, 0, 100);
         byte cwVal = (byte)(129 - (intensity * 29) / 100);
         byte ccwVal = (byte)(135 + (intensity * 75) / 100);

@@ -263,7 +263,7 @@ Query parameters are read via `server.arg(name)`; parameters marked
 | `/` | GET | — | Serves the SPA (`index.html` from LittleFS), or the setup-mode upload page if no GUI has been installed yet. |
 | `/upload_gui` | POST (multipart) | `update` (file) | Uploads a new `index.html` to LittleFS (first-boot provisioning path); reboots the device. |
 | `/api/get_dmx` | GET | — | Full state snapshot as JSON: all 18 DMX channel values, pan/tilt (`cp`/`ct`), BPM, active preset, chaser-active flag, preset names, dimmer-smoothing/fade/master-brightness/dip/hw-audio state, and every FX engine's complete parameter set. Polled by the frontend every ~2s. |
-| `/api/state` | GET | — | Compact live state as JSON: active preset, BPM, chaser-active, hw-audio-enabled, fade-out flag, one-shot audio trigger flags (`trB`/`trM`/`trH`, cleared after read), preset names. Polled by the frontend every ~500ms. |
+| `/api/state` | GET | — | Compact live state as JSON: firmware version (`fw`, from `FW_VERSION`), active preset, BPM, chaser-active, hw-audio-enabled, fade-out flag, one-shot audio trigger flags (`trB`/`trM`/`trH`, cleared after read), preset names. Polled by the frontend every ~500ms. |
 | `/api/patch` | GET | — | JSON array of the current fixture patch (`addr`, pan/tilt invert, phase) for each patched fixture. |
 | `/save` | GET | `slot` (1–10), `n` (preset name) | Snapshots the current live DMX channels + all FX engine parameters into `chaserScenes[slot-1]` and persists it (plus `n` as the preset name) to NVS namespace `"sc<slot>"`. Reloads all scenes afterward. |
 | `/chaser_cfg` | GET | `st`, `en` (start/end slot), `fade`, `hold` (ms), `tr` (trigger mode), `sy` (sync index), `o` (order: 0=forward, 1=random), `ftr` (fade trigger mode), `fsy` (fade sync index) — all optional | Updates chaser timing/config and persists it to NVS namespace `"sys"`. |
@@ -271,7 +271,7 @@ Query parameters are read via `server.arg(name)`; parameters marked
 | `/joy_in` | GET | `x`, `y` (float, -1..1) | Sets live joystick input (`joyInputX/Y`), consumed by `updateEngines()`. |
 | `/set_all` | GET | `c1`..`c18` (any subset, byte values) | Directly sets raw DMX channels, disabling the chaser and clearing `activePresetSlot`; channel 1 also stops `dimFX` and sets `dimSmoothTarget`, channels 3/15/4/16 also update `centerPan16`/`centerTilt16`. |
 | `/fx` | GET | `a` (`"1"`=active), `t` (shape type 1–12), `r` (rotation degrees), `ss`/`se` (speed start/end), `zs`/`ze` (size start/end), `mm`/`mc` (modulation mode/curve), `ms` (modulation speed), `tr` (trigger mode), `sy` (sync index) | Configures `moveFX` (`MovementEngine`); starts it fresh if it was inactive and `a=1`. |
-| `/modfx` | GET | `pfx` (`"dim"`/`"gr"`/`"pr"` — selects `dimFX`/`gRotFX`/`pRotFX`), `a`, `st`/`en` (range), `sp` (speed), `mo` (mode), `cu` (curve), `tr`, `sy` | Configures the selected `Modulator`. |
+| `/modfx` | GET | `pfx` (`"dim"`/`"gr"`/`"pr"` — selects `dimFX`/`gRotFX`/`pRotFX`), `a`, `st`/`en` (range, clamped 0–255), `sp` (speed), `mo` (mode), `cu` (curve), `tr`, `sy`, `mv` (manual value to restore on stop; dim writes `dimSmoothTarget`, gr/pr write CH9/CH11 directly) | Configures the selected `Modulator`. |
 | `/chaser` | GET | `act` (`"1"`=active/`"0"`=stop), `start`/`end`/`fade`/`hold`/`trg`/`sync`/`ord`/`f_trg`/`f_sync` — same meaning as `/chaser_cfg`, all optional | Toggles the chaser. On activation, resets to `chaserStartSlot` and calls `executeChaserSlot` immediately. |
 | `/recall` | GET | `slot` (1-based preset number) | Calls `triggerLoad(1, slot)` — recalls a preset (subject to dip-to-black if enabled). |
 | `/kill_fx` | GET | — | Stops every FX engine and the chaser, clears `activePresetSlot`. |
@@ -282,14 +282,14 @@ Query parameters are read via `server.arg(name)`; parameters marked
 | `/unmute` | GET | — | Immediately cancels any active fade and forces full brightness (`fadeMultiplier = 1.0`). |
 | `/trans` | GET | `dip` (`"1"`=enable) | Sets `dipToBlack` (fade-to-black before preset/chaser loads) and persists to NVS `"sys"`. |
 | `/hwaudio` | GET | `en` (`"1"`=enable), `sens` (0–100 sensitivity) | Enables/disables the I2S audio-reactive engine and sets its sensitivity. |
-| `/colfx` | GET | `a`, `st`/`en` (wheel index range), `ho` (hold time ms), `tr`, `sy` | Configures `colFX` (color wheel `StepFX`); auto-derives `step` (1 or 2) from start/end parity so odd/even wheel positions aren't mixed. |
-| `/sgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch) | Configures `sgobFX` (static gobo `StepFX`). |
-| `/rgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch) | Configures `rgobFX` (rotating gobo `StepFX`). |
+| `/colfx` | GET | `a`, `st`/`en` (wheel index range), `ho` (hold time ms), `tr`, `sy`, `mv` (manual CH6 value to restore on stop) | Configures `colFX` (color wheel `StepFX`); auto-derives `step` (1 or 2) from start/end parity so odd/even wheel positions aren't mixed. |
+| `/sgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch), `spd`/`rng` (shake rate/intensity), `mv` (manual CH7 value to restore on stop) | Configures `sgobFX` (static gobo `StepFX`). |
+| `/rgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch), `spd` (shake stage 1–5), `mv` (manual CH8 value to restore on stop) | Configures `rgobFX` (rotating gobo `StepFX`). |
 | `/save_patch` | POST | `n` (fixture count), `a0..a(n-1)` (DMX start address), `ip0..`/`it0..` (`"1"`=invert pan/tilt), `ph0..` (phase degrees) | Replaces the fixture patch (`fixtures[]`, up to 8), persists to NVS `"patch"`, recomputes `maxDmxChannel`. |
 | `/map_go` | GET | `p`, `t` (target pan/tilt, 16-bit float) | Sets `mapTargetPan/Tilt` and enables "map go" easing mode (`mapIsMoving = true`) — used by the frontend's 2D position-map UI. |
 | `/save_map` | POST | request body = raw file content | Writes the POST body verbatim to `/map.json` on LittleFS (stage-map image/config for the position-map UI). |
 | `/load_map` | GET | — | Streams `/map.json` from LittleFS (`application/json`), or `{}` if it doesn't exist. |
 | `/set_wifi` | GET | `s` (SSID), `p` (password) | Persists station-mode WiFi credentials to NVS `"sys"` and reboots. |
 | `/beat` | GET | — | Manual tap-tempo hit: rewinds `lastBeatTime` by one beat interval and sets `manualTap = true` (phase-resets any manually-triggered FX on the next `updateEngines()` pass). |
-| `/sync` | GET | — | Hard-syncs all BPM-synced FX phases to zero and resets `masterSyncTime = millis()`. |
+| `/sync` | GET | — | Hard-syncs FX phases to zero and resets `masterSyncTime = millis()`. For trigger==1 (BPM-sync) FX, phase is derived every tick from the shared `beatCount`/`lastBeatTime` clock (not the FX's own `.phase`/`.modPhase` field), so this also resets `beatCount = 0` and `lastBeatTime = millis()` — a per-FX `.phase = 0` write alone is a no-op for that trigger mode. |
 | `/jog` | GET | `v` (signed int) | Sets `jogBend = v` (or `0` if `v == 0`). **Currently has no effect** — `jogBend` is never read elsewhere; see `backlog.md`. |

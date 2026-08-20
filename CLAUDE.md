@@ -58,6 +58,27 @@ User-supplied route parameters (`sync` indices, chaser/preset slot numbers, Step
 
 When adding a new effect parameter or config field, it typically needs to be touched in four places: the global FX object/state in the `.ino`, the `SceneData` struct + its save/load paths (`loadAllChaserScenes`, `/save` handler, `executePreset`/`executeChaserSlot`/`triggerSceneFX`), the corresponding `WebAPI.h` route(s), and the frontend's `fetch` calls/state in `data/index.html`.
 
+## Working practices & token efficiency
+
+### Git workflow
+- Never `git commit` or `git push` automatically after a fix or feature — work stays local until I explicitly say "commit" or "push".
+- `git status` / `git diff` are fine anytime to check state — read-only, doesn't change anything.
+
+### Bash output
+- Filter build/test output before it hits context: `| tail -5` to `| tail -20`, not the full log.
+  Example: `pio run 2>&1 | tail -5` instead of `pio run 2>&1 | tail -40`.
+- `curl` debugging: use `-s` (silent) by default, not `-v`, unless HTTP headers themselves are the thing being debugged.
+- Long logs: `| grep -E "ERROR|FAIL|SUCCESS"` instead of dumping full text.
+- Large directories: `find . -maxdepth 2` instead of recursing everywhere.
+
+### Reading files
+- Search first with `grep -n "pattern" file` instead of reading whole files blind.
+- When reading, pull only the relevant line range, not entire large files.
+- Don't re-read a file already seen earlier in the same session — reuse that context.
+
+### Multi-fix sessions
+- When several independent fixes are needed, sketch the plan first, then implement in one pass rather than lots of small steps with heavy intermediate output.
+
 ## Documentation & language policy
 
 - **Code, comments, commit messages, UI strings — always English.** No exceptions, regardless of the language a request comes in.
@@ -66,3 +87,4 @@ When adding a new effect parameter or config field, it typically needs to be tou
 - `doc/content/backlog.md` and `doc/content/handover.md` are living documents — edit/overwrite in place as state changes, don't accumulate dated copies.
 - `doc/content/handoff.md` is a single current snapshot with a `NEXT CHAT STARTS HERE` banner — **replace it** each session (banner + status), don't append a new one alongside the old.
 - `doc/content/history.md` is **append-only**: add a new dated section at the end for each session/milestone; never edit, reorder, or delete existing entries — if something turns out to be wrong or superseded, add a new entry that says so instead of correcting the old one in place.
+- **Don't update `doc/content/` files after every intermediate debug step or micro-fix.** Write documentation once a task or session is actually done, or when explicitly asked to ("update docs", "write history"). If a session involves several fixes/iterations, collect them into one consolidated entry rather than one entry per fix.

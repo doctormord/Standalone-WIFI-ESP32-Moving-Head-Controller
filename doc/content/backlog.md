@@ -15,14 +15,22 @@ dauerhaft bei der Hälfte hängen bleiben. Falls immer noch zu langsam: weitere 
 nötig (z. B. `BPM_DEVIATION_TOLERANCE_DIVISOR` lockern oder `MIN_BEAT_INTERVAL_MS`/Schwellwert-
 Empfindlichkeit prüfen), nicht blind vorwegnehmen.
 
-**Offen: `beatCount`-Fix (Movement-Multi-Beat-Sync) und neue FX-Defaults kompiliert, aber noch
-nicht geflasht/verifiziert (2026-08-19).** User testet erst am Folgetag. Zwei Dinge prüfen: (1)
+**Offen: `beatCount`-Fix (Movement-Multi-Beat-Sync) und neue FX-Defaults jetzt geflasht
+(2026-08-20), aber noch nicht live verifiziert.** Im selben Flash-Vorgang wie die acht
+`/ultrareview`-Fixes unten mit auf das Gerät gespielt (siehe dort). Zwei Dinge prüfen: (1)
 Movement-Sync bei z. B. 16 Beats/120 BPM sollte jetzt eine saubere Umdrehung ohne Rückwärts-
-Zucken schaffen (siehe „Kürzlich gefixt" — `beatCount` wird jetzt auch bei echten Mic-erkannten
-Beats hochgezählt, nicht nur beim internen Metronom-Tick). Kleine, auf ≤1 Beat begrenzte
-Korrektur-Ruckler bei Live-Beat-Erkennung sind prinzipbedingt normal, keine große Rückwärts-
-Sprünge mehr. (2) Movement-FX-Panel sollte jetzt frisch mit Speed Start/End und Size Start/End
-je 10 % und Modulation Speed 1000 ms öffnen.
+Zucken schaffen (`beatCount` wird jetzt auch bei echten Mic-erkannten Beats hochgezählt, nicht nur
+beim internen Metronom-Tick). Kleine, auf ≤1 Beat begrenzte Korrektur-Ruckler bei Live-Beat-
+Erkennung sind prinzipbedingt normal, keine große Rückwärts-Sprünge mehr. (2) Movement-FX-Panel
+sollte jetzt frisch mit Speed Start/End und Size Start/End je 10 % und Modulation Speed 1000 ms
+öffnen.
+
+**Offen: acht `/ultrareview`-Fixes vom 2026-08-20 geflasht, aber nicht live verifiziert.** Siehe
+„Kürzlich gefixt" unten für Details. `pio run`/`pio run -t buildfs` liefen sauber, Flash+Verify
+über `esptool` (direkt, nicht über `pio run -t upload` — siehe Begründung unten) bestanden; ein
+Reachability-Check über `movinghead.local` von diesem Rechner aus schlug fehl (Rechner nicht im
+selben WLAN wie das Gerät), daher kein Boot-Nachweis über das Netzwerk. Besonders die Hard-Sync-
+und `/colfx`-`mv`-Fixes sowie das Rotation-Pulse-Timing sollten am Gerät gegengeprüft werden.
 
 **2026-08-16, `/ultrareview` (Cloud-Multi-Agent):** Hauptorchestrator und
 mehrere Teil-Agenten sind an einem Account-Session-Limit gescheitert, drei
@@ -145,6 +153,57 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
+- **Acht Findings aus `/ultrareview` (Cloud-Multi-Agent) gefixt und geflasht (2026-08-20).**
+  Review lief gegen `origin/main` (kein lokaler `main`-Branch vorhanden; `origin/main` ist ein
+  veralteter Stand von vor dem V1/V2/V3-Merge) mit `V1`/`V2`/`V3`, `doc/`, `firmware/`,
+  Vendor-Binaries und `*.md` ausgeschlossen, damit nur der reale aktuelle Quellcode (`Audio_Engine.h`,
+  `FX_Engine.h`, `Moving_Head_Horizon.ino`, `WebAPI.h`, `data/index.html`, `platformio.ini`) geprüft
+  wurde. Ein Teil der Finder-Subagenten crashte während des Runs (Rechner-Sleep/Session-Limit); die
+  Ergebnisse stammen aus einer Kombination aus einem abgeschlossenen Subagenten und direkter
+  manueller Inspektion, nicht aus dem vollen 10-Winkel-Parallel-Lauf.
+  1. **`triggerSceneFX()` liess `colWasActive`/`sgWasActive`/`rgWasActive` stehen.** Preset-/
+     Chaser-Recall setzte `colFX.active`/`sgobFX.active`/`rgobFX.active` direkt aus dem Scene-
+     Snapshot, ohne die zugehörigen `*WasActive`-Schattenflags nachzuziehen — `runStep()`s
+     Stop-Fallback überschrieb dadurch die gerade aus dem Preset geladene Kanal-Farbe/Gobo einen
+     Tick später mit der alten FX-Position. Fix: `colWasActive`/`sgWasActive`/`rgWasActive` werden
+     in `triggerSceneFX()` jetzt direkt mit dem neu gesetzten `.active` synchronisiert.
+  2. **Art-Net-Übernahme (`onArtDmx()`) liess dieselben `*WasActive`-Flags stehen**, brach dadurch
+     im Moment der Übernahme das dokumentierte Prinzip „externes DMX gewinnt immer über interne
+     FX" — derselbe Loop-Durchlauf konnte das gerade angenommene Art-Net-Byte per Stop-Fallback
+     sofort wieder überschreiben. Fix: `onArtDmx()` löscht die drei Flags jetzt mit.
+  3. **`/modfx` klammerte `st`/`en` nicht**, anders als `/fx`/`/colfx`/`/sgobfx`/`/rgobfx`. Ein
+     Wert weit ausserhalb 0–255 (direkter API-Call oder korrupter NVS-Preset-Wert) erreichte den
+     `(byte)`-Cast in `updateEngines()` als float ausserhalb des Byte-Bereichs — undefined
+     behavior, nicht nur Wraparound. Fix: `st`/`en` jetzt auf 0–255 geklammert, analog zum
+     restlichen Projekt-Pattern.
+  4. **`/colfx` hatte keine `mv`-Restore-on-Stop-Logik**, anders als `/sgobfx`/`/rgobfx`. Stoppen
+     einer laufenden Color-Wheel-FX liess den Kanal auf der letzten FX-Wheel-Position statt auf
+     dem im Programmer-Tab sichtbaren manuellen Wert stehen. Fix: `/colfx` akzeptiert jetzt `mv`
+     (analog zu `/sgobfx`/`/rgobfx`), Frontend sendet `colorBase + colorOff`.
+  5. **Hard Sync (`/sync`) war für BPM-sync-Trigger-FX wirkungslos.** `trigger==1`-FX leiten ihre
+     Phase jeden Tick frisch aus dem geteilten `beatCount`/`lastBeatTime`-Takt ab
+     (`Modulator::process()`/`MovementEngine::process()`), nicht aus dem eigenen `.phase`/
+     `.modPhase`-Feld — ein `phase = 0`-Write in `/sync` (und im `manualTap`-Block) wurde im
+     nächsten `updateEngines()`-Tick sofort wieder überschrieben. Fix: `/sync` und der
+     `manualTap`-Block setzen jetzt zusätzlich `beatCount = 0; lastBeatTime = now`, was alle
+     BPM-sync-FX gleichzeitig auf Phase 0 zieht, unabhängig von ihrem jeweiligen `sync`-Divisor.
+  6. **`float(millis())`-Präzisionsverlust im Rotation-Pulse-Shake nach ~4,66 h Laufzeit.**
+     `fmodf(now / 1000.0f, period)` wandelte den absoluten `millis()`-Zeitstempel direkt in
+     float — float's 24-Bit-Mantisse stellt Ganzzahlen nur bis 16.777.216 exakt dar. Fix: Modulo
+     jetzt zuerst im Integer-(ms)-Bereich, erst der kleine Rest wird zu float konvertiert.
+  7. **`d.fw` im Settings-Panel las ein Feld, das das Backend nie sendete.** `/api/state` hatte
+     nie ein `fw`-Feld, die Firmware-Versionsanzeige zeigte deshalb dauerhaft den generischen
+     Platzhaltertext. Fix: neues `#define FW_VERSION "1.0.0"` (`Moving_Head_Horizon.ino`), jetzt
+     als `"fw"` in `/api/state` (`WebAPI.h`) exponiert.
+  8. **(Simplification) Acht fast identische Diff/Fetch-Blöcke** im App-State-Sync-Effect
+     (`data/index.html`) für `fx`/`dimFx`/`grFx`/`prFx`/`colFx`/`sgFx`/`rgFx`/`chaser` — nur die
+     Feldnamen unterschieden sich. Zu einem parametrisierten `syncFx()`-Helper zusammengefasst,
+     um Drift zwischen den Blöcken (dieselbe Bug-Klasse wie der sg/rg-Stop-Race weiter unten)
+     künftig auszuschliessen.
+
+  Verifiziert: `pio run` und `pio run -t buildfs` sauber, Firmware + LittleFS-Image direkt per
+  `esptool` geflasht und mit Hash verifiziert (siehe „Offen" oben — Live-Verhalten am Gerät noch
+  nicht gegengeprüft).
 - **Echter Root-Cause für "Movement random/sieht aus wie 1-Beat-Sync" gefunden und gefixt
   (2026-08-19) — `masterSyncTime` wird bei jedem echten Beat neu verankert, brach jeden
   Multi-Beat-Divisor.** `masterSyncTime` wird sowohl von echter Audio-Beat-Erkennung

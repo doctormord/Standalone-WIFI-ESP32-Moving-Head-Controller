@@ -2778,3 +2778,78 @@ auf "springt mitten in der Umdrehung fast auf Null zurück".
 flashe morgen"). `pio run` und `pio run -t buildfs` beide `[SUCCESS]`.
 Weder die neuen Defaults noch der `beatCount`-Fix sind bisher live
 verifiziert.
+
+## 2026-08-20 — `/ultrareview` gegen `origin/main`, acht Findings gefixt, Gerät geflasht
+
+**`/ultrareview` lief zunächst mit dem Default-Target und scheiterte an der
+Diff-Grösse** (33 Dateien, 13.049 Zeilen — enthielt `doc/content/history.md`
+und alte `V3/data/index_old.html`/`index_semiworking.html`-Snapshots). Auf
+Rückfrage stellte sich heraus: Ziel war ein Review des aktuellen Codes auf
+Bugs, kein Review dieses aufgeblähten Diffs. Da dieses Repo keinen lokalen
+`main`-Branch hat (nur `origin/main`, ein veralteter Stand von vor dem
+V1/V2/V3-Merge, siehe `README.md`), lief das eigentliche Review gegen
+`origin/main` mit `V1/**`, `V2/**`, `V3/**`, `doc/**`, `firmware/**`,
+`data/vendor/**` und `*.md` ausgeschlossen — übrig blieb der reale aktuelle
+Quellcode (`Audio_Engine.h`, `FX_Engine.h`, `Moving_Head_Horizon.ino`,
+`WebAPI.h`, `data/index.html`, `platformio.ini`, ~3.090 Zeilen).
+
+**Ein erster Versuch scheiterte am Account-Session-Limit** (alle
+Finder-Subagenten terminiert), ein zweiter Versuch am Rechner-Sleep
+mid-run. Der dritte Versuch kam durch — ein Teil der 10 parallelen
+Finder-Subagenten crashte trotzdem wieder (Sleep/Stream-Stalls), der
+Hauptagent hat die fehlenden Winkel per direkter manueller Code-Inspektion
+nachgeholt (ein abgeschlossener Cross-File-Tracer-Subagent lieferte
+zusätzlich vier unabhängig verifizierte Funde). Acht Findings (sieben
+Correctness, ein Simplification), Details siehe `backlog.md` →
+„Kürzlich gefixt" 2026-08-20-Eintrag — Kurzfassung:
+
+1. `triggerSceneFX()` liess `colWasActive`/`sgWasActive`/`rgWasActive`
+   stehen — Preset-Recall konnte durch `runStep()`s Stop-Fallback einen
+   Tick später wieder überschrieben werden.
+2. `onArtDmx()` (Art-Net-Übernahme) hatte denselben Bug — brach kurzzeitig
+   das „externes DMX gewinnt immer" Prinzip im Moment der Übernahme.
+3. `/modfx` klammerte `st`/`en` nicht (anders als alle Schwester-Routen) —
+   ein weit ausserhalb 0–255 liegender Wert erreichte einen `(byte)`-Cast
+   als float ausserhalb des Byte-Bereichs (undefined behavior).
+4. `/colfx` hatte keine `mv`-Restore-on-Stop-Logik, anders als
+   `/sgobfx`/`/rgobfx` — sichtbarer Farbglitch beim Stoppen.
+5. Hard Sync (`/sync`) war für `trigger==1` (BPM-sync) FX wirkungslos, weil
+   deren Phase jeden Tick frisch aus dem geteilten `beatCount`/
+   `lastBeatTime`-Takt berechnet wird, nicht aus dem eigenen `.phase`-Feld,
+   das `/sync` (und `manualTap`) bisher allein zurücksetzten.
+6. `float(millis())`-Präzisionsverlust im Rotation-Pulse-Shake nach
+   ~4,66 h Laufzeit (float-Mantisse reicht nur bis 16.777.216).
+7. `d.fw` im Settings-Panel las ein Feld, das `/api/state` nie sendete —
+   totes UI-Feld, Anzeige zeigte dauerhaft den Platzhaltertext.
+8. (Simplification) Acht fast identische Diff/Fetch-Blöcke im
+   App-State-Sync-Effect (`data/index.html`) zu einem `syncFx()`-Helper
+   zusammengefasst.
+
+Alle acht Fixes umgesetzt (`Moving_Head_Horizon.ino`, `WebAPI.h`,
+`data/index.html`), plus ein neues `#define FW_VERSION "1.0.0"` und
+`functions.md` für die geänderten Routen-Parameter (`mv` bei `/colfx`,
+Klammerung bei `/modfx`, `fw`-Feld bei `/api/state`, korrigierte
+`/sync`-Beschreibung) aktualisiert. `pio run` und `pio run -t buildfs`
+beide `[SUCCESS]`.
+
+**Geflasht.** `pio run -t upload` scheiterte zweimal mit „No serial data
+received" — das Board (ESP32-C3 Supermini, natives USB-Serial/JTAG) trat
+trotz manuellem BOOT-Halten nicht in den Download-Modus ein, weil
+PlatformIOs Default-Reset-Logik (`--before default-reset`) das Board vor
+der Verbindung aktiv zurücksetzte und damit den manuell erzwungenen
+Bootloader-Zustand sofort wieder aufhob. Fix: `esptool` direkt aufgerufen
+(`~/.platformio/penv/bin/python -m esptool`) mit `--before no-reset`, damit
+es das Board im Zustand anspricht, in dem es bereits ist, statt es selbst
+zurückzusetzen. Firmware (`firmware.factory.bin`, gemergter Bootloader+
+Partitionstabelle+App) auf `0x0` geschrieben, LittleFS-Image separat auf
+`0x290000` (Offset aus der Partitionstabelle via `gen_esp32part.py`
+decodiert — 4 MB Flash, `spiffs`-Partition bei `0x290000`/1408K). Beide
+Schreibvorgänge inkl. Hash-Verify erfolgreich, `esptool` hat danach per
+RTS-Pin hart zurückgesetzt.
+
+**Netzwerk-Reachability-Check von diesem Rechner aus fehlgeschlagen**
+(`curl http://movinghead.local/api/state` → `HTTP:000`, auch nach
+mehreren Sekunden Wartezeit) — dieser Rechner ist offenbar nicht im
+selben WLAN wie das Gerät, kein Hinweis auf einen Firmware-Fehler. Live-
+Verhalten der acht Fixes (insbesondere Hard Sync und `/colfx`-`mv`) am
+Gerät selbst noch nicht gegengeprüft, siehe `backlog.md` → „Offen".
