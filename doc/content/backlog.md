@@ -25,12 +25,19 @@ Erkennung sind prinzipbedingt normal, keine große Rückwärts-Sprünge mehr. (2
 sollte jetzt frisch mit Speed Start/End und Size Start/End je 10 % und Modulation Speed 1000 ms
 öffnen.
 
-**Offen: acht `/ultrareview`-Fixes vom 2026-08-20 geflasht, aber nicht live verifiziert.** Siehe
-„Kürzlich gefixt" unten für Details. `pio run`/`pio run -t buildfs` liefen sauber, Flash+Verify
-über `esptool` (direkt, nicht über `pio run -t upload` — siehe Begründung unten) bestanden; ein
-Reachability-Check über `movinghead.local` von diesem Rechner aus schlug fehl (Rechner nicht im
-selben WLAN wie das Gerät), daher kein Boot-Nachweis über das Netzwerk. Besonders die Hard-Sync-
-und `/colfx`-`mv`-Fixes sowie das Rotation-Pulse-Timing sollten am Gerät gegengeprüft werden.
+**Offen: Gerät braucht Neukonfiguration nach NVS-Löschung durch fehlerhaften manuellen Flash
+(2026-08-20).** Der `esptool`-Workaround für das gescheiterte `pio run -t upload` (siehe „Kürzlich
+gefixt" unten für die vollständige Post-Mortem) hat versehentlich die komplette `nvs`-Partition
+(WiFi-Zugangsdaten, Fixture-Patch, Master-Brightness, Smoothing, alle 10 Preset-/Chaser-Slots)
+gelöscht. Das Gerät läuft mit der neuen Firmware (inkl. aller acht `/ultrareview`-Fixes und dem
+`beatCount`-Fix von oben), aber ohne gespeicherte WiFi-Zugangsdaten fällt es auf den
+AP-Fallback-Modus zurück (`Moving_Head_Ctrl`/`12345678`, siehe `README.md`). **Nötige manuelle
+Schritte, bevor irgendetwas live verifiziert werden kann:** (1) Mit `Moving_Head_Ctrl` verbinden,
+(2) über `http://192.168.4.1` bzw. `http://movinghead.local` die echten WLAN-Zugangsdaten via
+Settings-Panel setzen, (3) Fixture-Patch neu eintragen, (4) alle vorher gespeicherten Presets/
+Chaser-Szenen neu anlegen — es gibt kein Backup der alten NVS-Daten. Erst danach können die acht
+`/ultrareview`-Fixes und der `beatCount`-Fix live gegengeprüft werden (besonders Hard Sync,
+`/colfx`-`mv` und das Rotation-Pulse-Timing).
 
 **2026-08-16, `/ultrareview` (Cloud-Multi-Agent):** Hauptorchestrator und
 mehrere Teil-Agenten sind an einem Account-Session-Limit gescheitert, drei
@@ -153,6 +160,29 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
+- **Post-Mortem: manueller `esptool`-Flash hat die `nvs`-Partition gelöscht (2026-08-20),
+  Guard ergänzt.** Root Cause: `pio run -t upload` scheiterte zweimal mit „No serial data
+  received" — PlatformIOs Default-Reset-Logik (`--before default-reset`) hat das Board vor dem
+  Verbindungsaufbau aktiv zurückgesetzt und damit den manuell erzwungenen Bootloader-Zustand
+  (BOOT-Taste halten) sofort wieder aufgehoben. Als Workaround wurde `esptool` direkt mit
+  `--before no-reset` aufgerufen — aber mit dem gemergten `firmware.factory.bin`
+  (Bootloader+Partitionstabelle+App als EIN zusammenhängender Blob) statt mit den einzelnen
+  Komponenten an ihren echten Offsets. `firmware.factory.bin` ist durchgehend von `0x0` bis weit
+  über `0x10000` hinaus befüllt — ein einzelner `write-flash 0x0 firmware.factory.bin`-Aufruf
+  überschreibt deshalb zwangsläufig auch die Lücke dazwischen, und genau in dieser Lücke liegt
+  die `nvs`-Partition (`0x9000`, 20K: WLAN-Zugangsdaten, Fixture-Patch, Master-Brightness,
+  Smoothing, alle 10 Preset-/Chaser-Slots) sowie `otadata` (`0xe000`). Ergebnis: Boot-Log zeigt
+  zwölf `Preferences.cpp: nvs_open failed: NOT_FOUND` direkt beim Start (eine pro Namespace —
+  `sys`, `sc1`..`sc10`, `patch`), Gerät fällt mangels gespeicherter WLAN-Zugangsdaten korrekt auf
+  den AP-Fallback zurück — kein Firmware-Bug, reiner Config-Verlust durch den fehlerhaften
+  Flash-Befehl. **Kein Backup der alten NVS-Daten vorhanden** (Partition wurde nicht vor dem
+  Flash gesichert) — Wiederherstellung nur durch manuelle Neukonfiguration, siehe „Offen" oben.
+  **Guard ergänzt:** `scripts/flash_esptool.sh` schreibt `bootloader.bin`/`partitions.bin`/
+  `boot_app0.bin`/`firmware.bin` jetzt einzeln an ihre echten, nicht-zusammenhängenden Offsets
+  (wie `pio run -t upload` es im Erfolgsfall auch tut) — die `nvs`-Lücke zwischen
+  `partitions.bin`-Ende und `boot_app0.bin`-Start bleibt dadurch unangetastet. `CLAUDE.md` warnt
+  jetzt explizit davor, den gemergten `firmware.factory.bin` manuell als einzelnen Blob zu
+  flashen, und verweist auf das Script.
 - **Acht Findings aus `/ultrareview` (Cloud-Multi-Agent) gefixt und geflasht (2026-08-20).**
   Review lief gegen `origin/main` (kein lokaler `main`-Branch vorhanden; `origin/main` ist ein
   veralteter Stand von vor dem V1/V2/V3-Merge) mit `V1`/`V2`/`V3`, `doc/`, `firmware/`,

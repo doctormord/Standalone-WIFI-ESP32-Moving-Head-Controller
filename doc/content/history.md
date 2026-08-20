@@ -2853,3 +2853,55 @@ mehreren Sekunden Wartezeit) — dieser Rechner ist offenbar nicht im
 selben WLAN wie das Gerät, kein Hinweis auf einen Firmware-Fehler. Live-
 Verhalten der acht Fixes (insbesondere Hard Sync und `/colfx`-`mv`) am
 Gerät selbst noch nicht gegengeprüft, siehe `backlog.md` → „Offen".
+
+## 2026-08-20, Fortsetzung — Root Cause für Nichterreichbarkeit gefunden: `esptool`-Workaround hat `nvs` gelöscht
+
+**Korrektur zum vorigen Eintrag:** Die vermutete Ursache für die
+fehlgeschlagene `movinghead.local`-Erreichbarkeit („dieser Rechner ist
+offenbar nicht im selben WLAN") war falsch. User meldete den echten
+Seriell-Log direkt nach dem Booten:
+
+```
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xd (SPI_FAST_FLASH_BOOT)
+[E][Preferences.cpp:47] begin(): nvs_open failed: NOT_FOUND
+[... 11 weitere identische Zeilen ...]
+```
+
+Zwölf `nvs_open`-Fehlschläge direkt beim Boot, vor jeder WLAN-Aktivität —
+das ist genau die Anzahl an `Preferences`-Namespaces, die
+`loadAllChaserScenes()`/`setup()` beim Start öffnet (`sys`, `sc1`..`sc10`,
+`patch`). **Root Cause:** Der `esptool`-Flash-Workaround vom vorigen
+Eintrag hat `.pio/build/supermini/firmware.factory.bin` — den von
+PlatformIO gemergten Blob aus Bootloader+Partitionstabelle+App, EIN
+zusammenhängendes Byte-Array von `0x0` bis weit über `0x10000` hinaus —
+mit einem einzigen `write-flash 0x0 firmware.factory.bin`-Aufruf
+geschrieben. Dieser Blob überschreibt zwangsläufig auch die Lücke
+zwischen den einzelnen Komponenten, und in genau dieser Lücke liegt die
+`nvs`-Partition (`0x9000`, 20K laut Partitionstabelle) sowie `otadata`
+(`0xe000`) — beide wurden dadurch überschrieben. Verifiziert durch
+Rücklesen von `0x9000` via `esptool read-flash`: kein reines `0xFF`
+(vollständig gelöscht), aber die Namespace-Öffnungen scheitern trotzdem
+für alle zwölf bekannten Namespaces — konsistent mit einer beschädigten/
+zurückgesetzten NVS-Struktur, nicht mit unberührten Altdaten.
+
+**Konsequenz:** WLAN-Zugangsdaten, Fixture-Patch, Master-Brightness,
+Smoothing und alle 10 Preset-/Chaser-Slots sind weg. Das Gerät läuft mit
+der neuen Firmware technisch korrekt — ohne gespeicherte WLAN-Zugangsdaten
+fällt es wie dokumentiert auf den AP-Fallback (`Moving_Head_Ctrl`/
+`12345678`) zurück, das ist kein Firmware-Bug. Kein Backup der alten
+NVS-Daten vorhanden (Partition wurde vor dem Flash nicht gesichert) —
+Wiederherstellung nur durch manuelle Neukonfiguration über den AP-Fallback
+(siehe `backlog.md` → „Offen" für die Schritte).
+
+**Guard ergänzt, damit das nicht wieder passiert:** neues
+`scripts/flash_esptool.sh` — schreibt `bootloader.bin`/`partitions.bin`/
+`boot_app0.bin`/`firmware.bin` einzeln an ihre echten, nicht
+zusammenhängenden Partitions-Offsets (identisch zu dem, was
+`pio run -t upload` im Erfolgsfall tut), statt den gemergten
+`firmware.factory.bin` als einen Blob zu schreiben — die `nvs`-Lücke
+zwischen `partitions.bin`-Ende (~`0x8c00`) und `boot_app0.bin`-Start
+(`0xe000`) bleibt dadurch unangetastet. `CLAUDE.md` warnt jetzt explizit
+vor dem gemergten-Blob-Fehler und verweist auf das Script; Script
+verwendet ausserdem `--before no-reset`, damit `esptool` den manuell
+erzwungenen Bootloader-Zustand nicht selbst wieder aufhebt (siehe voriger
+Eintrag für dieses zweite, unabhängige Problem).

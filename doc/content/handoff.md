@@ -1,9 +1,35 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-20)
-> `/ultrareview` (gegen `origin/main`, Details siehe `history.md` 2026-08-20)
-> fand acht Findings im aktuellen Code (`Audio_Engine.h`, `FX_Engine.h`,
-> `Moving_Head_Horizon.ino`, `WebAPI.h`, `data/index.html`), alle gefixt:
+> **Gerät braucht manuelle Neukonfiguration, bevor irgendetwas anderes
+> Sinn macht.** Ein `esptool`-Flash-Workaround hat versehentlich die
+> komplette `nvs`-Partition gelöscht (WLAN-Zugangsdaten, Fixture-Patch,
+> Master-Brightness, Smoothing, alle 10 Preset-/Chaser-Slots) — Details/
+> Root-Cause siehe `history.md` (2026-08-20, Fortsetzung) und `backlog.md`
+> → „Kürzlich gefixt" (Post-Mortem-Eintrag). Kein Firmware-Bug: die neue
+> Firmware läuft korrekt, fällt aber mangels gespeicherter WLAN-Daten auf
+> den AP-Fallback zurück. **Schritte:**
+> 1. Mit WiFi `Moving_Head_Ctrl` / `12345678` verbinden.
+> 2. `http://192.168.4.1` (oder `http://movinghead.local` im selben Netz)
+>    öffnen, echte WLAN-Zugangsdaten über das Settings-Panel setzen.
+> 3. Fixture-Patch neu eintragen.
+> 4. Alle vorher gespeicherten Presets/Chaser-Szenen neu anlegen — kein
+>    Backup vorhanden.
+> 5. Erst danach: die acht `/ultrareview`-Fixes und der `beatCount`-Fix
+>    von unten live gegenprüfen (besonders Hard Sync, `/colfx`-`mv`,
+>    Rotation-Pulse-Timing, 16-Beat-Movement-Sync).
+>
+> **Guard gegen eine Wiederholung ist bereits gebaut und committed:**
+> `scripts/flash_esptool.sh` flasht Bootloader/Partitionstabelle/
+> `boot_app0`/Firmware jetzt einzeln an ihren echten Offsets statt als
+> einen gemergten Blob — die `nvs`-Lücke bleibt dabei unangetastet.
+> `CLAUDE.md` warnt jetzt explizit vor dem gemergten-Blob-Fehler.
+>
+> ---
+>
+> **Was vor dem Flash-Vorfall fertig war (Code-seitig unverändert gültig):**
+> `/ultrareview` gegen `origin/main` (kein lokaler `main`, siehe
+> `history.md`) fand acht Findings im aktuellen Code, alle gefixt:
 >
 > 1. `triggerSceneFX()`/`onArtDmx()` liessen `colWasActive`/`sgWasActive`/
 >    `rgWasActive` stehen — Preset-Recall bzw. Art-Net-Übernahme konnten
@@ -23,38 +49,16 @@
 >    `data/index.html` zu einem `syncFx()`-Helper zusammengefasst.
 >
 > `functions.md` für die geänderten Routen-Parameter aktualisiert.
-> `pio run` + `pio run -t buildfs` beide `[SUCCESS]`.
+> `pio run` + `pio run -t buildfs` beide `[SUCCESS]`. Alles **committed und
+> gepusht** (`future` == `origin/future`).
 >
-> **Geflasht** — aber nicht über `pio run -t upload` (scheiterte zweimal
-> mit „No serial data received", weil PlatformIOs Default-Reset-Logik das
-> Board vor der Verbindung zurücksetzte und damit den manuell erzwungenen
-> Bootloader-Zustand aufhob). Stattdessen `esptool` direkt mit
-> `--before no-reset` aufgerufen — falls das nächste Mal wieder manuell
-> geflasht werden muss, siehe `history.md` 2026-08-20 für den exakten
-> Befehl (Firmware auf `0x0`, LittleFS auf `0x290000`).
->
-> **Noch NICHT verifiziert:**
-> - Netzwerk-Reachability-Check von der Entwicklungsmaschine aus schlug
->   fehl (`movinghead.local` nicht erreichbar — vermutlich anderes WLAN,
->   kein Firmware-Hinweis). Boot-Erfolg über HTTP noch nicht bestätigt.
-> - Live-Verhalten aller acht Fixes am echten Gerät, besonders Hard Sync
->   und der `/colfx`-Farbglitch-Fix.
-> - Der `beatCount`-Movement-Sync-Fix und die neuen FX-Defaults aus der
->   vorigen Session (2026-08-19) liefen im selben Flash mit — ebenfalls
->   noch nicht live nachgetestet (16 Beats/120 BPM sollte jetzt sauber
->   rotieren, Movement-FX-Panel sollte mit 10 %/1000 ms öffnen).
->
-> **Noch NICHT committed** — steht als nächstes an, danach `future` gegen
-> `origin/future` push-abgleichen.
->
-> **Nächste Schritte (Auswahl, keine feste Reihenfolge vorgegeben):**
-> 1. Alle oben genannten offenen Punkte am echten Gerät/im Browser
->    nachtesten (auf demselben WLAN wie das Gerät), dann committen + pushen.
-> 2. Zeit-Rampen für den Shake ("wa-wa-wosh"), falls weiterhin gewünscht.
-> 3. Klären, ob ein separates Followspot-Joystick-Profil gewünscht ist.
-> 4. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
-> 5. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
-> 6. Danach frei: zurückgestellte Restrukturierungen, Preset-Engine-Split,
+> **Nächste Schritte (nach der Neukonfiguration oben, keine feste
+> Reihenfolge):**
+> 1. Zeit-Rampen für den Shake ("wa-wa-wosh"), falls weiterhin gewünscht.
+> 2. Klären, ob ein separates Followspot-Joystick-Profil gewünscht ist.
+> 3. Genauere Beschreibung/Screenshot für den MAX-Slider-Layout-Bug.
+> 4. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
+> 5. Danach frei: zurückgestellte Restrukturierungen, Preset-Engine-Split,
 >    ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder entfernen,
 >    übrige Tech-Debt-Punkte.
 
@@ -65,23 +69,27 @@ inklusive eines offiziellen Herstellerdatenblatts als Referenz
 (`mapping_sheds_160w_3in1_gobo.md`), einer erfolgreichen, mehrstufigen
 interaktiven Hardware-Kalibrierung für den Gobo-Shake, und — neu in dieser
 Session — dem ersten vollständigen `/ultrareview`-Durchlauf gegen den
-realen aktuellen Quellcode (nicht gegen den veralteten `origin/main`-Diff
-mit alten V1/V2/V3-Snapshots). Zielhardware: **ESP32-C3 Supermini**
-(Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl
-lokal als auch auf GitHub (`future`-Branch) git-versioniert. Gerät wurde
-in dieser Session neu geflasht (siehe oben); IP/mDNS-Erreichbarkeit von
-der Entwicklungsmaschine aus aktuell nicht bestätigt.
+realen aktuellen Quellcode. Zielhardware: **ESP32-C3 Supermini** (Fixture:
+SHEHDS 160W 3in1 GOBO / „Pro Beam 280"). Repository ist sowohl lokal als
+auch auf GitHub (`future`-Branch) git-versioniert und aktuell deckungsgleich
+mit `origin/future`. **Gerät selbst ist aktuell nicht konfiguriert** — läuft
+mit korrekter neuer Firmware, aber ohne WLAN-Zugangsdaten/Patch/Presets
+(siehe Banner oben) im AP-Fallback-Modus (`Moving_Head_Ctrl`).
 
 ## Was in dieser Session (2026-08-20) gemacht wurde
 
-`/ultrareview` gegen `origin/main` (mit Altlasten/Docs/Vendor-Binaries
-ausgeschlossen) lief nach zwei fehlgeschlagenen Versuchen (Session-Limit,
-Rechner-Sleep) beim dritten Mal durch und fand acht Findings im aktuellen
-Code. Alle acht gefixt (siehe Banner oben und `history.md` für Details je
-Fix), `functions.md` für die geänderten Routen aktualisiert, kompiliert
-(`pio run`, `pio run -t buildfs`) und auf das echte Gerät geflasht (via
-direktem `esptool`-Aufruf, da `pio run -t upload` am Reset-Handling
-scheiterte). Details: `history.md` (2026-08-20).
+1. `/ultrareview` gegen `origin/main` (Altlasten/Docs/Vendor-Binaries
+   ausgeschlossen) lief nach zwei fehlgeschlagenen Versuchen beim dritten
+   Mal durch, fand acht Findings — alle gefixt, `functions.md`
+   aktualisiert, kompiliert, committed, gepusht.
+2. Beim Versuch, das Gerät zu flashen, scheiterte `pio run -t upload`
+   zweimal am Reset-Handling. Der `esptool`-Workaround dafür hat
+   versehentlich die `nvs`-Partition gelöscht (siehe Banner oben) —
+   Post-Mortem in `history.md`/`backlog.md`, Guard-Script
+   `scripts/flash_esptool.sh` gebaut und `CLAUDE.md` entsprechend ergänzt,
+   beides committed.
+
+Details zu allem: `history.md` (mehrere Einträge vom 2026-08-20).
 
 ## Doku-Hinweis
 
