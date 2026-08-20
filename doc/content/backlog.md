@@ -15,25 +15,6 @@ dauerhaft bei der Hälfte hängen bleiben. Falls immer noch zu langsam: weitere 
 nötig (z. B. `BPM_DEVIATION_TOLERANCE_DIVISOR` lockern oder `MIN_BEAT_INTERVAL_MS`/Schwellwert-
 Empfindlichkeit prüfen), nicht blind vorwegnehmen.
 
-**Offen: Movement-„Figure 8"-Optik bei zentrierter Pan/Tilt-Position (127/127) — vermutlich
-Projektions-/Blickwinkel-Artefakt, kein Code-Bug, aber unbestätigt (2026-08-20).** User meldete
-live: „Circle"-Pattern bei Pan/Tilt 127/127 zeigt eine Acht statt eines Kreises, unabhängig vom
-Trigger-Modus (Internal Timer und Global BPM Sync gleichermaßen betroffen — schließt den an
-diesem Tag gefixten `beatCount`-Bug als Ursache aus, siehe „Kürzlich gefixt"), reproduzierbar bei
-mehreren Size-%-Werten (13–30 %), verschwindet beim Wegbewegen von dieser Pan/Tilt-Position.
-`getValues()` in `FX_Engine.h` wurde Zeile für Zeile gegengerechnet (Rotation/Invertierung/Skalierung
-sind alle formerhaltende Transformationen, `case 1: x=sinf(p), y=cosf(p)` ist ein exakter Kreis),
-Patch geprüft (ein Fixture, Phase 0, keine Invertierung), `type`-Wert einfach und eindeutig
-verdrahtet (ein Schreib-, ein Lesepfad). Aus zwei vom User gelieferten Videos (`ffmpeg`-Frames
-extrahiert, per `qlmanage`/PIL analysiert) zeigt sich: Video ist Nahaufnahme des rotierenden
-Fixture-Kopfs selbst (Pan 540°/Tilt 270°, verschachtelte Doppelachse), nicht ein projizierter
-Lichtpunkt auf einer entfernten Wand. Ein mathematisch perfekter Kreis in (Pan-Winkel,
-Tilt-Winkel)-Raum sieht für einen Beobachter seitlich der Rotationsachsen generell **nicht** wie
-ein Kreis aus — reine 3D-Projektionsgeometrie, unabhängig von Software. **Nächster Schritt (an
-User delegiert):** Fixture auf eine entfernte Wand/Boden richten, projizierten Lichtpunkt (nicht
-das Gehäuse) etwa entlang der Strahlrichtung filmen. Bleibt es dort eine Acht, ist es ein echter
-Bug und braucht neue Untersuchung; wird es ein sauberer Kreis, war es das Projektions-Artefakt.
-
 **Offen: Mic-Sensitivity-Bereich ggf. zu grob (Noise-Floor dominiert bei niedrigem
 `dynThreshold`).** Live per curl bestätigt, dass die Sensitivity den Threshold tatsächlich
 verschiebt (`sens=0` → `th≈100`, `sens=100` → `th≈60`, bei stabilem Ambient-Rauschen) — die
@@ -162,6 +143,42 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
+- **Movement-„Figure 8"-Optik bei zentrierter Pan/Tilt-Position — Root Cause bestätigt: echter
+  Hardware-Encoder-Defekt dieser konkreten Fixture-Einheit auf der Tilt-Achse, keine Kalibrierungs-
+  frage, softwareseitig gefixt (2026-08-20, Fortsetzung).** Live per Video/Fixture-eigenem
+  Sensor-Monitor-Menü verifiziert: Tilt-Reaktion ist unterhalb von DMX 16-Bit 32768 (8-Bit Tilt
+  ~127/128) nicht-monoton — ein sauberer Sinus-Sweep über diesen Punkt faltet sich am realen
+  Gerät zu einer sich selbst kreuzenden Acht zusammen, statt weiterzulaufen. Ausgeschlossen als
+  Ursachen: `beatCount`/Trigger-Modus (tritt bei Internal Timer identisch wie bei BPM-Sync auf),
+  Projektionsgeometrie (User filmte den projizierten Lichtpunkt direkt, nicht das Gehäuse —
+  bleibt eine Acht), Mirror/Invert-Menüeinstellungen am Fixture (alle vom User durchgetestet,
+  keine Wirkung), und **Kalibrierung** — das Fixture hatte einen „Tilt Calibration"-Wert von
+  `-037` im (undokumentierten, aber ohne Passwort erreichbaren) Kalibrierungsmenü; live auf `0`
+  gesetzt und mit softwareseitig deaktiviertem Fix erneut getestet (A/B-Test), Ergebnis blieb
+  identisch eine Acht — zusätzlich zeigte sich, dass der Wert `-037` tatsächlich gebraucht wurde
+  (Fixture zeigt bei `0` nicht mehr korrekt gerade nach oben), also eine echte, notwendige
+  Kalibrierung war, nicht die Fehlerursache. Zusätzliche Bestätigung über das Fixture-eigene
+  „Sensor Monitor"-Diagnosemenü (per Video eingesehen): „Tilt Codewheel Step" (der interne
+  Encoder-Zählerstand der Tilt-Achse) blieb über einen längeren Zeitraum praktisch eingefroren,
+  während „Pan Codewheel Step" im selben Zeitraum stetig weiterlief — das Fixture meldet selbst,
+  dass sein Tilt-Motor/-Encoder Positionsänderungen in diesem Bereich nicht sauber verfolgt.
+  **Fix (`FX_Engine.h`, `MovementEngine::getValues()`):** Statt einzelne Ausgabe-Samples am
+  Übergangspunkt zu spiegeln (frühere Zwischenversion — vermied zwar die Kreuzung, faltete die
+  Form aber zu einer flachen Kuppel/Halfpipe zusammen, von zwei Live-Tests per Video/`ffmpeg`-
+  Trajektorien-Sampling bestätigt), wird jetzt das **Pattern-Zentrum** der Tilt-Achse pro Frame so
+  weit angehoben, dass der volle Bewegungsradius des aktuellen Patterns die Problemzone
+  (`< 32768`) gar nicht erst erreicht — die Form bleibt dadurch ein echter, unverzerrter Kreis,
+  nur automatisch etwas höher zentriert als der angeforderte Rohwert. `maxTiltExcursion` ist eine
+  konservative Schranke (`currentSize * 32767 * (|sin(rot)| + |cos(rot)|)`), die für beliebige
+  `rot`-Werte gilt, nicht nur den getesteten Fall `rot=0`. Bewusst nur im Movement-FX-Pfad
+  angewendet, nicht auf manuelle/Joystick-Tilt-Steuerung (dort gibt es keine Formgebung zu
+  schützen, ein automatisches Verschieben würde nur der direkten User-Eingabe entgegenwirken).
+  Alle drei Versionen (unkorrigiert, Sample-Spiegelung, Zentrum-Verschiebung) live per Trajektorien-
+  Sampling verifiziert — dafür neue Debug-Felder `op`/`ot` in `/api/get_dmx` ergänzt (das reale,
+  animierte Pattern-Output pro Frame; `cp`/`ct` zeigen nur das Zentrum, nie die Animation selbst).
+  **Kein echter Fix möglich ohne Fixture-Reparatur/Encoder-Neukalibrierung durch den Hersteller**
+  — dieser Software-Workaround ist die bestmögliche Abhilfe von unserer Seite.
+
 - **Gerät nach NVS-Löschung erfolgreich neu konfiguriert und seit dieser Session dauerhaft
   erreichbar (2026-08-20, Fortsetzung).** Die im vorherigen Eintrag beschriebene manuelle
   Neukonfiguration (WLAN/Patch/Presets über den AP-Fallback) wurde durchgeführt — das Gerät ist
@@ -233,9 +250,9 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   Alle sieben Code-Fixes mit `pio run` + `pio run -t buildfs` gegenkompiliert, Firmware und
   Filesystem mehrfach per `pio run -t upload`/`-t uploadfs` geflasht und live per `curl`
   gegengeprüft (u. a. `Cache-Control: no-store`-Header, `sa:3` im `/api/audio_debug`-Response,
-  `xb:1`-Treffer bei Ambient-Rauschen). Browser-seitige Live-Bestätigung durch den User für die
-  Movement-Sync- und AUDIO-Tab-Fixes steht noch aus (siehe „Offen" oben für den einzigen noch
-  unbestätigten Punkt, die Figure-8-Optik).
+  `xb:1`-Treffer bei Ambient-Rauschen). Die Figure-8-Optik (damals als offen markiert) wurde in
+  dieser Session weiterverfolgt und als echter Hardware-Defekt bestätigt und gefixt — siehe
+  eigener Eintrag oben.
 
 - **Post-Mortem: manueller `esptool`-Flash hat die `nvs`-Partition gelöscht (2026-08-20),
   Guard ergänzt.** Root Cause: `pio run -t upload` scheiterte zweimal mit „No serial data

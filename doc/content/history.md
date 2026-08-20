@@ -3033,5 +3033,86 @@ gegenkompiliert, Firmware und Filesystem mehrfach per `pio run -t
 upload`/`-t uploadfs` geflasht (normaler Auto-Reset funktionierte diesmal
 durchgehend, kein `scripts/flash_esptool.sh`-Workaround nötig) und live
 per `curl` gegengeprüft. Details siehe `backlog.md` → „Kürzlich gefixt"
-für die vollständige, technische Fix-Liste und „Offen" für den einzigen
-noch unbestätigten Punkt (Figure-8, wartet auf den Wand-Projektions-Test).
+für die vollständige, technische Fix-Liste.
+
+## 2026-08-20, vierte Fortsetzung — Figure-8 als echter Hardware-Encoder-Defekt bestätigt und softwareseitig gefixt
+
+Der Wand-Projektions-Test aus dem vorigen Eintrag lieferte ein
+eindeutiges Ergebnis: User filmte den **projizierten Lichtpunkt direkt**
+(nicht mehr das Gehäuse) — bleibt bei Pan/Tilt 127/127 eine sich selbst
+kreuzende Acht. Damit als Ursache ausgeschlossen: die zuvor vermutete
+3D-Projektions-/Blickwinkelgeometrie. User beschrieb es präzise: „es ist
+quasi so als müsste die zweite Hälfte des Kreises irgendwie anders herum
+kodiert werden … als ob eine Richtung des Kreises dann kippt" — exakt die
+Beschreibung einer nicht-monotonen Tilt-Antwort.
+
+**Live-Verifikation mit echten Telemetriedaten statt Vermutung.** Neue
+Debug-Felder `op`/`ot` in `/api/get_dmx` ergänzt (`Moving_Head_Horizon.ino`
+`liveOutPan0`/`liveOutTilt0`, gesetzt im Fixture-Loop nach `getValues()`)
+— die bestehenden `cp`/`ct`-Felder zeigen nur das *Zentrum* des Patterns,
+nie die animierte Position, ein erster Sample-Versuch lief deshalb ins
+Leere (dauerhaft `32512`). Mit den neuen Feldern per `curl`-Loop (10Hz,
+~12s) samplet und mit `matplotlib` geplottet (dafür lokal via
+`pip install`/bereits vorhandenes `matplotlib` genutzt): die vom ESP32
+tatsächlich gesendeten DMX-Werte sind ein **mathematisch perfekter
+Kreis** — glatt, geschlossen, keine Diskontinuität, keine Anomalie exakt
+an der 32768-Grenze. Pan/Tilt sind korrekt 90°-phasenverschobene
+Sinuskurven. Das beweist zweifelsfrei: der Bug liegt nicht in der
+Pan/Tilt-Mathematik (`getValues()`), sondern zwischen dem DMX-Signal und
+der tatsächlichen Bewegung — also im Fixture selbst.
+
+**Kalibrierung als Ursache geprüft und ausgeschlossen.** User fand das
+Fixture-eigene Kalibrierungsmenü (LCD-Display, kein Passwort nötig für
+diese Ebene) — zeigte `Tilt Calibration: -037` (ungewöhnlich groß im
+Vergleich zu Pan `+002`, Colour `+014`, Gobo `+004` etc.). Live auf `0`
+gesetzt. Um das sauber zu testen, wurde der Software-Fix (siehe unten)
+temporär deaktiviert (`FX_Engine.h`, `TILT_FOLD_FIX_ENABLED`-Flag,
+inzwischen wieder entfernt) und derselbe rohe Kreis erneut geflasht und
+per Telemetrie bestätigt (identischer Werte-Range wie vor jedem Fix).
+Ergebnis am realen Fixture: **weiterhin eine Acht** — plus eine wichtige
+Nebenbeobachtung: das Fixture zeigt bei Tilt-Kalibrierung `0` nicht mehr
+korrekt gerade nach oben. `-037` war also eine echte, gebrauchte
+Kalibrierung für die Nulllage, nicht die Fehlerursache — Kalibrierung
+damit als Erklärung ausgeschlossen.
+
+**Fixture-eigenes Diagnosemenü als dritte, unabhängige Bestätigung.**
+User schickte ein Video des „Sensor Monitor"-Menüs (Hall-Sensoren,
+Pan/Tilt-Codewheel-Status, ohne Passwort erreichbar) während der Kreis
+lief: `Pan Codewheel Step` zählt im Video kontinuierlich hoch (0192 →
+0238 über die Aufnahme), `Tilt Codewheel Step` bleibt über einen langen
+Abschnitt praktisch eingefroren (`0040`–`0042`), bevor er sich langsam
+wieder ändert. Das Fixture meldet damit selbst, dass sein Tilt-
+Encoder/-Motor Positionsänderungen in diesem Bereich nicht sauber
+verfolgt — ein echter, physischer Encoder-/Motor-Defekt dieser konkreten
+Einheit, kein Firmware- oder Kalibrierungsproblem, nicht durch das
+Fixture-Menü behebbar (das „Advanced"-Menü mit möglicher
+Encoder-Neukalibrierung ist zusätzlich Passwort-geschützt, User kennt das
+Passwort nicht).
+
+**Software-Workaround, zwei Iterationen.** Erste Version: einzelne
+Ausgabe-Samples unterhalb der Fold-Grenze (32768) wurden am Grenzpunkt
+gespiegelt (`tOut = 2*32768 - tOut`) — vermied zwar die Selbstkreuzung
+(per Telemetrie bestätigt), faltete die Kreisform aber zu einer flachen
+Kuppel/„Halfpipe" zusammen (vom User live beobachtet: „bewegt sich wie
+ein Smiley oder eine Halfpipe hin und her"), da alle Werte unterhalb der
+Grenze auf denselben Bereich oberhalb zurückgeworfen wurden. Zweite,
+bessere Version (jetzt aktiv): statt einzelner Samples wird das
+**Pattern-Zentrum** in `MovementEngine::getValues()` (`FX_Engine.h`) pro
+Frame so weit nach oben verschoben, dass der volle Bewegungsradius des
+aktuellen Patterns (`currentSize * 32767 * (|sin(rot)| + |cos(rot)|)`,
+eine konservative Schranke für beliebige Rotation) die Problemzone gar
+nicht erst erreicht — die Form bleibt dadurch ein echter, unverzerrter
+Kreis, nur automatisch etwas höher zentriert als der angeforderte
+Rohwert. Per Telemetrie-Sampling verifiziert: Tilt-Range bleibt
+durchgehend oberhalb 32768, berührt die Grenze nur exakt am tiefsten
+Punkt. Bewusst nur für Movement-FX aktiv, nicht für manuelle/Joystick-
+Tilt-Steuerung (dort gibt es keine Formgebung zu schützen).
+
+Root Cause jetzt vollständig verstanden und dokumentiert (siehe
+`mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 für den vollständigen
+technischen Befund), Fix aktiv und geflasht. Kein echter Fix ohne
+Fixture-Reparatur/Encoder-Neukalibrierung durch den Hersteller möglich —
+dieser Software-Workaround ist die bestmögliche Abhilfe von unserer
+Seite. `pio run` gegenkompiliert, Firmware mehrfach per `pio run -t
+upload` geflasht, Ergebnis jeweils live per `curl`-Telemetrie-Sampling
+gegengeprüft (kein Rateversuch an irgendeiner Stelle dieser Untersuchung).

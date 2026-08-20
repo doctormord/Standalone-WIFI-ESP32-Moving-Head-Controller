@@ -63,6 +63,27 @@ Kanalanzahl und -reihenfolge waren schon immer korrekt.
 ### CH3/CH4 — Pan/Tilt
 `0–255` (8-Bit-Grobwert), Pan 540°, Tilt 270°. Feinwerte auf CH15/CH16.
 
+**Bekannter Hardware-Defekt dieser konkreten Einheit — Tilt nicht-monoton um DMX ~127/128
+(16-Bit 32768), live bestätigt 2026-08-20.** Ein sauberer, mathematisch korrekter Sinus-Sweep
+über CH4 durch diesen Punkt lässt den Tilt-Motor am realen Gerät die Richtung falsch
+interpretieren — aus einem programmierten Kreis wird eine sich selbst kreuzende Acht.
+Bestätigt über drei unabhängige Wege: (1) User filmte den projizierten Lichtpunkt direkt (nicht
+das Gehäuse) — bleibt eine Acht, damit ausgeschlossen als Projektions-/Blickwinkel-Artefakt; (2)
+alle Mirror/Invert-Menüeinstellungen am Fixture getestet, keine Wirkung; (3) Fixtures eigenes
+„Tilt Calibration"-Menü stand auf `-037` — live auf `0` gesetzt (macht den geraden Nach-oben-
+Zeigen-Referenzpunkt sichtbar falsch, war also eine echte, gebrauchte Kalibrierung, nicht die
+Ursache) und erneut getestet: Fehler bleibt identisch. Zusätzlich zeigt das fixture-eigene
+„Sensor Monitor"-Diagnosemenü (siehe „Menüs" unten) den `Tilt Codewheel Step`-Zähler über
+längere Zeiträume praktisch eingefroren, während `Pan Codewheel Step` im selben Zeitraum stetig
+weiterläuft — das Fixture meldet selbst einen Tracking-Fehler seines Tilt-Encoders/-Motors in
+diesem Bereich. **Nicht durch Software oder Fixture-Menü behebbar**, nur durch
+Encoder-Neukalibrierung/-Reparatur durch den Hersteller. Software-Workaround (nicht der eigentliche
+Fix, nur bestmögliche Schadensbegrenzung): `MovementEngine::getValues()` in `FX_Engine.h`
+verschiebt das Tilt-Zentrum eines laufenden Patterns automatisch so weit nach oben, dass dessen
+voller Bewegungsradius die Problemzone (`< 32768`) gar nicht erst erreicht — die Form bleibt ein
+echter Kreis, nur automatisch etwas höher zentriert als angefordert. Nur für Movement-FX aktiv,
+nicht für manuelle/Joystick-Tilt-Steuerung.
+
 ### CH5 — Speed
 `0–255`, „Pan/Tilt speed, Pan/Tilt time" — das Handbuch spezifiziert
 **keinen** exakten Split-Punkt zwischen den beiden Modi (typisch bei

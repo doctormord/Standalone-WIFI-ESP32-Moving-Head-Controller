@@ -223,6 +223,20 @@ Parametric pan/tilt pattern generator (circles, figure-8s, etc.).
   fixturePhase`, scales by `currentSize`, applies the `rot` rotation matrix,
   applies inversion, and offsets from `centerP`/`centerT`.
 
+  Before that final offset, the tilt axis gets one more adjustment: a
+  confirmed hardware defect on the deployed fixture unit (its tilt
+  response is non-monotonic below 16-bit DMX 32768, ~8-bit tilt 127/128 —
+  see `mapping_sheds_160w_3in1_gobo.md` for the full diagnosis, ruled out
+  as a calibration/projection/software issue) means any pattern whose full
+  tilt excursion would dip below that point comes out as a self-crossing
+  figure-8 on the real fixture instead of the shape actually requested.
+  `centerT` is shifted up (never down) by just enough that the pattern's
+  conservative worst-case tilt swing (`currentSize * 32767 * (|sin(rot)| +
+  |cos(rot)|)`) never needs to cross 32768 — the shape comes out correct,
+  just centered a bit higher than the raw `centerT` argument when that
+  argument alone would have crossed the fold. Only applied here (Movement
+  FX), not to manual/joystick tilt.
+
 ---
 
 ## `Audio_Engine.h`
@@ -294,7 +308,7 @@ Query parameters are read via `server.arg(name)`; parameters marked
 |---|---|---|---|
 | `/` | GET | — | Serves the SPA (`index.html` from LittleFS), or the setup-mode upload page if no GUI has been installed yet. |
 | `/upload_gui` | POST (multipart) | `update` (file) | Uploads a new `index.html` to LittleFS (first-boot provisioning path); reboots the device. |
-| `/api/get_dmx` | GET | — | Full state snapshot as JSON: all 18 DMX channel values, pan/tilt (`cp`/`ct`), BPM, active preset, chaser-active flag, preset names, dimmer-smoothing/fade/master-brightness/dip/hw-audio state, and every FX engine's complete parameter set. Polled by the frontend every ~2s. |
+| `/api/get_dmx` | GET | — | Full state snapshot as JSON: all 18 DMX channel values, pan/tilt (`cp`/`ct`), BPM, active preset, chaser-active flag, preset names, dimmer-smoothing/fade/master-brightness/dip/hw-audio state, and every FX engine's complete parameter set. Polled by the frontend every ~2s. Also includes `op`/`ot`: fixture 0's actual live Movement FX output (post-`getValues()`, what really goes out over DMX) — unlike `cp`/`ct`, which are only the pattern's *center* and stay static while an FX animates around them. Debug fields, added 2026-08-20 to diagnose the tilt fold defect (see `MovementEngine::getValues()` above) by sampling the real output trajectory instead of guessing at it. |
 | `/api/state` | GET | — | Compact live state as JSON: firmware version (`fw`, from `FW_VERSION`), active preset, BPM, chaser-active, hw-audio-enabled, fade-out flag, one-shot audio trigger flags (`trB`/`trM`/`trH`, cleared after read), preset names. Polled by the frontend every ~500ms. |
 | `/api/patch` | GET | — | JSON array of the current fixture patch (`addr`, pan/tilt invert, phase) for each patched fixture. |
 | `/save` | GET | `slot` (1–10), `n` (preset name) | Snapshots the current live DMX channels + all FX engine parameters into `chaserScenes[slot-1]` and persists it (plus `n` as the preset name) to NVS namespace `"sc<slot>"`. Reloads all scenes afterward. |

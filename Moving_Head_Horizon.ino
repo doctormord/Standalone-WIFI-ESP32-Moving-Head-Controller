@@ -80,6 +80,12 @@ const float moveSyncBeats[8] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0};
 bool bumpBlackout = false; bool bumpStrobeF = false; bool bumpStrobe50 = false; bool bumpBlinder = false;
 int activePresetSlot = 0;
 int centerPan16 = 32767; int centerTilt16 = 32767;
+// Fixture 0's actual per-frame Movement FX output (post-getValues(), what really goes out over
+// DMX) -- centerPan16/centerTilt16 alone only show the *center* the pattern orbits, not its live
+// animated position, and outDmx[] itself is local to updateEngines()/never exposed via HTTP.
+// Debug-only, added 2026-08-20 to actually observe the live pan/tilt trajectory instead of
+// guessing at it (see /api/get_dmx's "op"/"ot" fields).
+int liveOutPan0 = 32767, liveOutTilt0 = 32767;
 
 float joyInputX = 0.0f, joyInputY = 0.0f;
 float joySmoothX = 0.0f, joySmoothY = 0.0f;
@@ -487,6 +493,10 @@ void updateEngines(unsigned long now) {
       for(int c=1; c<=18; c++) outDmx[base + c] = dmxData[c]; 
       int pOut = centerPan16, tOut = centerTilt16;
       if (moveFX.active) moveFX.getValues(centerPan16, centerTilt16, fixtures[f].phase, fixtures[f].invP, fixtures[f].invT, pOut, tOut); else { if (fixtures[f].invP) pOut = 65535 - pOut; if (fixtures[f].invT) tOut = 65535 - tOut; }
+      // The tilt fold-avoidance fix now lives inside MovementEngine::getValues() itself (shifts
+      // the pattern's center instead of reflecting individual samples -- see FX_Engine.h for why).
+      // Not applied here to manual/joystick tilt, which has no pattern shape to protect.
+      if (f == 0) { liveOutPan0 = pOut; liveOutTilt0 = tOut; }
       outDmx[base + CH_PAN] = pOut >> 8; outDmx[base + CH_PAN_FINE] = pOut & 0xFF; outDmx[base + CH_TILT] = tOut >> 8; outDmx[base + CH_TILT_FINE] = tOut & 0xFF;
       if (bumpBlackout) outDmx[base + CH_DIMMER] = 0; else if (bumpBlinder) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 255; outDmx[base + CH_COLOR] = 0; } else if (bumpStrobeF) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 247; } else if (bumpStrobe50) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 120; }
   }

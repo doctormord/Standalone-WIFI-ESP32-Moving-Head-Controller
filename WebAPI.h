@@ -70,6 +70,10 @@ void setupAPI() {
     json += "\"1\":" + String((int)dimSmoothTarget) + ",";
     for (int i = 2; i <= 18; i++) json += "\"" + String(i) + "\":" + String(dmxData[i]) + ",";
     json += "\"cp\":" + String(centerPan16) + ",\"ct\":" + String(centerTilt16) + ",\"bpm\":" + String(globalBPM) + ",\"pr\":" + String(activePresetSlot) + ",\"chA\":" + String(chaserActive ? 1 : 0) + ",";
+    // Fixture 0's actual live Movement FX output -- cp/ct above are only the pattern's *center*,
+    // not its animated position. Debug fields, added 2026-08-20 to diagnose a reported "circle
+    // looks like a figure-8" issue live instead of guessing at it.
+    json += "\"op\":" + String(liveOutPan0) + ",\"ot\":" + String(liveOutTilt0) + ",";
     json += "\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "],";
     json += "\"dSm\":" + String(dimSmoothVal) + ",\"fO\":" + String(fadeStateOut ? 1 : 0) + ",";
     json += "\"mB\":" + String(masterBrightness) + ",";
