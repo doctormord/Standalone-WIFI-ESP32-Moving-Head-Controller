@@ -63,15 +63,17 @@ Kanalanzahl und -reihenfolge waren schon immer korrekt.
 ### CH3/CH4 — Pan/Tilt
 `0–255` (8-Bit-Grobwert), Pan 540°, Tilt 270°. Feinwerte auf CH15/CH16.
 
-**Bekannter physischer Defekt dieser konkreten Einheit — Tilt-Mechanik hakt bei einem festen
-absoluten Winkel (~DMX-Tilt 127), NICHT im Software/Encoder ansteuerbar, kein Fix möglich
-(live untersucht 2026-08-20).** Ein Movement-FX-Kreis, dessen Bahn durch diesen Winkel läuft,
-wird am realen Gerät zu einer sich selbst kreuzenden Acht statt eines Kreises — bestätigt am
-projizierten Lichtpunkt (nicht nur am Gehäuse), unabhängig von Geschwindigkeit (auch sehr
-langsam getestet) und unabhängig vom Trigger-Modus. Verschwindet vollständig, sobald das
-Pattern-Zentrum diesen Winkel nicht mehr kreuzt.
+**„Kreis wird zur Acht" bei Movement-FX um den Zenit-Punkt (~DMX-Tilt 32767/16-Bit,
+~127/8-Bit) — kein Defekt dieser Einheit, sondern eine bekannte, branchenweite
+Eigenschaft jedes 2-Achsen-Pan/Tilt-Movers (live untersucht 2026-08-20, Ursache
+recherchiert und Fix implementiert 2026-08-21).** Ein Movement-FX-Kreis, dessen Bahn
+durch diesen Winkel läuft, wurde am realen Gerät zu einer sich selbst kreuzenden Acht
+statt eines Kreises — bestätigt am projizierten Lichtpunkt (nicht nur am Gehäuse),
+unabhängig von Geschwindigkeit (auch sehr langsam getestet) und unabhängig vom
+Trigger-Modus. Verschwand vollständig, sobald das Pattern-Zentrum diesen Winkel nicht
+mehr kreuzte.
 
-**Root-Cause-Verlauf (drei Hypothesen geprüft, zwei verworfen):**
+**Root-Cause-Verlauf (vier Hypothesen geprüft):**
 1. *Kalibrierung* — Fixture-eigenes „Tilt Calibration" stand auf `-037`; live auf `0` gesetzt und
    erneut getestet, Fehler blieb identisch (und `0` machte zusätzlich die Geradeaus-nach-oben-
    Referenz sichtbar falsch — `-037` war also die echte, gebrauchte Kalibrierung). **Verworfen.**
@@ -88,20 +90,53 @@ Pattern-Zentrum diesen Winkel nicht mehr kreuzt.
    absichtlicher User-Positionierung im Weg (z. B. ein „Clover"-Pattern, das bewusst über diesen
    Punkt hinaus fahren soll).
 3. *Physischer Defekt an einem festen absoluten Winkel, nur beim tatsächlichen Durchfahren
-   ausgelöst* — **aktuell plausibelste Erklärung, nicht weiter widerlegt.** Erklärt alle
-   Beobachtungen konsistent: eine **statisch gehaltene** Position (Schritt 2 oben) löst nichts
-   aus, weil der Mechanismus dabei nie durch den Winkel *rotiert* — nur eine kontinuierliche
-   Bewegung, die durch genau diesen Punkt fährt, tut das (unabhängig von der Geschwindigkeit, was
-   zu einem festen mechanischen Fehler passt — z. B. Zahnrad-/Riemen-Defekt an einer festen
-   Position — statt zu einem geschwindigkeitsabhängigen Tracking-Problem). Nicht durch DMX-
-   Werte-Wahl umgehbar, wenn ein Pattern absichtlich durch diesen Winkel fahren soll — nur durch
-   Reparatur/Neukalibrierung durch den Hersteller behebbar.
+   ausgelöst* — Zwischenstand nach Sweep 2, erklärte alle bis dahin gesammelten Beobachtungen,
+   blieb aber beim genauen Mechanismus vage. **Durch Hypothese 4 ersetzt/verfeinert**, siehe
+   unten — keine Auflösung durch Reparatur nötig, weil es sich als kein Defekt herausstellte.
+4. *Gimbal-Pol-Singularität (bestätigt, branchenweit bekanntes Phänomen)* — Web-Recherche
+   (2026-08-21) fand praktisch identische Bug-Reports in mehreren unabhängigen
+   Lighting-Foren: [QLC+](https://www.qlcplus.org/forum/viewtopic.php?t=7497) („head doesnt
+   move in circle but rather a figure 8"), [Avolites](https://forum.avolites.com/viewtopic.php?t=811)
+   ( „When pointing straight up/down this will indeed result in an 8 figure"),
+   [grandMA2](https://forum.malighting.com/forum/thread/63918-pan-tilt-circle-effect-question/)
+   und [DMXControl Projects](https://forum.dmxcontrol-projects.org/thread/3092-movinghead-bewegungsszene-kreis/)
+   (deutsch, mit expliziter geometrischer Herleitung). **Mechanismus:** ein Pan/Tilt-Mover ist
+   ein 2-Achsen-Gimbal. Am Zenit (Beam zeigt exakt entlang der Pan-Rotationsachse) wird Pan
+   geometrisch degeneriert — jeder Pan-Wert erzeugt dieselbe physische Richtung („Gimbal Lock",
+   dieselbe Mathematik wie die Pol-Singularität in Kugelkoordinaten). Ein per unabhängigem
+   Sinus/Cosinus auf Pan/Tilt gezeichneter Kreis (das macht praktisch jeder Konsolen-Kreisgenerator,
+   inkl. unserer `MovementEngine::getValues()`) ist nur dann ein echter Kreis im physischen Raum,
+   wenn er den Pol nicht kreuzt — kreuzt er ihn, faltet sich dieselbe DMX-Bahn zu einer Acht.
+   Erklärt lückenlos alle bisherigen Beobachtungen: DMX-Telemetrie zeigte einen „perfekten Kreis"
+   (stimmt — im DMX-Wertebereich ist er das auch), der Kalibrier-Sweep war glatt monoton (er testete
+   nur die Encoder-Abbildung, nicht die Kreis-nahe-dem-Pol-Projektion), der Effekt ist
+   geschwindigkeitsunabhängig (rein geometrisch, keine Dynamik), und tritt exakt um den
+   Zenit-Winkel auf. **Kein Defekt dieser Einheit — jeder Pan/Tilt-Mover zeigt das.**
+
+**Zweiter Fix-Versuch (2026-08-21) live getestet, wieder verworfen — kein aktiver
+Software-Fix.** `MovementEngine::getValues()` (`FX_Engine.h`) blendete pro Sample zwischen dem
+alten linearen Modell (weit vom Pol entfernt) und einem polaren Modell (Pan = Azimut des
+Offset-Vektors, Tilt = Radius vom Pol) für Samples nahe am Zenit. Kompilierte sauber, wurde
+geflasht und live an einem exakt auf dem Zenit zentrierten Kreis getestet (der schwierigste
+Fall — deckt sich mit dem User-Vorschlag „bei Tilt=127 einfach 360° Pan durchfahren"). Ergebnis:
+**funktioniert nicht** — der Tilt-Wert sprang jede halbe Umdrehung zwischen den beiden Polseiten
+hin und her statt konstant zu bleiben, sichtbar als „durchgestrichener Kreis"/erneute Acht.
+Root Cause identifiziert (per Telemetrie UND Live-Beobachtung bestätigt, siehe `history.md`
+2026-08-24): die Formel entschied „welche Seite des Pols" pro Sample anhand des Vorzeichens des
+*naiven linearen* Tilt-Ergebnisses — genau die Größe, die beim Kreisen exakt um den Zenit zweimal
+pro Umdrehung das Vorzeichen wechselt, wodurch der Tilt-Ausgang zwischen `Pol+Radius` und
+`Pol-Radius` hin- und herspringt statt konstant zu bleiben. Ein nicht mehr getesteter Ansatz
+(immer dieselbe, feste Polseite verwenden, da Pan mit vollem Azimut-Bereich ohnehin jede Richtung
+abdecken kann) wurde identifiziert, aber auf User-Wunsch nicht mehr ausprobiert — Code wurde
+komplett auf den vorigen, dokumentierten Stand (`git checkout`, entspricht Commit `07c5d38`)
+zurückgesetzt und erneut geflasht. **Aktueller Stand: kein Software-Fix aktiv**, siehe
+Workaround-Hinweis oben (Root-Cause-Punkt 4). Ein künftiger Versuch sollte bei der oben
+beschriebenen Vorzeichen-Instabilität ansetzen, nicht von vorne anfangen.
 
 **Fixture-eigene Sensor-Monitor-Referenzwerte (2026-08-20, nach Kalibrierung `-037`):** Tilt-
-Codewheel-Range laut Menü **-90 bis +130** (`+021` = gerade nach oben). Pan-Codewheel-Range
-**-83 bis +517**. Kein Software-Fix aktiv — Anwender muss Pattern-Zentrum/-Größe selbst so wählen,
-dass der fragliche Winkel nicht gekreuzt wird, wenn eine saubere Form wichtiger ist als exakte
-Positionierung.
+Codewheel-Range laut Menü **-90 bis +130** (`+021` = gerade nach oben, ≈ Range-Mittelpunkt —
+bestätigt, dass die Kalibrierung den Zenit auf DMX-Tilt-Center legt). Pan-Codewheel-Range
+**-83 bis +517**.
 
 ### CH5 — Speed
 `0–255`, „Pan/Tilt speed, Pan/Tilt time" — das Handbuch spezifiziert

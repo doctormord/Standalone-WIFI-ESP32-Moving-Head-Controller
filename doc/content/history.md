@@ -3188,3 +3188,127 @@ Tilt-Codewheel-Range (-90 bis +130, `+021` = gerade nach oben) und
 Pan-Codewheel-Range (-83 bis +517) als Referenzwerte für künftige
 Untersuchungen. `pio run` gegenkompiliert, Firmware geflasht und live
 per `curl` gegengeprüft (Gerät erreichbar, normaler Betrieb).
+
+## 2026-08-21 — Root Cause der Figure-8 per Web-Recherche gefunden (Gimbal-Pol-Singularität, kein Defekt), neuer Fix implementiert und kompiliert, Hardware-Verifikation steht noch aus
+
+User bat darum, im Netz nach ähnlichen Problemen bei anderen Moving
+Heads zu suchen, statt die Ursache als endgültig ungeklärten
+Hardware-Defekt stehen zu lassen — „das kann ja nicht sein, dass wir
+die einzigen sind, die das Problem haben."
+
+**Recherche.** Web-Suche fand praktisch identische Bug-Reports in
+mehreren unabhängigen Lighting-Foren: QLC+ (Thread-Titel fast wortgleich
+zu unserem Bug: „head doesnt move in circle but rather a figure 8"),
+Avolites („When pointing straight up/down this will indeed result in an
+8 figure"), grandMA2 (dieselbe Verzerrung beim Kreuzen der Pan/Tilt-
+Home-Werte) und DMXControl Projects (deutsch, mit expliziter
+geometrischer Herleitung: ein Kreis unter dem Fixture braucht eine volle
+360°-Pan-Drehung, kreuzt die Bahn dabei die Vertikale, wird sie zur
+Acht). Übereinstimmender Mechanismus über alle Quellen: ein
+Pan/Tilt-Mover ist ein 2-Achsen-Gimbal — am Zenit (Beam entlang der
+Pan-Rotationsachse) wird Pan geometrisch degeneriert (jeder Pan-Wert
+ergibt dieselbe physische Richtung, „Gimbal Lock", dieselbe Mathematik
+wie die Pol-Singularität in Kugelkoordinaten). Ein per unabhängigem
+Sinus/Cosinus auf Pan/Tilt gezeichneter Kreis — genau das, was praktisch
+jeder Konsolen-Kreisgenerator inkl. unserer `MovementEngine::getValues()`
+macht — ist nur dann ein echter Kreis im physischen Raum, wenn er den
+Pol nicht kreuzt; kreuzt er ihn, faltet sich dieselbe DMX-Bahn zu einer
+Acht. Erklärt lückenlos jede bisherige Beobachtung aus den Vorgänger-
+Sessions (siehe 2026-08-20-Einträge oben): die „perfekte Kreis"-DMX-
+Telemetrie stimmte (im DMX-Wertebereich ist die Bahn das auch), der
+Kalibrier-Sweep war zurecht glatt monoton (er testete nur die
+Encoder-Abbildung, nicht die Kreis-nahe-dem-Pol-Projektion), der Effekt
+ist geschwindigkeitsunabhängig (rein geometrisch, keine Dynamik), und
+tritt exakt um den Zenit-Winkel auf. **Fazit: kein physischer Defekt
+dieser Einheit — jeder Pan/Tilt-Mover zeigt dieses Verhalten.**
+
+**Rückfrage des Users, ob es doch lösbar ist.** User schlug vor: wenn
+man bei Tilt=127 einfach eine volle 360°-Pan-Drehung durchführt, müssten
+die Koordinaten doch wieder stimmen. Das ist tatsächlich exakt der
+korrekte Spezialfall der allgemeinen Lösung — am Pol selbst ist „Radius
+konstant halten, Pan über 360° sweepen" die geometrisch korrekte
+Kreisbahn, keine Krücke.
+
+**Fix implementiert.** `MovementEngine::getValues()` (`FX_Engine.h`)
+verwendet jetzt statt der reinen kartesischen Addition (`centerP + rx`,
+`centerT + ry`) pro Sample eine Blend-Formel zwischen diesem alten
+linearen Modell (unverändert für alles, was weit vom Zenit entfernt
+bleibt — keine Verhaltensänderung dort) und einem polaren Modell (Pan =
+Azimut des Offset-Vektors `atan2(rx,ry)`, Tilt = Radius vom Pol) für
+genau die Samples, deren naives Ergebnis nahe am Zenit landet. Die
+Blend-Breite skaliert mit der Pattern-Größe. Dadurch wird — anders als
+beim in der vorigen Session entfernten, zentrum-verschiebenden Fix — nur
+der tatsächlich betroffene Teil eines Patterns korrigiert (z. B. nur die
+Spitze eines „Clover", das über den Zenit reicht), nicht das ganze
+Pattern verschoben; absichtliche User-Positionierung durch den Zenit
+bleibt dadurch möglich. Stale gewordener Kommentar in
+`Moving_Head_Horizon.ino` (Zeile ~496, referenzierte noch den entfernten
+Fix) korrigiert.
+
+**Noch offen:** `pio run` kompiliert sauber (Flash 91.5 %, keine
+Größenregression), aber das Gerät war zum Zeitpunkt dieser Session weder
+per USB noch im WLAN erreichbar — kein Flash, keine Live-Verifikation
+möglich. User meldet sich am Montag mit Zugriff auf den Controller zurück.
+Bekannte, selbst dokumentierte Einschränkung des neuen Fixes: ein exakt
+auf dem Zenit zentriertes Pattern kann pro Umdrehung einen kleinen
+Pan-Sprung zeigen (kein State-basiertes Phase-Unwrapping über mehrere
+Frames) — vorbehaltlich Live-Test, ob das in der Praxis auffällt. Siehe
+`mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 und `backlog.md` → „Bekannte
+kleine Issues" für den vollen, aktualisierten Stand.
+
+## 2026-08-24 — Blend-Fix live getestet, per Telemetrie und Live-Beobachtung als fehlerhaft erkannt, komplett zurückgenommen
+
+Gerät wieder verfügbar (USB **und** WLAN erreichbar). Firmware mit dem in
+der vorigen Session gebauten Blend-Fix geflasht (`pio run -t upload`,
+erfolgreich, Gerät antwortete danach normal über `/api/get_dmx`).
+
+**Test 1 — Kreis exakt auf dem Zenit zentriert** (Fixture stand bereits
+auf `cp=32767, ct=32767`, also exakt am Pol — der schwierigste Testfall,
+identisch zum vom User selbst vorgeschlagenen „360°-Pan-bei-Tilt=127"-
+Szenario): `/fx?a=1&t=1&zs=30&ze=30&ss=20&se=20` gesetzt, 20 Samples über
+`liveOutPan0`/`liveOutTilt0` per `curl`-Polling mitgeschnitten. Ergebnis:
+Tilt blieb **nicht** konstant wie erhofft, sondern sprang zwischen zwei
+Clustern hin und her (~23000–25000 und ~40000–42500 — beides ≈ Pol
+± Pattern-Radius, aber abwechselnd auf beiden Seiten statt auf einer
+Seite bleibend), während Pan dazwischen ebenfalls unstete Sprünge
+zeigte. Root Cause selbst identifiziert, bevor der User dasselbe live am
+Fixture sah: die Formel entschied „welche Seite des Pols" (`poleSide`)
+pro Sample anhand des Vorzeichens des *naiven linearen* Tilt-Ergebnisses
+(`outT_lin`) — für einen exakt um den Zenit zentrierten Kreis wechselt
+dieses Vorzeichen aber zweimal pro Umdrehung (immer wenn `ry` durch 0
+geht), wodurch der polare Korrektur-Zweig den Tilt-Ausgang zwischen
+`Pol+Radius` und `Pol-Radius` hin- und herspringen ließ, statt ihn (wie
+für einen sauberen Kreis um den Pol nötig) konstant auf einer Seite zu
+halten, während nur Pan durchläuft.
+
+User bestätigte unabhängig dasselbe Ergebnis am realen Fixture: „nein,
+das funktioniert so nicht. jetzt haben wir quasi einen durchgestrichenen
+Kreis, auch wieder iwie am Ende eine Acht. also nehmen wir den fix
+raus." Ein Reparatur-Ansatz wurde durchdacht (immer eine feste Polseite
+verwenden, z. B. immer `Pol+Radius`, und die tatsächliche Richtung
+komplett über Pan/`atan2(rx,ry)` abbilden, da Pan mit vollem
+Azimut-Bereich ohnehin jede Richtung erreichen kann) — auf expliziten
+User-Wunsch aber **nicht mehr live ausprobiert**, sondern direkt
+verworfen. `FX_Engine.h` und `Moving_Head_Horizon.ino` per
+`git checkout -- FX_Engine.h Moving_Head_Horizon.ino` komplett auf den
+letzten committeten Stand (`07c5d38`, der dokumentierte
+„kein Software-Fix"-Zustand) zurückgesetzt, neu kompiliert (`pio run`,
+erfolgreich) und erneut geflasht (`pio run -t upload`, erfolgreich) —
+Gerät läuft jetzt wieder exakt mit dem vor dieser Zwei-Sessions-Recherche
+dokumentierten, unveränderten Code.
+
+User merkte zusätzlich an, das Fixture bewege sich insgesamt sehr
+geschmeidig, „in meiner Erinnerung war das davor nicht so" — das ist
+real und unabhängig von der heutigen Recherche: die
+Multi-Beat-BPM-Sync-Jitter- und `modSp`-Einheiten-Bugs (siehe deutlich
+frühere Session, Commit `92ab41f`) wurden lange vor dieser Untersuchung
+gefixt und sind durch den heutigen `git checkout` unangetastet geblieben
+(der betraf ausschließlich `MovementEngine::getValues()`s letzten
+Projektionsschritt und einen Kommentar).
+
+**Stand danach:** kein Software-Fix für die Zenit-Acht aktiv (siehe
+`mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 und `backlog.md` für den
+identifizierten Formel-Bug als Ausgangspunkt für einen künftigen
+Versuch). Die Root-Cause-Recherche selbst (Gimbal-Pol-Singularität,
+branchenweites Phänomen, kein Defekt dieser Einheit) bleibt gültig und
+dokumentiert — nur der zweite Fix-Versuch wurde zurückgenommen.

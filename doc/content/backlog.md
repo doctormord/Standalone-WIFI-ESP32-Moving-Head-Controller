@@ -140,22 +140,23 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   bleibt offen als vermutlich physisches/mechanisches Problem am
   konkreten Gerät (Rad-Abweichung vom Handbuch oder Defekt), nicht durch
   Software lösbar. Nur durch Sichtprüfung am Gerät zu klären.
-- **Movement-Kreis wird zur „Acht", wenn die Bahn durch einen bestimmten
-  absoluten Tilt-Winkel läuft (~DMX-Tilt 127).** Live untersucht
-  2026-08-20 (siehe `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 für die
-  vollständige Diagnose-Historie inkl. aller geprüften Hypothesen): kein
-  Code-Bug — ein statischer Kalibrier-Sweep zeigt eine glatt monotone
-  Tilt-Encoder-Reaktion über den gesamten getesteten Bereich, das
-  Problem tritt nur auf, wenn die Mechanik tatsächlich (mit beliebiger
-  Geschwindigkeit) durch diesen einen Winkel *rotiert*. Physischer Defekt
-  dieser konkreten Einheit an einer festen absoluten Position, nicht
-  durch DMX-Werte-Wahl umgehbar, wenn ein Pattern bewusst dort
-  durchfahren soll — nur durch Reparatur/Neukalibrierung beim Hersteller
-  behebbar. **Kein Software-Fix** (ein früherer Versuch, das Pattern-
-  Zentrum automatisch zu verschieben, wurde entfernt — stand
-  absichtlicher User-Positionierung im Weg). Workaround: Pattern-Zentrum/
-  -Größe so wählen, dass dieser Winkel nicht gekreuzt wird, wenn eine
-  saubere Form wichtiger ist als exakte Positionierung.
+- **Movement-Kreis wird zur „Acht", wenn die Bahn durch den Zenit-Winkel läuft
+  (~DMX-Tilt 32767/16-Bit) — zweiter Fix-Versuch live getestet und wieder verworfen,
+  kein aktiver Software-Fix (Stand 2026-08-24).** Live untersucht 2026-08-20, Root
+  Cause recherchiert 2026-08-21 (siehe `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 für
+  die vollständige Diagnose-Historie inkl. aller geprüften Hypothesen und Quellen):
+  **kein physischer Defekt dieser Einheit**, sondern die aus mehreren unabhängigen
+  Lighting-Foren bestätigte, branchenweite Gimbal-Pol-Singularität jedes
+  2-Achsen-Pan/Tilt-Movers — am Zenit wird Pan geometrisch degeneriert, wodurch ein per
+  Sinus/Cosinus gezeichneter Kreis dort zur Acht faltet. Ein Blend-Fix in
+  `MovementEngine::getValues()` (`FX_Engine.h`) wurde gebaut, geflasht und live getestet
+  (2026-08-24) — Ergebnis: **funktioniert nicht**, der Tilt-Ausgang sprang jede halbe
+  Umdrehung zwischen den beiden Polseiten hin und her (Vorzeichen-Instabilität in der
+  Formel, siehe `mapping_sheds_160w_3in1_gobo.md` für den identifizierten Bug), sichtbar
+  am Gerät als „durchgestrichener Kreis"/erneute Acht. Code komplett auf den
+  dokumentierten Vorzustand zurückgesetzt (`git checkout`, Commit `07c5d38`) und erneut
+  geflasht. **Kein Software-Fix aktiv.** Workaround weiterhin gültig: Pattern-Zentrum/
+  -Größe so wählen, dass der Zenit nicht gekreuzt wird.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
 
