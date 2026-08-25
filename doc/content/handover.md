@@ -77,6 +77,35 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   bevor man aus Kanal-Diffs zwischen zwei Polls rät (führt in die Irre, da
   Pan/Tilt kontinuierlich aus dem Smoothing-Loop driften, unabhängig von
   jeder HTTP-Mutation).
+- **Zwei Ergänzungen vom 2026-08-25 (2), ohne die das Obige nicht trägt**
+  (volle Herleitung in `history.md`):
+  1. **Gating pro FX-Gruppe, nicht pro Feld.** `pendingGenRef` deckte anfangs
+     nur die acht `*FxRunning`-Booleans plus `presetActive`/`presetNames` ab,
+     während *alle* FX-Parameter derselben Gruppe ungefiltert gemerged wurden.
+     Jede Gruppe wird jetzt als Einheit über ihren ohnehin vorhandenen
+     `runningKey` gegated — **Felder *und* die `pr2.*`-Baseline**. Das
+     Baseline-Gating ist die wichtigere Hälfte: zieht man die Baseline aus
+     einem Poll nach, der den lokalen Edit noch nicht kennt, stimmen State und
+     Baseline auf dem *alten* Wert überein, der Diff sieht „nichts zu senden"
+     und der Edit ist **gelöscht** statt nur verzögert. Die manuellen Kanäle
+     hängen analog an einem gemeinsamen `'channels'`-Key (Pan/Tilt bewusst
+     ausgenommen — sie liegen nie im `/set_all`-Batch).
+  2. **Kein Schreibvorgang darf verworfen werden.** Die 300-ms-
+     `isReceiving`-Totzone nach jeder Poll-Antwort unterdrückte Sends
+     korrekt, aber der Effect hängt an `[state]` und `isReceiving` ist eine
+     *ref* — ihr Zurücksetzen löst keinen Render aus, es gab also **nie einen
+     Retry**. `deferSync()` setzt jetzt einen einzelnen, idempotenten
+     320-ms-Timer, der `syncTick` erhöht (steht in der Dependency-Liste).
+     Invariante beim Anfassen dieses Effects: *jeder* Pfad mit
+     `isReceiving`-Guard muss `deferSync()` rufen — aktuell sechs.
+- **Joystick-Config-Read-back (`/api/joycfg`, seit 2026-08-25 (2)):** die neun
+  `/joy_cfg`-Werte werden nach NVS persistiert, hatten aber keine
+  Lese-Route — ein frisch geladener Tab hielt die UI-Defaults und überschrieb
+  bei der ersten State-Änderung die gespeicherte Geräte-Config damit. Das
+  Frontend seedet jetzt beim Mount **State *und* Sende-Baseline `p.joyKey`**
+  daraus und sendet vorher gar nichts (`joyCfgLoadedRef`). Merkregel für neue
+  persistierte Settings: ohne Read-back-Route überschreibt die UI sie beim
+  nächsten Reload.
 - **Bekannte strukturelle Schwäche (siehe `backlog.md` → „Technische
   Schulden" für die volle Architektur-Diskussion):** mehrere unabhängige,
   asynchrone Schreibpfade (Poll-Merge, `syncFx`/`track()`-Echo, Joystick-
@@ -85,7 +114,16 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   gefundene Race chirurgisch, sind aber vier verschiedene, parallel
   laufende Sicherungen — ein sauberer Neuentwurf (einziger besessener
   Server-State mit echtem Request/Response, oder WebSockets statt
-  Poll+Echo) wäre die strukturelle Lösung, kein akuter Bug mehr.
+  Poll+Echo) wäre die strukturelle Lösung.
+  **Nachtrag 2026-08-25 (2):** Der Satz „kein akuter Bug mehr", der hier
+  stand, war falsch. Genau diese Schwäche produzierte noch am selben Tag die
+  nächste Bug-Welle (Werte springen im Programmer-Tab zurück), weil die
+  vorherigen Fixes je *ein Feld* absicherten, der **geteilte** Schreib- und
+  Merge-Pfad aber ungeschützt blieb. Lehre für die nächste Session an diesem
+  Problemfeld: **den geteilten Pfad fixen, nicht das gemeldete Feld** — und
+  bei jedem neuen State-Feld beide Fragen stellen: „wird es beim Poll
+  gegated?" und „kann sein Send verworfen werden, ohne dass jemand ihn
+  wiederholt?".
 - **Joystick:** eigener Hook `useKeyboardJoystick` für Tastatur/Maus mit
   mehrstufigem Ramping (Shift/Alt-Modifier), sendet `joyInputX/Y` an
   `/joy_in`.
@@ -176,6 +214,37 @@ aktuell absehbare Skalierung, ohne Hardware-Wechsel.
    auf `/vendor/react.js` mit 404 laufen und nicht laden. Er ist nur als
    Erstinbetriebnahme-/Recovery-Pfad für die HTML-Datei gedacht, solange
    noch gar kein `index.html` im Flash liegt.
+
+### Flashen per Kommandozeile / OTA (verifiziert 2026-08-25)
+
+Direkt per USB, ohne Arduino IDE — Port explizit angeben, das Board meldet
+sich als Espressif USB-JTAG (`VID:PID=303A:1001`):
+
+```
+pio run -t upload   --upload-port /dev/cu.usbmodem1101   # Firmware -> 0x10000
+pio run -t uploadfs --upload-port /dev/cu.usbmodem1101   # data/    -> 0x290000
+```
+
+Beides schreibt an die eigenen Offsets und lässt die `nvs`-Partition
+(`0x9000`, WiFi/Patch/Presets) unangetastet — im Gegensatz zu
+`firmware.factory.bin` an `0x0`, das NVS mitwischt (siehe `CLAUDE.md` und
+den Unfall vom 2026-08-20). Nach dem Flashen kontrollieren, dass
+`/api/state` noch die richtigen Preset-Namen liefert.
+
+**OTA funktioniert seit 2026-08-25 wirklich** (davor war `ArduinoOTA`
+eingebunden und `handle()` lief, aber `begin()` wurde nie aufgerufen — es gab
+schlicht keinen Listener, trotz README-Werbung). Die Partitionstabelle ist
+echtes Dual-OTA (`app0`/`app1` je 1280K plus `otadata`), die Firmware belegt
+~1216K. Verifizierter Weg:
+
+```
+python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
+        -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin -r
+```
+
+(`--upload-protocol` ist **keine** `pio run`-Kommandozeilenoption, nur eine
+`platformio.ini`-Einstellung — daher der direkte `espota.py`-Aufruf.)
+OTA überträgt nur die Firmware; für `data/` weiterhin `uploadfs` per USB.
 
 ### Kompilieren ohne Arduino IDE (PlatformIO)
 

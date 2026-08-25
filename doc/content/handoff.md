@@ -7,9 +7,12 @@
 > Browser** — 15× einen FX-Trigger-Modus umstellen und prüfen, dass jede
 > Änderung beim *ersten* Versuch haftet (siehe unten).
 >
-> **Stand der Arbeit:** Branch `worktree-prog-sync-fix` (Worktree unter
-> `.claude/worktrees/prog-sync-fix`), ein Commit, sauber. Geändert:
-> `data/index.html`, `WebAPI.h`, `Moving_Head_Horizon.ino`, plus Doku.
+> **Stand der Arbeit:** auf `future` gemerged (Fast-Forward) und nach GitHub
+> gepusht — lokaler und Remote-Stand sind identisch, Arbeitsbaum sauber.
+> Geändert: `data/index.html`, `WebAPI.h`, `Moving_Head_Horizon.ino`, plus
+> Doku (`handover.md`, `backlog.md`, `functions.md`, `README.md`, dieser
+> Handoff, `history.md`). Entwickelt wurde in einem Worktree
+> (`.claude/worktrees/prog-sync-fix`); der kann weg, alles ist auf `future`.
 >
 > ### Was gemacht wurde
 >
