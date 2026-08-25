@@ -1,73 +1,81 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-24)
-> **Gerät ist konfiguriert, erreichbar (USB + WLAN) und läuft mit dem
-> dokumentierten, unveränderten Baseline-Code. Kein offener Blocker.**
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-25)
+> **Gerät ist konfiguriert, erreichbar und läuft mit dem in dieser Session
+> geflashten, live verifizierten Code. Kein offener Blocker.**
 >
-> **Was in dieser Session gemacht wurde (Details in `history.md` 2026-08-24
-> und `backlog.md`/`mapping_sheds_160w_3in1_gobo.md` → CH3/CH4):**
+> **Was in dieser Session gemacht wurde (volle Details in `history.md`
+> 2026-08-25, Kurzfassung in `backlog.md` → „Kürzlich gefixt"):**
 >
-> Der in der vorigen Session gebaute Blend-Fix für die Movement-„Acht statt
-> Kreis"-Verzerrung am Zenit wurde geflasht und live getestet — an einem
-> exakt auf dem Zenit zentrierten Kreis (`cp=32767, ct=32767`, der
-> schwierigste Fall, identisch zum User-eigenen „360°-Pan-bei-Tilt=127"-
-> Vorschlag). **Ergebnis: funktioniert nicht.** Der Tilt-Ausgang sprang
-> jede halbe Umdrehung zwischen den beiden Polseiten hin und her (per
-> `curl`-Telemetrie UND unabhängig vom User live am Fixture bestätigt —
-> „durchgestrichener Kreis"/erneute Acht). Root Cause identifiziert: die
-> Formel entschied „welche Seite des Pols" pro Sample anhand des
-> Vorzeichens des *naiven linearen* Tilt-Ergebnisses — genau die Größe,
-> die bei einem Kreis um den Zenit zweimal pro Umdrehung das Vorzeichen
-> wechselt, was den Korrektur-Zweig zum Hin-und-Herspringen brachte statt
-> ihn auf einer Seite zu halten.
+> Zwei Teile: (A) LIVE-UI-Politur auf User-Feedback zu einem Screenshot —
+> größere Default-Schrift/-Buttons (CSS `zoom` auf `.tab-scroll`), eine
+> gemeinsame `PresetGrid`-Komponente ersetzt den alten `<select>`-Slot-
+> Picker im Programmer-Tab, neue `/save_center`-Route + Button zum
+> Neuspeichern *nur* der Pan/Tilt-Center-Position eines bereits
+> programmierten Slots, ein „unsaved changes"-Tracker im Programmer-Tab.
 >
-> Auf explizitem User-Wunsch wurde ein möglicher Reparatur-Ansatz (feste
-> Polseite statt per-Sample-Umschaltung) **nicht mehr live ausprobiert**
-> — Code wurde komplett per `git checkout` auf den letzten committeten,
-> dokumentierten Stand (`07c5d38`, „kein Software-Fix") zurückgesetzt,
-> neu kompiliert und erneut geflasht. **Kein Software-Fix für die
-> Zenit-Acht mehr aktiv.**
->
-> Die Root-Cause-Recherche selbst (branchenweite Gimbal-Pol-Singularität,
-> kein Defekt dieser Einheit — siehe mehrere unabhängige Lighting-Foren-
-> Quellen in `mapping_sheds_160w_3in1_gobo.md`) bleibt weiterhin gültig
-> und dokumentiert; nur der darauf aufbauende zweite Fix-Versuch wurde
-> zurückgenommen.
->
-> User bestätigte außerdem, dass sich das Fixture insgesamt spürbar
-> geschmeidiger bewegt als in Erinnerung — das ist real und geht auf die
-> deutlich früher gefixten Multi-Beat-BPM-Sync-Jitter- und
-> `modSp`-Einheiten-Bugs zurück (Commit `92ab41f`), nicht auf irgendetwas
-> aus dieser Session.
+> (B) Eine lange, mehrstufige Bugjagd zu einem beim Testen der UI-Politur
+> aufgefallenen Problem: das „welcher Preset-Slot ist aktiv"-Indicator
+> flackerte auf „no slot active", später meldete der User „Parameter werden
+> zwischen Presets übertragen" und schließlich, dass einzelne FX (vor allem
+> Dimmer FX) beim Preset-Recall nicht zuverlässig wiederkamen. **Neun echte,
+> unabhängige Root Causes gefunden und einzeln gefixt** — von zwei
+> Backend-Routen, die `activePresetSlot` bei jedem Aufruf statt nur bei
+> echten Übergängen zurücksetzten, über einen kompletten Umbau der
+> Optimistic-Write-vs-Poll-Synchronisation (Wall-Clock-Timer →
+> Generation-Counter), mehrere nie vom Poll zurückgelesene Frontend-Felder
+> (`colorOff`, `panFine`/`tiltFine`), bis zu echter Daten-Korruption durch
+> nie nachgezogene „zuletzt gesendet"-Baselines und eine Race zwischen zwei
+> bereits abgeschickten HTTP-Requests, die am Ende einen serverseitigen
+> Generation-basierten Staleness-Guard brauchte (Frontend-seitige Fixes
+> allein reichten dafür nicht). Jeder Fix wurde live per `curl`-Telemetrie
+> (`"gsrc"`-Debug-Feld in `/api/get_dmx`, neu und dauerhaft behalten)
+> verifiziert, nicht nur kompiliert. **Vom User nach einem längeren
+> Testlauf (alle sieben FX-Typen aktiv, wiederholtes schnelles
+> Preset-Wechseln) als „ist gefixt jetzt" bestätigt.**
 >
 > ---
 >
-> **Kein offener Punkt aus dieser Session.** Falls die Zenit-Acht erneut
-> angegangen werden soll, Ausgangspunkt ist der in
-> `mapping_sheds_160w_3in1_gobo.md` → CH3/CH4 und `backlog.md` dokumentierte
-> Formel-Bug (Vorzeichen-Instabilität der „welche Polseite"-Entscheidung)
-> — nicht bei null anfangen. Ansonsten frei (keine feste Reihenfolge, aus
-> vorigen Sessions übernommen):
+> **Kein offener Bug aus dieser Session.** Der User hat aber explizit einen
+> strukturellen Punkt für eine künftige Session vorgeschlagen (ggf. mit mehr
+> Reasoning-Budget/Opus): die Architektur, die diese neun Bugs erst möglich
+> gemacht hat — mehrere unabhängige, asynchrone Schreibpfade ohne zentrale
+> Ownership über denselben Live-State — bleibt strukturell fragil, auch
+> nach allen neun chirurgischen Fixes. Siehe `backlog.md` → „Technische
+> Schulden" (neuer Eintrag, ganz oben) für die volle Diskussion und
+> Kandidaten (einziger besessener Server-State mit echtem Request/Response,
+> oder WebSockets statt Poll+Echo — letzteres steht ohnehin schon als
+> Feature-Wunsch im Backlog und würde das Problemfeld strukturell mit
+> erledigen). Das ist ein guter Startpunkt, falls die nächste Session
+> genau darauf fokussiert werden soll — kein akuter Blocker, aber der vom
+> User selbst benannte nächste sinnvolle Schritt.
+>
+> Ansonsten frei (keine feste Reihenfolge, aus vorigen Sessions
+> übernommen):
 > 1. Mic-Sensitivity subjektiv mit echter Musik über den AUDIO-Tab
 >    gegenprüfen.
 > 2. Mic-BPM-Oktave-Korrektur noch nicht mit echtem Audio verifiziert.
 > 3. Zeit-Rampen für den Shake ("wa-wa-wosh"), falls weiterhin gewünscht.
 > 4. Separates Followspot-Joystick-Profil?
 > 5. `firmware/`-Ordner neu aufbauen für den One-Click-Installer.
-> 6. Übrige Tech-Debt-Punkte in `backlog.md` (Preset-Engine-Split,
+> 6. Movement-Zenit-„Acht" (siehe `backlog.md` → „Bekannte kleine Issues")
+>    — weiterhin kein aktiver Software-Fix, Formel-Bug aus dem letzten
+>    Versuch dokumentiert als Ausgangspunkt.
+> 7. Übrige Tech-Debt-Punkte in `backlog.md` (Preset-Engine-Split,
 >    ADS1115-Hardware-Joystick, `jogBend` fertigbauen oder entfernen, etc.)
 
 ## Aktueller Status
 
 Repository ist sowohl lokal als auch auf GitHub (`future`-Branch)
-git-versioniert. Zielhardware: **ESP32-C3 Supermini** (Fixture: SHEHDS 160W
-3in1 GOBO / „Pro Beam 280", Pan 540°/Tilt 270°). Der Movement-FX-„Acht statt
-Kreis"-Effekt am Zenit-Winkel ist **kein Defekt dieser Einheit** (branchenweit
-bekanntes Gimbal-Pol-Verhalten), aber **aktuell kein Software-Fix aktiv** —
-ein zweiter Fix-Versuch wurde live getestet, als fehlerhaft erkannt und
-komplett zurückgenommen (siehe oben). Gerät läuft mit dem dokumentierten
-Baseline-Code (Commit `07c5d38`), ist über `movinghead.local` erreichbar und
-im normalen Betrieb.
+git-versioniert (noch **nicht committed** — diese Session endete mit
+Doku-Updates, kein `git commit` bisher). Zielhardware: **ESP32-C3
+Supermini** (Fixture: SHEHDS 160W 3in1 GOBO / „Pro Beam 280", Pan 540°/Tilt
+270°). Gerät läuft mit dem in dieser Session mehrfach geflashten und live
+verifizierten Code (LIVE-UI-Politur + neun State-Sync-Fixes, siehe oben),
+ist über `movinghead.local`/direkte IP erreichbar und im normalen Betrieb.
+Der Movement-FX-„Acht statt Kreis"-Effekt am Zenit-Winkel bleibt
+unverändert vom letzten Stand (kein Software-Fix aktiv, siehe „Bekannte
+kleine Issues" in `backlog.md`) — in dieser Session nicht angefasst.
 
 ## Doku-Hinweis
 

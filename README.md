@@ -110,6 +110,8 @@ graph TD
 * **Non-Volatile Scene Memory:** Save up to 10 complete fixture states—including all active FX, modulators, and custom labels—directly to the ESP32's NVRAM.
 * **Over-The-Air (OTA) Updates:** Flash new firmware directly via the web interface without USB cables.
 * **Fully Offline-Capable:** The React/Babel frontend is bundled gzip-compressed on-device rather than loaded from a CDN, so the console works even when the ESP32's own WiFi AP has no internet uplink (a common venue scenario).
+* **Adjustable UI Scale:** A tap-to-cycle 100/115/130% zoom control in the status bar for readability at dark venues, defaulting to 115% since pinch-zoom is disabled on mobile.
+* **Save Center:** Re-save just a preset's pan/tilt center position on-site (after re-aiming a pre-programmed fixture) without touching any of its other saved FX/color/gobo settings, and without the full load → edit → save round trip.
 
 ---
 
@@ -142,6 +144,8 @@ Transforms the moving head into a manually operated tracking spot with advanced 
 The deep-dive configuration layer for building scenes and tweaking modulators.
 * **Smart DMX Labels:** Automatically translates raw integer values into human-readable strings for complex channels (e.g., rotating gobos translate `135-255` into `[FWD]`, `[STOP]`, `[REV]` with percentage speeds).
 * **Compound Dropdowns:** Merges base index selections (e.g., "Gobo 2") with continuous offset sliders (e.g., "Gobo Shake") into single UI elements.
+* **Executor Grid + Save Center:** The same named preset grid as the LIVE tab (tap to recall, hold to save/rename) replaces a plain slot dropdown, so it's always visible which slot is loaded. A dedicated "Save Center" button re-saves only the current pan/tilt position back into the loaded slot.
+* **Unsaved-Changes Guard:** Recalling a different slot only prompts for confirmation if something in the programmer has actually changed since the last recall/save — not on every tap.
 
 ![Programmer tab GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_3.png)
 

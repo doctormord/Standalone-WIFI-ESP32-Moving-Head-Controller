@@ -3312,3 +3312,183 @@ identifizierten Formel-Bug als Ausgangspunkt für einen künftigen
 Versuch). Die Root-Cause-Recherche selbst (Gimbal-Pol-Singularität,
 branchenweites Phänomen, kein Defekt dieser Einheit) bleibt gültig und
 dokumentiert — nur der zweite Fix-Versuch wurde zurückgenommen.
+
+## 2026-08-25 — LIVE-UI-Politur (Schriftgröße, Preset-Grid, Save Center) plus lange State-Sync-Bugjagd (9 echte Root Causes)
+
+**Teil A — UI-Politur, auf User-Feedback zu einem LIVE-Tab-Screenshot.**
+Drei Punkte: Schrift/Buttons zu klein im Dunkeln (Viewport-Meta hat
+`user-scalable=no` — Pinch-Zoom ist auf Mobilgeräten aktiv deaktiviert, ein
+eingebackener Default ist der einzige Weg zu größerer UI auf dem Handy), der
+Programmer-Tab-Slot-Picker war ein nacktes `<select>` ohne Anzeige, was
+gerade geladen ist, und der Wunsch, nur die Center-Position eines bereits
+programmierten Slots neu zu speichern, ohne den vollen Programmer-Load/Edit/
+Save-Umweg zu gehen (fehleranfällig).
+
+Umgesetzt: CSS-`zoom` auf `.tab-scroll` (nicht auf `html`/`body` — siehe
+Korrektur weiter unten) mit umschaltbarem Faktor (100/115/130 %, Default
+115 %, Toggle in der `StatusBar`, `localStorage`-persistiert); gemeinsame
+`PresetGrid`-Komponente (Zahl + Name + Aktiv-Highlight, tap=recall/
+hold=save) aus dem LIVE-Tab in den `horizon-primitives.jsx`-Scope gehoben
+und in beiden Tabs (LIVE + Programmer) verwendet, ersetzt dort das alte
+`<select>`; neue `SaveCenterButton`-Komponente + `/save_center?slot=N`-Route
+(`WebAPI.h`) — mutiert nur `chaserScenes[slot-1].dmx[CH_PAN/CH_PAN_FINE/
+CH_TILT/CH_TILT_FINE]` direkt im RAM-Cache und schreibt den Blob ohne
+`prefs.clear()` zurück (der Name-Key bleibt dadurch unangetastet), kein
+Einfluss auf FX-Parameter. Programmer-Tab bekam zusätzlich einen eigenen
+„unsaved changes"-Tracker (`PROG_DIRTY_KEYS`, Baseline-Snapshot statt reinem
+Boolean, damit ein Save-Center-Save nur die pan/tilt-Baseline aktualisiert,
+nicht versehentlich einen echten offenen FX-Edit verdeckt) — warnt vor
+Recall nur, wenn seit dem letzten Recall/Save tatsächlich etwas geändert
+wurde, nicht bei jedem Tap.
+
+**Erste Korrektur (noch selbe Session):** `zoom` auf `html`/`body` gesetzt
+brach das Scrollen komplett — die App hat dort bewusst `overflow: hidden`
+(kein Rubber-Banding am Chrome), der eigentliche Scroll-Container ist
+`.tab-scroll` weiter unten im Baum. Zoom auf `.tab-scroll` selbst verschoben
+— StatusBar/Tab-Leiste bleiben fixe Chrome-Größe, der Inhalt darunter wächst
+und bleibt trotzdem scrollbar.
+
+**Teil B — die eigentliche Bugjagd: "no slot active" beim Preset-Wechsel,
+später "Parameter werden zwischen Presets übertragen", zuletzt einzelne FX
+(Dimmer FX vor allem) kommen beim Recall nicht zuverlässig wieder.** Neun
+echte, unabhängige Root Causes über viele Testrunden gefunden — jede per
+Live-Telemetrie verifiziert (neues Debug-Feld `"gsrc"` in `/api/get_dmx`,
+siehe unten), nicht nur vermutet:
+
+1. **`/chaser` setzte `activePresetSlot=0` bei *jedem* Aufruf mit
+   `act≠1`**, nicht nur bei einem echten Running→Stopped-Übergang — das
+   Frontend ruft diese Route aber routinemäßig zum Chaser-Konfig-Sync auf,
+   unabhängig von Presets. Fix: Guard auf `wasActive && !chaserActive`
+   (`WebAPI.h`).
+2. **`/set_all` hatte denselben Bug** für den einmaligen Baseline-Push
+   direkt nach Seitenladen. Fix (Zwischenstand, später ganz anders gelöst
+   — siehe Punkt 7): Guard auf `anyChange` (echte Byte-Differenz gegen
+   `dmxData`).
+3. **Die Optimistic-Write-vs-Poll-Race selbst wurde von einem Wall-Clock-
+   Timer (`dirtyUntilRef`, „vertrau dem lokalen Wert für ~2,5 s") auf einen
+   echten Generation-Counter umgebaut:** `stateGen` (`Moving_Head_Horizon.ino`),
+   von jeder mutierenden Route zurückgegeben statt „OK", Frontend merkt sich
+   pro Feld „warte auf mindestens Generation G" (`pendingGenRef`/
+   `isLocalDirty` in `data/index.html`) statt eine Dauer zu raten.
+4. **`colorOff` wurde nie vom Poll zurückgelesen**, nur `colorBase` — und
+   nur bei exaktem Treffer in der 10-Werte-`COLORS`-Liste, was für den
+   „Rotation"-Farbmodus (Range 100–255) nie zutraf. Sobald einmal ein
+   Rotation-Preset geladen wurde, blieben `colorBase`/`colorOff` dauerhaft
+   auf einem falschen Wert eingefroren und korrumpierten den nächsten
+   `/set_all`-Echo für ein *anderes* Preset. Fix: eigene, nach `v` sortierte
+   `COLOR_ZONES`-Tabelle (die Anzeige-`COLOR_BASES` ist absichtlich nicht
+   sortiert), symmetrisch zum bereits bestehenden Gobo-Zonen-Muster.
+5. **`panFine`/`tiltFine` wurden unnötig via `/set_all` zurückgesendet**,
+   obwohl kein UI-Element sie je direkt editiert — sie sind ein reiner
+   Spiegel des Joystick-getriebenen Backend-Zustands, der wegen der
+   Pan/Tilt-Smoothing-Schleife (~30 ms-Takt) kontinuierlich driftet. Der
+   Echo war deshalb fast immer schon veraltet, wenn er ankam, was
+   `/set_all`s Byte-Diff-Check als „echte Bearbeitung" las. Fix: Tracking
+   für diese beiden Kanäle komplett entfernt (`track()`-Aufrufe in
+   `data/index.html`).
+6. **Der Poll-Merge für Dimmer/Gobo-Rotation/Prisma-Rotation/Color-Base/
+   Sgobo-Base/Rgobo-Base prüfte `prev.XFxRunning`** (den Wert *vor* diesem
+   Poll) statt des in genau diesem Poll frisch berechneten Werts — ließ nach
+   jedem FX-Stop (z. B. weil ein neu recalltes Preset diese FX nicht nutzt)
+   einen vollen ~2-s-Zyklus, in dem der manuelle Wert am alten,
+   eingefrorenen Pre-Stop-Snapshot hing, während `track()`s „einmal
+   force-resenden"-Logik genau diesen veralteten Wert zurückschickte. Fix:
+   FX-Running-Flags werden jetzt *vor* dem manuellen Kanal-Merge im selben
+   `setState`-Callback berechnet und dort verwendet.
+7. **`/set_all`s `anyChange`-Inferenz („war das eine echte Bearbeitung")
+   erwies sich als grundsätzlich unzuverlässig**, nicht nur punktuell
+   lückenhaft — nach vier Einzelfixen (Punkte 4–6 plus die ursprüngliche
+   `panFine`-Idee) tauchte bei jedem erneuten Live-Test ein weiterer,
+   bisher unsichtbarer Fall auf. Pragmatische Entscheidung: die
+   `activePresetSlot`-Reset-Logik komplett aus `/set_all` entfernt.
+   `activePresetSlot` ändert sich seither nur noch über `/recall`,
+   `/kill_fx` und einen echten `/chaser`-Stop — ein stabiles „zuletzt
+   recalltes Preset" statt eines oft falschen „…und seither nichts
+   geändert".
+8. **Trotzdem blieb echte Daten-Korruption bestehen** (bestätigt per
+   Telemetrie: derselbe Slot zweimal hintereinander recallt, unterschiedliche
+   `ch8`/`ch9`/`dA`-Werte) — Ursache war die syncFx-eigene „letzter
+   gesendeter Stand"-Baseline (für die 8 FX-/Chaser-State-Snapshots) UND
+   `track()`s parallele Pro-Kanal-Baseline, die beide nie mit
+   Poll-getriebenen Änderungen nachgezogen wurden. Ein frisch recalltes
+   Preset sah für `syncFx()`/`track()` deshalb wie eine unversendete lokale
+   Änderung aus und wurde redundant zurück ans Gerät geschickt — landete
+   dieser Echo verzögert *nach* einem zweiten, schnell folgenden Recall,
+   überschrieb er dessen frisch geladene Kanäle mit den alten Werten. Fix:
+   beide Baselines (`pr2.*` für `syncFx`, `chP['ch'+ch]` für `track()`)
+   werden jetzt direkt im Poll-Merge auf den gerade übernommenen Wert
+   nachgezogen, bevor der nächste Effect-Durchlauf sie vergleicht.
+9. **Trotzdem blieb Dimmer FX spezifisch flackerig** (alle anderen FX-Typen
+   waren nach Punkt 8 stabil). Zwei letzte, tiefer liegende Ursachen:
+   - `tFetch`s Debounce-Queue kann den Callback eines wartenden (noch nicht
+     gestarteten) Aufrufs stillschweigend verlieren, wenn ein dritter
+     Aufruf für dieselbe Debounce-ID eintrifft, bevor der zweite startet
+     (Queue hat nur einen Slot, wird einfach überschrieben). Verlorener
+     Callback = `pendingGenRef`-Eintrag bleibt für den Rest der Session bei
+     `Infinity` hängen, UND wird durch Punkt 8s eigene Reconciliation sogar
+     „bestätigt" (die Baseline übernimmt den eingefrorenen falschen Wert),
+     wodurch nie wieder ein neuer Sync-Versuch ausgelöst wird — ein
+     selbstverstärkendes Deadlock. Fix: 3-Sekunden-Sicherheitsnetz
+     (`armPending`) — löst einen hängengebliebenen `Infinity`-Wert nach
+     spätestens 3 s automatisch, statt für den Rest der Session zu hängen.
+   - `/set_all`s Dimmer-Kanal-Handling hat einen Seiteneffekt, den kein
+     anderer Kanal hat: `if(i==CH_DIMMER) dimFX.stop();` — ein veralteter,
+     noch unterwegs befindlicher `/set_all`-Echo (derselbe Race wie Punkt 8,
+     nur diesmal über eine andere Route) konnte dadurch `dimFX.active`
+     zurücksetzen, direkt nachdem ein Recall es gerade wieder aktiviert
+     hatte. Das war der letzte, hartnäckigste Fall — die reine
+     Frontend-Reconciliation aus Punkt 8 reichte hier nicht, weil der
+     Race nicht „wird ein Echo verschickt", sondern „ein *bereits*
+     verschicktes Echo landet spät" war, was am Frontend allein nicht mehr
+     zuverlässig verhinderbar ist.
+
+     **Finaler, robusterer Fix (Backend statt weiterer Frontend-Zeit-
+     Tricks):** Generation-basierte Staleness-Ablehnung. `/recall` merkt
+     sich seine eigene `stateGen` als `lastRecallGen`
+     (`Moving_Head_Horizon.ino`). `/fx`, `/modfx`, `/colfx`, `/sgobfx`,
+     `/rgobfx` und `/set_all`s `dimFX.stop()`-Zweig akzeptieren jetzt einen
+     `&g=`-Parameter (die vom Frontend zuletzt gesehene `stateGen`,
+     `lastKnownGenRef` in `data/index.html`) und lehnen die Anwendung ab
+     (`isStaleWrite()`-Helper, `WebAPI.h`), wenn `g < lastRecallGen` — ein
+     Request, der gebaut wurde, bevor das Frontend überhaupt vom letzten
+     Recall wusste, kann diesen dadurch nicht mehr überschreiben, egal wie
+     spät er tatsächlich ankommt. Das ist die einzige der neun Ursachen,
+     die nicht rein durch Frontend-Reconciliation lösbar war, weil sie
+     eine Race zwischen zwei bereits abgeschickten Requests ist, nicht
+     zwischen „senden oder nicht senden".
+
+**Debug-Instrumentierung, bewusst dauerhaft behalten** (wie `op`/`ot` und
+`rawBPM`/`rawMs`/`loopMax` vorher schon): `stateGen`/`lastGenSource`/
+`bumpGen()` (`Moving_Head_Horizon.ino`) plus `"gsrc"` in `/api/get_dmx`
+(`WebAPI.h`) — zeigt live, welche Route die letzte State-Änderung
+verursacht hat. War der eigentliche Schlüssel, um Punkt 8/9 überhaupt von
+reinem Channel-Diff-Rätselraten zu unterscheiden — ohne dieses Feld wäre
+insbesondere Punkt 9 (Race zwischen zwei bereits gesendeten Requests, nicht
+zwischen Senden/Nicht-Senden) praktisch nicht diagnostizierbar gewesen.
+
+**Verifikationsmethode:** durchgehend Live-`curl`-Polling gegen
+`/api/get_dmx` alle ~150–200 ms über mehrere Minuten während der User live
+zwischen Presets wechselte (u. a. gezielt Preset 1 ↔ 2 mit allen sieben
+FX-Typen aktiv), Rohdaten mit Python nachanalysiert (Generation-Sprünge,
+Channel-Diffs pro Sample). Mehrfach zeigte sich dabei, dass eine Diagnose,
+die nur auf Kanal-Diffs zwischen zwei Polls basierte, irreführend war, weil
+Pan/Tilt kontinuierlich aus dem ~30-ms-Smoothing-Loop driften — unabhängig
+von jeder HTTP-Mutation. Erst `gsrc` (Punkt oben) machte die Diagnose
+eindeutig. Nach Fix 9 vom User über einen längeren Testlauf (alle sieben
+FX aktiv, wiederholtes schnelles Hin-und-Herschalten zwischen zwei Presets)
+als „ist gefixt jetzt" bestätigt.
+
+**Offen für eine künftige Session (User-Wunsch, evtl. mit mehr Reasoning-
+Budget/Opus):** Die Architektur, die diese neun Bugs überhaupt erst möglich
+gemacht hat — mehrere unabhängige, asynchrone Schreibpfade
+(`syncFx`/`track()`-Echo, Poll-Merge, Joystick-Smoothing, NVS-Recall), die
+alle denselben `dmxData[]`/Live-State ohne zentrale Ownership anfassen —
+ist strukturell fragil geblieben, auch nach allen neun Fixes. Die Fixes
+selbst sind alle chirurgisch und einzeln begründet, aber es sind jetzt
+spürbar viele verschiedene Nebenläufigkeits-Sicherungsmechanismen parallel
+im Einsatz (`pendingGenRef`/`isLocalDirty`, `armPending`-Sicherheitsnetz,
+`pr2.*`/`chP.*`-Reconciliation, `&g=`/`lastRecallGen`-Staleness-Guard). Ein
+sauberer Neuentwurf (z. B. ein einziger, klar besessener Server-State mit
+echtem Request/Response statt Fire-and-forget-Echos, oder WebSockets statt
+Poll+Echo) wäre die eigentliche strukturelle Lösung — siehe `backlog.md`
+für den neuen Eintrag dazu.

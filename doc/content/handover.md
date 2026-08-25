@@ -56,6 +56,36 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   Flags), `/api/get_dmx` alle 2000 ms (voller State inkl. aller FX-Parameter,
   für UI-Resync z. B. nach Reload). Slider-Änderungen triggern `tFetch`
   (debounced Fetch), um den ESP nicht mit Requests zu fluten.
+- **Optimistic-Write-vs-Poll-Sync (seit 2026-08-25, siehe `history.md` für die
+  volle Bugjagd-Historie):** ein lokaler UI-Zustand (z. B. gerade recalltes
+  Preset) und der nächste Poll können sich überholen — gelöst über einen
+  Generation-Counter statt eines Wall-Clock-Timers. `stateGen`
+  (`Moving_Head_Horizon.ino`) wird von jeder mutierenden Route hochgezählt
+  und statt „OK" zurückgegeben; `/api/get_dmx` liefert denselben Zähler als
+  `"gen"` mit. Frontend merkt sich pro Feld „warte auf mindestens Generation
+  G" (`pendingGenRef`/`isLocalDirty`, `data/index.html`) und ignoriert
+  Poll-Antworten, die älter sind. Zusätzlich lehnen FX-Konfig-Routen (`/fx`,
+  `/modfx`, `/colfx`, `/sgobfx`, `/rgobfx`, `/set_all`s Dimmer-Zweig) einen
+  Request serverseitig ab (`isStaleWrite()`, `WebAPI.h`), wenn sein
+  mitgesendeter `&g=`-Parameter älter ist als `lastRecallGen` — verhindert,
+  dass ein bereits abgeschickter, aber verspätet ankommender Request einen
+  zwischenzeitlichen Recall überschreibt (die eine der neun 2026-08-25-Bugs,
+  die reine Frontend-Reconciliation nicht lösen konnte). `"gsrc"` in
+  `/api/get_dmx` (welche Route hat `stateGen` zuletzt erhöht) ist ein
+  dauerhaft behaltenes Debug-Feld, analog zu `op`/`ot` und `rawBPM`/`rawMs`/
+  `loopMax` weiter unten — bei ähnlichen Sync-Bugs zuerst dort nachsehen,
+  bevor man aus Kanal-Diffs zwischen zwei Polls rät (führt in die Irre, da
+  Pan/Tilt kontinuierlich aus dem Smoothing-Loop driften, unabhängig von
+  jeder HTTP-Mutation).
+- **Bekannte strukturelle Schwäche (siehe `backlog.md` → „Technische
+  Schulden" für die volle Architektur-Diskussion):** mehrere unabhängige,
+  asynchrone Schreibpfade (Poll-Merge, `syncFx`/`track()`-Echo, Joystick-
+  Smoothing, NVS-Recall) fassen alle denselben `dmxData[]`/Live-State ohne
+  zentrale Ownership an. Die obigen Mechanismen lösen jede einzelne
+  gefundene Race chirurgisch, sind aber vier verschiedene, parallel
+  laufende Sicherungen — ein sauberer Neuentwurf (einziger besessener
+  Server-State mit echtem Request/Response, oder WebSockets statt
+  Poll+Echo) wäre die strukturelle Lösung, kein akuter Bug mehr.
 - **Joystick:** eigener Hook `useKeyboardJoystick` für Tastatur/Maus mit
   mehrstufigem Ramping (Shift/Alt-Modifier), sendet `joyInputX/Y` an
   `/joy_in`.

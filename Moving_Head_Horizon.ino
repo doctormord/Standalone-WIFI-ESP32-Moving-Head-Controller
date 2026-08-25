@@ -79,6 +79,33 @@ const float moveSyncBeats[8] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0};
 
 bool bumpBlackout = false; bool bumpStrobeF = false; bool bumpStrobe50 = false; bool bumpBlinder = false;
 int activePresetSlot = 0;
+// Bumped by every mutating route whose result the frontend needs to trust over a
+// possibly-in-flight-and-now-stale poll response (recall, FX start/stop, chaser
+// toggle, preset save) -- each such route returns the post-increment value instead
+// of "OK", and the frontend remembers "wait for at least generation G" per field
+// instead of a blind wall-clock timeout. Replaces an earlier per-field timer-based
+// guard (dirtyUntilRef/isLocalDirty's original design) that had to be wired in by
+// hand for every new optimistic UI update and kept missing fields (presetActive
+// flickering back to "no slot" was the last instance, 2026-08-25).
+uint32_t stateGen = 0;
+// Generation stamped at the moment /recall last applied a preset (see WebAPI.h's /recall).
+// FX-config routes (/fx, /modfx, /colfx, /sgobfx, /rgobfx) reject a request whose client-known
+// generation (its "g" query arg, the frontend's own last-seen stateGen) is older than this: such
+// a request was built from state that predates the recall and would silently re-apply the
+// PREVIOUS preset's FX active/params over the just-recalled one if allowed through. This closes a
+// real race the frontend's own bookkeeping (debounce + "keep the last-sent baseline in lockstep"
+// reconciliation, see data/index.html) could not fully close on its own -- confirmed live
+// 2026-08-25 via gsrc telemetry showing the identical slot recalled twice landing with different
+// Dimmer FX active state each time, even after the frontend-side fixes.
+uint32_t lastRecallGen = 0;
+// Debug field (2026-08-25, kept permanently like op/ot and rawBPM/rawMs/loopMax below): records
+// which route caused the *last* stateGen bump, exposed via /api/get_dmx's "gsrc" field. Live
+// telemetry alone couldn't distinguish an HTTP-triggered activePresetSlot reset from dmxData's own
+// continuous ~30ms pan/tilt output drift (see updateEngines()), so channel-diff inference between
+// polls was unreliable -- this is what actually found the panFine/tiltFine /set_all echo bug (see
+// data/index.html's track() comment) and is cheap enough to just leave in for the next one.
+const char* lastGenSource = "";
+inline uint32_t bumpGen(const char* src) { lastGenSource = src; return ++stateGen; }
 int centerPan16 = 32767; int centerTilt16 = 32767;
 // Fixture 0's actual per-frame Movement FX output (post-getValues(), what really goes out over
 // DMX) -- centerPan16/centerTilt16 alone only show the *center* the pattern orbits, not its live
@@ -282,6 +309,7 @@ void setupDMX() {
 
 void onArtDmx(uint16_t universe, uint16_t length, uint8_t sequence, uint8_t* data) {
   if (universe == 0) {
+    bumpGen("artnet"); // debug-only (2026-08-25), see bumpGen's declaration comment
     chaserActive = false; moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); activePresetSlot = 0;
     // Clear the *WasActive shadow flags too -- otherwise runStep()'s stop-fallback overwrites the
     // Art-Net byte just written below with the stopped FX's stale wheel position on this same tick,

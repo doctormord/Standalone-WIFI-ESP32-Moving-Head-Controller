@@ -3,7 +3,17 @@
 
 extern void loadAllChaserScenes();
 
-static File fsUploadFile; 
+static File fsUploadFile;
+
+// True if this request's client-known generation (its "g" query arg, the frontend's own
+// last-seen stateGen) predates the most recent /recall -- see lastRecallGen's declaration
+// comment in the .ino. A request built before the client knew about that recall would, if
+// applied, silently re-impose the PREVIOUS preset's FX state over the just-recalled one.
+// Missing "g" (a route that doesn't send it) is treated as not stale, so this only guards
+// routes that opt in.
+bool isStaleWrite() {
+  return server.hasArg("g") && (uint32_t)server.arg("g").toInt() < lastRecallGen;
+}
 
 void setupAPI() {
   
@@ -69,7 +79,7 @@ void setupAPI() {
     json += "{";
     json += "\"1\":" + String((int)dimSmoothTarget) + ",";
     for (int i = 2; i <= 18; i++) json += "\"" + String(i) + "\":" + String(dmxData[i]) + ",";
-    json += "\"cp\":" + String(centerPan16) + ",\"ct\":" + String(centerTilt16) + ",\"bpm\":" + String(globalBPM) + ",\"pr\":" + String(activePresetSlot) + ",\"chA\":" + String(chaserActive ? 1 : 0) + ",";
+    json += "\"cp\":" + String(centerPan16) + ",\"ct\":" + String(centerTilt16) + ",\"bpm\":" + String(globalBPM) + ",\"pr\":" + String(activePresetSlot) + ",\"chA\":" + String(chaserActive ? 1 : 0) + ",\"gen\":" + String(stateGen) + ",\"gsrc\":\"" + String(lastGenSource) + "\",";
     // Fixture 0's actual live Movement FX output -- cp/ct above are only the pattern's *center*,
     // not its animated position. Debug fields, added 2026-08-20 to diagnose a reported "circle
     // looks like a figure-8" issue live instead of guessing at it.
@@ -162,6 +172,27 @@ void setupAPI() {
     // was set above — update in-memory state directly instead of reloading
     // all 10 NVS slots from flash.
     chaserScenes[s - 1] = sd;
+    server.send(200, "text/plain", String(bumpGen("save")));
+  });
+
+  // Re-saves only a slot's pan/tilt center from the current live position,
+  // leaving every other already-saved parameter (FX, colors, gobos, speeds)
+  // untouched -- lets a pre-programmed slot be re-aimed on site without the
+  // full load/edit/save round trip through the Programmer tab.
+  server.on("/save_center", []() {
+    int s = server.arg("slot").toInt();
+    if (s < 1 || s > 10) { server.send(400, "text/plain", "invalid slot"); return; }
+
+    chaserScenes[s - 1].dmx[CH_PAN]       = (byte)(centerPan16 >> 8);
+    chaserScenes[s - 1].dmx[CH_PAN_FINE]  = (byte)(centerPan16 & 0xFF);
+    chaserScenes[s - 1].dmx[CH_TILT]      = (byte)(centerTilt16 >> 8);
+    chaserScenes[s - 1].dmx[CH_TILT_FINE] = (byte)(centerTilt16 & 0xFF);
+
+    prefs.begin(("sc" + String(s)).c_str(), false);
+    size_t written = prefs.putBytes("data", &chaserScenes[s - 1], sizeof(SceneData));
+    prefs.end();
+
+    if (written != sizeof(SceneData)) { server.send(500, "text/plain", "storage error"); return; }
     server.send(200, "OK");
   });
 
@@ -193,13 +224,30 @@ void setupAPI() {
   });
 
   server.on("/set_all", []() {
-    chaserActive = false; activePresetSlot = 0;
+    // Deliberately does NOT touch activePresetSlot (see 2026-08-25 history/backlog entry).
+    // It used to clear it whenever a channel value differed from what was already live, on the
+    // theory that a real manual edit means the recalled preset is no longer purely in effect.
+    // That inference proved unreliable in practice: dmxData is also touched by continuous FX
+    // output, joystick smoothing, and multi-field poll catch-up, none of which are a real edit,
+    // and each one individually patched (colorOff resync, panFine/tiltFine echo, FX-stop
+    // staleness) was followed by another still-live false positive. activePresetSlot now changes
+    // only via /recall, /kill_fx, and a genuine /chaser running->stopped transition -- a stable
+    // "last recalled slot" indicator instead of a frequently-wrong "and nothing changed since" one.
     for (int i = 1; i <= 18; i++) {
       String arg = "c" + String(i);
       if (server.hasArg(arg)) {
         int v = constrain(server.arg(arg).toInt(), 0, 255);
         dmxData[i] = (byte)v;
-        if(i==CH_DIMMER) { dimFX.stop(); dimSmoothTarget = v; }
+        // dimFX.stop() is a side effect none of /set_all's other channels have (it's how the
+        // dimmer slider reclaims control from the FX). Gated on !isStaleWrite() specifically --
+        // unlike the rest of this route (see the /set_all comment above), a stale echo here could
+        // silently disable dimFX again right after a recall had just turned it back on, since
+        // this is the one place /set_all can touch FX-active state. dimSmoothTarget is still
+        // applied either way -- harmless even when stale, since dimFX overwrites it every tick
+        // while genuinely active. Reported live 2026-08-25: Dimmer FX specifically (not the other
+        // FX types, which the /fx & /modfx generation guard already fixed) still inconsistent
+        // after switching presets.
+        if(i==CH_DIMMER) { if (!isStaleWrite()) dimFX.stop(); dimSmoothTarget = v; }
         if(i==CH_PAN) centerPan16 = (v << 8) | (centerPan16 & 0xFF);
         if(i==CH_PAN_FINE) centerPan16 = (centerPan16 & 0xFF00) | v;
         if(i==CH_TILT) centerTilt16 = (v << 8) | (centerTilt16 & 0xFF);
@@ -210,6 +258,7 @@ void setupAPI() {
   });
 
   server.on("/fx", []() {
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       bool startFresh = !moveFX.active && (server.arg("a") == "1");
       moveFX.active = (server.arg("a") == "1");
       moveFX.type = server.arg("t").toInt(); moveFX.rot = server.arg("r").toFloat();
@@ -223,10 +272,11 @@ void setupAPI() {
       moveFX.modSp = server.arg("ms").toFloat(); moveFX.trigger = server.arg("tr").toInt();
       moveFX.sync = constrain(server.arg("sy").toInt(), 0, 7);
       if(startFresh) moveFX.start(); else if (!moveFX.active) moveFX.stop();
-      server.send(200, "OK");
+      server.send(200, "text/plain", String(bumpGen("fx")));
   });
 
   server.on("/modfx", []() {
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       String pfx = server.arg("pfx");
       Modulator* m = nullptr;
       int ch = -1; // CH9/CH11 for gr/pr -- dim restores via dimSmoothTarget instead, see below
@@ -254,10 +304,11 @@ void setupAPI() {
           if (ch >= 0) dmxData[ch] = (byte)mv; else dimSmoothTarget = mv;
         }
       }
-      server.send(200, "OK");
+      server.send(200, "text/plain", String(bumpGen("modfx")));
   });
 
   server.on("/chaser", []() {
+    bool wasActive = chaserActive;
     bool startFresh = !chaserActive && (server.arg("act") == "1");
     chaserActive = (server.arg("act") == "1");
     if (server.hasArg("start")) chaserStartSlot = constrain(server.arg("start").toInt(), 0, 9);
@@ -283,12 +334,18 @@ void setupAPI() {
     prefs.end();
 
     if (startFresh) { currentSlot = chaserStartSlot; nextSlot = chaserStartSlot; stepStartTime = millis(); inFade = false; executeChaserSlot(currentSlot); }
-    else if (!chaserActive) { activePresetSlot = 0; }
-    server.send(200, "OK");
+    // Only clear the active-preset indicator on a genuine running->stopped
+    // transition. The frontend also hits this route routinely just to keep
+    // the auto-chaser config in sync (any poll-driven correction re-sends
+    // act=0 via syncFx('chaserState', ...)) -- clearing unconditionally on
+    // every act!=1 call wiped out a just-recalled preset within a poll cycle
+    // even though nothing about which preset is active actually changed.
+    else if (wasActive && !chaserActive) { activePresetSlot = 0; }
+    server.send(200, "text/plain", String(bumpGen("chaser")));
   });
 
-  server.on("/recall", []() { triggerLoad(1, server.arg("slot").toInt()); server.send(200, "OK"); });
-  server.on("/kill_fx", []() { moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); chaserActive = false; activePresetSlot = 0; server.send(200, "OK"); });
+  server.on("/recall", []() { triggerLoad(1, server.arg("slot").toInt()); lastRecallGen = bumpGen("recall"); server.send(200, "text/plain", String(lastRecallGen)); });
+  server.on("/kill_fx", []() { moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); chaserActive = false; activePresetSlot = 0; server.send(200, "text/plain", String(bumpGen("kill_fx"))); });
   server.on("/bump", []() { String t = server.arg("t"); bool s = (server.arg("s") == "1"); if(t=="blinder") bumpBlinder=s; if(t=="strobeF") bumpStrobeF=s; if(t=="strobe50") bumpStrobe50=s; if(t=="blackout") bumpBlackout=s; server.send(200, "OK"); });
   server.on("/masterdim", []() { masterBrightness = server.arg("v").toFloat() / 100.0f; prefs.begin("sys", false); prefs.putFloat("mdim", masterBrightness); prefs.end(); server.send(200, "OK"); });
   server.on("/smooth", []() { dimSmoothVal = constrain(server.arg("v").toInt(), 0, 100); prefs.begin("sys", false); prefs.putInt("ds", dimSmoothVal); prefs.end(); server.send(200, "OK"); });
@@ -335,6 +392,7 @@ void setupAPI() {
   });
 
   server.on("/colfx", []() {
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       colFX.active = (server.arg("a") == "1"); colFX.startVal = constrain(server.arg("st").toInt(), 0, 19); colFX.endVal = constrain(server.arg("en").toInt(), 0, 19);
       if (colFX.startVal > colFX.endVal) { int t = colFX.startVal; colFX.startVal = colFX.endVal; colFX.endVal = t; }
       colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
@@ -343,10 +401,11 @@ void setupAPI() {
       // See /sgobfx below: on stop, land on the Programmer tab's manual CH6 value instead of the
       // FX's own last wheel position, and clear colWasActive so runStep() doesn't undo it.
       if (!colFX.active && server.hasArg("mv")) { dmxData[CH_COLOR] = (byte)constrain(server.arg("mv").toInt(), 0, 255); colWasActive = false; }
-      server.send(200, "OK");
+      server.send(200, "text/plain", String(bumpGen("colfx")));
   });
 
   server.on("/sgobfx", []() {
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = constrain(server.arg("st").toInt(), 0, 9); sgobFX.endVal = constrain(server.arg("en").toInt(), 0, 9);
       if (sgobFX.startVal > sgobFX.endVal) { int t = sgobFX.startVal; sgobFX.startVal = sgobFX.endVal; sgobFX.endVal = t; }
       sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); sgobFX.scratch = (server.arg("sc") == "1");
@@ -360,10 +419,11 @@ void setupAPI() {
       // don't know a manual value (e.g. /kill_fx) -- clear sgWasActive here so THIS restore isn't
       // immediately overwritten by that fallback on the very next runStep() call.
       if (!sgobFX.active && server.hasArg("mv")) { dmxData[CH_GOBO] = (byte)constrain(server.arg("mv").toInt(), 0, 255); sgWasActive = false; }
-      server.send(200, "OK");
+      server.send(200, "text/plain", String(bumpGen("sgobfx")));
   });
 
   server.on("/rgobfx", []() {
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = constrain(server.arg("st").toInt(), 0, 6); rgobFX.endVal = constrain(server.arg("en").toInt(), 0, 6);
       if (rgobFX.startVal > rgobFX.endVal) { int t = rgobFX.startVal; rgobFX.startVal = rgobFX.endVal; rgobFX.endVal = t; }
       rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); rgobFX.scratch = (server.arg("sc") == "1");
@@ -372,7 +432,7 @@ void setupAPI() {
       // See /sgobfx above: on stop, land on the Programmer tab's manual CH8 value instead of the
       // chaser's own last wheel position, and clear rgWasActive so runStep() doesn't undo it.
       if (!rgobFX.active && server.hasArg("mv")) { dmxData[CH_GOBO_ROT] = (byte)constrain(server.arg("mv").toInt(), 0, 255); rgWasActive = false; }
-      server.send(200, "OK");
+      server.send(200, "text/plain", String(bumpGen("rgobfx")));
   });
 
   server.on("/save_patch", HTTP_POST, []() {

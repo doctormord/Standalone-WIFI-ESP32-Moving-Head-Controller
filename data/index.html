@@ -22,8 +22,12 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
 
-    /* ── Responsive tab grid layouts ── */
-    .tab-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    /* ── Responsive tab grid layouts ──
+       UI-scale zoom is applied here (not on html/body) so it only grows the
+       actual tab content -- .tab-scroll already owns real overflow-y:auto +
+       touch scrolling, so zoomed content that no longer fits stays reachable
+       by scrolling instead of being clipped by html/body's overflow:hidden. */
+    .tab-scroll { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; zoom: var(--hz-ui-scale, 1.15); }
 
     /* Toast notifications */
     .hz-toast-container { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; gap:8px; z-index:9999; pointer-events:none; }
@@ -850,7 +854,9 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     { key: 'green',  hex: '#22c55e' }, { key: 'violet', hex: '#a78bfa' }, { key: 'orange', hex: '#fb923c' },
   ];
 
-  function StatusBar({ accent, onAccentChange, night, onNightToggle, telemetry, bpm, micOn, fixtureCount = 1 }) {
+  function StatusBar({ accent, onAccentChange, night, onNightToggle, telemetry, bpm, micOn, fixtureCount = 1, uiScale = 1.15, onUiScaleChange }) {
+    const SCALE_STEPS = [1, 1.15, 1.3];
+    const scaleIdx = Math.max(0, SCALE_STEPS.findIndex(s => Math.abs(s - uiScale) < 0.01));
     const ping = telemetry.ping; const quality = telemetry.quality || '…'; const connected = quality !== 'OFF' && ping !== null;
     const pingColor = !connected ? '#6b7280' : ping < 30 ? '#4ade80' : ping < 100 ? '#fbbf24' : '#f87171';
     const qBars = quality === 'EXC' ? 4 : quality === 'GOOD' ? 3 : quality === 'FAIR' ? 2 : connected ? 1 : 0;
@@ -889,6 +895,9 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           </div>
           <button onClick={onNightToggle} title="Night mode (red-shift)" style={{ border: '1px solid rgba(255,255,255,0.08)', background: night ? 'rgba(244,63,94,0.18)' : 'transparent', color: night ? '#fda4af' : 'rgba(255,255,255,0.5)', padding: '4px 9px', borderRadius: 7, cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: 0.6, display: 'flex', alignItems: 'center', gap: 5 }}>
             <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 0 6.5 9.5A5.5 5.5 0 0 1 6.5 2.5 7 7 0 0 0 8 1z" /></svg>NIGHT
+          </button>
+          <button onClick={() => onUiScaleChange?.(SCALE_STEPS[(scaleIdx + 1) % SCALE_STEPS.length])} title="UI scale (text & button size)" style={{ border: '1px solid rgba(255,255,255,0.08)', background: 'transparent', color: 'rgba(255,255,255,0.5)', padding: '4px 9px', borderRadius: 7, cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: 0.6, display: 'flex', alignItems: 'center', gap: 5 }}>
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M3 3h4v2H5v2H3V3zm10 0v4h-2V5h-2V3h4zM3 13v-4h2v2h2v2H3zm10 0h-4v-2h2v-2h2v4z" /></svg>{Math.round(SCALE_STEPS[scaleIdx] * 100)}%
           </button>
         </div>
       </div>
@@ -944,7 +953,35 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     );
   }
 
-  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, FX_HUE, MOVE_SYNCS });
+  function PresetGrid({ presetNames, presetActive, accent, onRecall, onSave }) {
+    const holdTimers = useRef({});
+    return (
+      <div className="preset-grid">
+        {Array.from({ length: 10 }).map((_, i) => {
+          const name = presetNames[i]; const filled = !!name; const isActive = presetActive === i + 1;
+          return (
+            <button key={i} onPointerDown={() => { holdTimers.current[i] = setTimeout(() => { holdTimers.current[i] = null; const n = prompt(`Save to Preset ${i + 1}:`, name || ''); if (n !== null) onSave?.(i + 1, n.trim()); }, 700); }} onPointerUp={() => { if (holdTimers.current[i]) { clearTimeout(holdTimers.current[i]); holdTimers.current[i] = null; onRecall?.(i + 1); } }} onPointerLeave={() => { if (holdTimers.current[i]) { clearTimeout(holdTimers.current[i]); holdTimers.current[i] = null; } }} style={{ aspectRatio: '1.1 / 1', background: isActive ? accent : (filled ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.018)'), border: `1px solid ${isActive ? accent : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, color: isActive ? '#fff' : filled ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.3)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, boxShadow: isActive ? `0 0 18px ${accent}66` : 'none', transition: 'background .15s, border-color .15s', userSelect: 'none', WebkitUserSelect: 'none' }}>
+              <span style={{ fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{i + 1}</span><span style={{ fontSize: 8.5, opacity: 0.78, letterSpacing: 0.3, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 4px' }}>{name || '—'}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function SaveCenterButton({ presetActive, accent, onSaved }) {
+    const active = !!presetActive;
+    return (
+      <button
+        disabled={!active}
+        onClick={() => { fetch('/save_center?slot=' + presetActive).then(() => { showToast(`✓ Center saved to Slot ${presetActive}`, 'ok'); haptic(12); onSaved?.(); }).catch(() => showToast('✗ Save center failed', 'err')); }}
+        style={{ gridColumn: '1 / -1', marginTop: 5, padding: '9px 0', background: active ? `${accent}22` : 'rgba(255,255,255,0.03)', border: `1px solid ${active ? accent + '55' : 'rgba(255,255,255,0.06)'}`, borderRadius: 9, color: active ? accent : 'rgba(255,255,255,0.3)', fontWeight: 700, fontSize: 11, letterSpacing: 0.4, cursor: active ? 'pointer' : 'not-allowed' }}>
+        {active ? `SAVE CENTER → SLOT ${presetActive}` : 'SAVE CENTER (no slot active)'}
+      </button>
+    );
+  }
+
+  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, PresetGrid, SaveCenterButton, FX_HUE, MOVE_SYNCS });
 })();
 </script>
 <script type="text/babel">
@@ -987,6 +1024,9 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                 </div>
               </div>
             </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr' }}>
+              <SaveCenterButton presetActive={presetActive} accent={accent} />
+            </div>
             <JoystickAdvancedControls accent={accent} state={state} setState={setState} />
             <div style={{ marginTop: 10 }}>
               <LabeledSlider label="Master Brightness (Boost)" value={state.master} onChange={(v) => setState((s) => ({ ...s, master: v }))} min={0} max={200} unit="%" accent={accent} compact />
@@ -996,21 +1036,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <Panel title="Presets · executors" right={<span style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.4)', letterSpacing: 0.6 }}>tap = recall · hold = save</span>} padding={12}>
-            {(() => {
-              const holdTimers = React.useRef({});
-              return (
-                <div className="preset-grid">
-                  {Array.from({ length: 10 }).map((_, i) => {
-                    const name = presetNames[i]; const filled = !!name; const isActive = presetActive === i + 1;
-                    return (
-                      <button key={i} onPointerDown={() => { holdTimers.current[i] = setTimeout(() => { holdTimers.current[i] = null; const n = prompt(`Save to Preset ${i + 1}:`, name || ''); if (n !== null) onPresetSave?.(i + 1, n.trim()); }, 700); }} onPointerUp={() => { if (holdTimers.current[i]) { clearTimeout(holdTimers.current[i]); holdTimers.current[i] = null; onPresetRecall?.(i + 1); } }} onPointerLeave={() => { if (holdTimers.current[i]) { clearTimeout(holdTimers.current[i]); holdTimers.current[i] = null; } }} style={{ aspectRatio: '1.1 / 1', background: isActive ? accent : (filled ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.018)'), border: `1px solid ${isActive ? accent : 'rgba(255,255,255,0.06)'}`, borderRadius: 10, color: isActive ? '#fff' : filled ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.3)', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2, boxShadow: isActive ? `0 0 18px ${accent}66` : 'none', transition: 'background .15s, border-color .15s', userSelect: 'none', WebkitUserSelect: 'none' }}>
-                        <span style={{ fontSize: 18, fontWeight: 700, fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{i + 1}</span><span style={{ fontSize: 8.5, opacity: 0.78, letterSpacing: 0.3, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', padding: '0 4px' }}>{name || '—'}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })()}
+            <PresetGrid presetNames={presetNames} presetActive={presetActive} accent={accent} onRecall={onPresetRecall} onSave={onPresetSave} />
           </Panel>
           <Panel title="Auto-chaser · show" accentDot={FX_HUE.show} padding={12}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1046,7 +1072,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 <script type="text/babel">
 // horizon-programmer.jsx
 (function () {
-  const { useState } = React;
+  const { useState, useRef, useEffect } = React;
   const COLORS = [{ n: 'White (Open)', v: 0 }, { n: 'Red', v: 5 }, { n: 'Yellow', v: 10 }, { n: 'Blue', v: 15 }, { n: 'Green', v: 20 }, { n: 'Purple', v: 25 }, { n: 'Amber', v: 30 }, { n: 'Cyan', v: 35 }, { n: 'Emerald', v: 40 }, { n: 'Orange', v: 45 }];
   const COLOR_BASES = [...COLORS.map((c) => ({ n: `Color · ${c.n}`, v: c.v, range: 0 })), { n: 'Rotation · Slow → Fast', v: 100, range: 155 }];
   const SGOBOS = [{ n: 'White (Open)', v: 0 }, { n: 'Gobo 1', v: 10 }, { n: 'Gobo 2', v: 20 }, { n: 'Gobo 3', v: 30 }, { n: 'Gobo 4', v: 40 }, { n: 'Gobo 5', v: 50 }, { n: 'Gobo 6', v: 60 }, { n: 'Gobo 7', v: 70 }, { n: 'Gobo 8', v: 80 }, { n: 'Gobo 9', v: 90 }];
@@ -1172,7 +1198,57 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     );
   }
 
-  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens }) {
+  // Every state field the Programmer tab lets the user edit that a full /save
+  // would persist (mirrors WebAPI.h's /save handler field-by-field) -- used to
+  // detect unsaved edits before an in-place slot recall silently discards them.
+  // pan/tilt deliberately excluded: they drift continuously from the joystick's own
+  // smoothing/momentum animation (see updateEngines()), not just from real edits, so an exact-
+  // equality dirty check on them fires "unsaved changes" spuriously whenever the head is still
+  // easing toward a just-recalled position. They also already have their own dedicated save path
+  // (SaveCenterButton) separate from this full-programmer-state warning. Reported live 2026-08-25:
+  // a recall warning appeared "while switching without changing anything."
+  const PROG_DIRTY_KEYS = [
+    'dimmer', 'strobe', 'colorBase', 'colorOff', 'sgoboBase', 'sgoboOff', 'rgoboBase', 'rgoboOff', 'goboRot',
+    'prism', 'frost', 'prismRot', 'focus', 'zoom', 'macro',
+    'fxType', 'fxRot', 'fxMode', 'fxCurve', 'fxTr', 'fxSy', 'fxMS', 'fxSS', 'fxSE', 'fxZS', 'fxZE', 'fxRunning',
+    'dimMo', 'dimCu', 'dimTr', 'dimSy', 'dimSp', 'dimSt', 'dimEn', 'dimFxRunning',
+    'grMo', 'grCu', 'grTr', 'grSy', 'grSp', 'grSt', 'grEn', 'grFxRunning',
+    'prMo', 'prCu', 'prTr', 'prSy', 'prSp', 'prSt', 'prEn', 'prFxRunning',
+    'colSt', 'colEn', 'colHo', 'colTr', 'colSy', 'colFxRunning',
+    'sgSt', 'sgEn', 'sgHo', 'sgTr', 'sgSy', 'sgFxRunning', 'sgSc', 'sgSp', 'sgRng',
+    'rgSt', 'rgEn', 'rgHo', 'rgTr', 'rgSy', 'rgFxRunning', 'rgSc', 'rgSp',
+  ];
+
+  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave }) {
+    // Tracks "has anything changed since the last recall/save" via a per-field
+    // baseline snapshot (not just a boolean) so a partial save -- e.g. Save
+    // Center, which only persists pan/tilt -- can clear just the fields it
+    // actually saved without wrongly clearing (or leaving stuck) any other,
+    // still-genuinely-unsaved edit. A poll-driven update right after recall
+    // (the just-recalled values landing) is suppressed once so it isn't
+    // mistaken for a fresh edit.
+    const isFirstRunRef = useRef(true);
+    const suppressDirtyRef = useRef(false);
+    const baselineRef = useRef({});
+    const [dirty, setDirty] = useState(false);
+    const captureBaseline = (keys = PROG_DIRTY_KEYS) => { const b = { ...baselineRef.current }; keys.forEach((k) => { b[k] = state[k]; }); baselineRef.current = b; };
+    useEffect(() => {
+      if (isFirstRunRef.current) { isFirstRunRef.current = false; captureBaseline(); return; }
+      if (suppressDirtyRef.current) { suppressDirtyRef.current = false; captureBaseline(); return; }
+      setDirty(PROG_DIRTY_KEYS.some((k) => state[k] !== baselineRef.current[k]));
+    }, PROG_DIRTY_KEYS.map((k) => state[k]));
+
+    const guardedRecall = async (slot) => {
+      if (dirty) {
+        const ok = await confirmDialog(`Recall Preset ${slot}? You have unsaved changes in the programmer that will be lost.`, { okLabel: 'Recall', cancelLabel: 'Cancel' });
+        if (!ok) return;
+      }
+      suppressDirtyRef.current = true;
+      setDirty(false);
+      onPresetRecall(slot);
+    };
+    const guardedSave = (slot, name) => { onPresetSave(slot, name); captureBaseline(); setDirty(false); };
+
     return (
       <div className="prog-grid">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -1204,20 +1280,14 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
               <Pill accent={accent} active onClick={() => { fetch("/joy_in?x=0&y=0"); fetch("/map_go?p=32767&t=32767"); }}>CENTER</Pill>
               <Pill onClick={() => setState((s) => ({ ...s, tiltRev: !s.tiltRev }))} active={state.tiltRev}>Tilt Rev</Pill>
             </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr' }}>
+              <SaveCenterButton presetActive={state.presetActive} accent={accent} />
+            </div>
             <JoystickAdvancedControls accent={accent} state={state} setState={setState} />
           </Panel>
-          <Accordion title="Save to preset · slot" dot={accent}>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              <select value={state.presetSaveSlot} onFocus={() => setState((s) => ({ ...s, presetSaveName: s.presetNames[s.presetSaveSlot - 1] || '' }))} onChange={(e) => { const slot = parseInt(e.target.value); setState((s) => ({ ...s, presetSaveSlot: slot, presetSaveName: s.presetNames[slot - 1] || '' })); }} style={{ flex: '0 0 80px', padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, appearance: 'none', cursor: 'pointer' }}>
-                {Array.from({length:10}, (_,i)=>(<option key={i} value={i+1} style={{background:'#1a1a1d'}}>{`Slot ${i+1}`}</option>))}
-              </select>
-              <input value={state.presetSaveName !== undefined ? state.presetSaveName : (state.presetNames[state.presetSaveSlot - 1] || '')} onChange={(e) => setState((s) => ({ ...s, presetSaveName: e.target.value }))} placeholder="Preset name (max 20)" maxLength={20} style={{ flex: 1, padding: '9px 10px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 9, color: '#fff', fontSize: 12, fontFamily: 'inherit' }} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-              <button onClick={async () => { const ok = await confirmDialog(`Save current programmer state to Preset ${state.presetSaveSlot}? This overwrites the existing preset.`, { okLabel: 'Save', cancelLabel: 'Cancel' }); if (!ok) return; fetch(`/save?slot=${state.presetSaveSlot}&n=${encodeURIComponent(state.presetSaveName || '')}`).then(() => { setState(s => { const pn = [...s.presetNames]; pn[state.presetSaveSlot - 1] = state.presetSaveName || `Preset ${state.presetSaveSlot}`; return { ...s, presetNames: pn }; }); showToast(`✓ Preset ${state.presetSaveSlot} saved`, 'ok'); }); }} style={{ padding: '11px 0', background: '#16a34a', border: 'none', borderRadius: 9, color: '#fff', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>SAVE</button>
-              <button onClick={async () => { const ok = await confirmDialog(`Recall Preset ${state.presetSaveSlot}? This replaces the current programmer state.`, { okLabel: 'Recall', cancelLabel: 'Cancel' }); if (!ok) return; fetch('/recall?slot=' + state.presetSaveSlot); setState((s) => ({ ...s, presetActive: state.presetSaveSlot })); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.18)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', letterSpacing: 0.6 }}>RECALL</button>
-            </div>
-          </Accordion>
+          <Panel title="Presets · executors" right={<span style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.4)', letterSpacing: 0.6 }}>tap = recall · hold = save</span>} padding={12}>
+            <PresetGrid presetNames={state.presetNames} presetActive={state.presetActive} accent={accent} onRecall={guardedRecall} onSave={guardedSave} />
+          </Panel>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <Panel title="Master · color" padding={12}>
@@ -1609,14 +1679,19 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 (function () {
   const { useState, useEffect, useRef, useCallback } = React;
   const ACCENT_DEFAULT = '#f43f5e';
-  const tfWait = {}, tfPending = {};
-  async function tFetch(url, id, delay = 40) {
-    if (tfWait[id]) { tfPending[id] = url; return; }
+  const tfWait = {}, tfPending = {}, tfPendingCb = {};
+  // onDone (optional) receives the response body text once the request for this id actually
+  // completes -- used to read back the backend's post-write state generation (see stateGen /
+  // pendingGenRef below). If a call arrives while one is already in flight for the same id, it's
+  // queued and its callback is carried along so the eventual catch-up request still reports its
+  // own real generation, not the earlier in-flight request's.
+  async function tFetch(url, id, delay = 40, onDone) {
+    if (tfWait[id]) { tfPending[id] = url; tfPendingCb[id] = onDone; return; }
     tfWait[id] = true;
-    try { await fetch(url); } catch(e) {}
+    try { const r = await fetch(url); onDone?.(await r.text()); } catch(e) {}
     setTimeout(() => {
       tfWait[id] = false;
-      if (tfPending[id]) { const next = tfPending[id]; tfPending[id] = null; tFetch(next, id, delay); }
+      if (tfPending[id]) { const next = tfPending[id]; const cb = tfPendingCb[id]; tfPending[id] = null; tfPendingCb[id] = null; tFetch(next, id, delay, cb); }
     }, delay);
   }
   // A stop command (x=0,y=0) queued behind tFetch's debounce/cooldown could sit for up to ~80ms
@@ -1631,10 +1706,9 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   // can sit behind an in-flight update for up to ~80ms, and if that delay outlasts the "dirty" grace
   // window a stale poll response can flip the flag back to running. Reported live 2026-08-18: sg/rg
   // chaser stop "springt dann manchmal nach 1 sekunden wieder auf run" -- skip the queue entirely.
-  function tFetchImmediate(url, id) { tfPending[id] = null; fetch(url).catch(() => {}); }
+  function tFetchImmediate(url, id, onDone) { tfPending[id] = null; return fetch(url).then((r) => r.text()).then((t) => onDone?.(t)).catch(() => {}); }
 
   const CH = { DIMMER:1, STROBE:2, PAN:3, TILT:4, SPEED:5, COLOR:6, GOBO:7, GOBO_ROT:8, GOBO_IDX:9, PRISM:10, PRISM_ROT:11, FROST:12, FOCUS:13, ZOOM:14, PAN_FINE:15, TILT_FINE:16, MACRO:17 };
-  const COLORS = [{n:'White',v:0},{n:'W/R',v:50},{n:'Red',v:5},{n:'R/Y',v:55},{n:'Yellow',v:10},{n:'Y/B',v:60},{n:'Blue',v:15},{n:'B/G',v:65},{n:'Green',v:20},{n:'G/P',v:70},{n:'Purple',v:25},{n:'P/A',v:75},{n:'Amber',v:30},{n:'A/C',v:80},{n:'Cyan',v:35},{n:'C/E',v:85},{n:'Emerald',v:40},{n:'E/O',v:90},{n:'Orange',v:45},{n:'O/W',v:95}];
   // Zone-start/width tables for CH.GOBO/CH.GOBO_ROT, so the poll below can read the device's actual
   // gobo wheel position back into sgoboBase/rgoboBase (and their offsets) -- mirrors SGOBO_BASES/
   // RGOBO_BASES in the Programmer tab's script block, duplicated here per this project's per-block
@@ -1642,6 +1716,15 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   // back into the Live/Programmer dropdown, which stayed showing whatever was last manually picked.
   const SGOBO_ZONES = [{v:0,range:0},{v:10,range:0},{v:20,range:0},{v:30,range:0},{v:40,range:0},{v:50,range:0},{v:60,range:0},{v:70,range:0},{v:80,range:0},{v:90,range:0},{v:100,range:29},{v:130,range:4},{v:135,range:75},{v:211,range:44}];
   const RGOBO_ZONES = [{v:0,range:0},{v:10,range:0},{v:20,range:0},{v:30,range:0},{v:40,range:0},{v:50,range:0},{v:60,range:0},{v:70,range:57},{v:128,range:1},{v:130,range:62},{v:193,range:62}];
+  // Mirrors COLOR_BASES in the Programmer tab's script block (10 solid colors + "Rotation ·
+  // Slow -> Fast" at v:100/range:155), sorted ascending by v (COLOR_BASES itself is ordered for
+  // UI grouping, not zone lookup) so findGoboZone can locate the active zone here too. Before this,
+  // only colorBase was ever re-derived from a poll (via an exact-match lookup that silently failed
+  // for any value >=100) -- colorOff was never resynced, so once a Rotation-mode preset was ever
+  // recalled, colorBase/colorOff got stuck and silently corrupted the very next recall's /set_all
+  // echo for an unrelated preset, which then looked like a real edit and cleared activePresetSlot.
+  // Reported live 2026-08-25 as "no slot active" recurring after switching slots.
+  const COLOR_ZONES = [{v:0,range:0},{v:5,range:0},{v:10,range:0},{v:15,range:0},{v:20,range:0},{v:25,range:0},{v:30,range:0},{v:35,range:0},{v:40,range:0},{v:45,range:0},{v:50,range:0},{v:55,range:0},{v:60,range:0},{v:65,range:0},{v:70,range:0},{v:75,range:0},{v:80,range:0},{v:85,range:0},{v:90,range:0},{v:95,range:0},{v:100,range:155}];
   const findGoboZone = (zones, val) => { let z = zones[0]; for (const b of zones) { if (val >= b.v) z = b; else break; } return z; };
 
 const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
@@ -1649,9 +1732,12 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
     const [tab, setTabState] = useState(() => { const saved = localStorage.getItem('hz_tab'); return VALID_TABS.includes(saved) ? saved : 'LIVE'; });
     const setTab = useCallback((t) => { setTabState(t); try { localStorage.setItem('hz_tab', t); } catch(e) {} }, []);
     const [night, setNight] = useState(() => localStorage.getItem('hz_night') === '1');
-    
+
     // The correctly renamed variable
     const [accent, setAccent] = useState(() => localStorage.getItem('hz_accent') || ACCENT_DEFAULT);
+
+    const [uiScale, setUiScale] = useState(() => { const saved = parseFloat(localStorage.getItem('hz_uiscale')); return isNaN(saved) ? 1.15 : saved; });
+    useEffect(() => { document.documentElement.style.setProperty('--hz-ui-scale', uiScale); try { localStorage.setItem('hz_uiscale', uiScale); } catch(e) {} }, [uiScale]);
 
     const [muted, setMuted] = useState(false);
     const [micOn, setMicOn] = useState(false);
@@ -1688,44 +1774,134 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
 
 const isReceiving = useRef(false);
     const prevRef = useRef({});
-    const dirtyUntilRef = useRef({});
-    const isLocalDirty = (f) => (dirtyUntilRef.current[f] || 0) > Date.now();
+    // Replaces a wall-clock "trust the local value for N ms" timer with an authoritative
+    // one: pendingGenRef[field] holds the backend's post-write state generation (see
+    // Moving_Head_Horizon.ino's stateGen) that a poll response must reach before it's
+    // allowed to override this field. Every mutating write's own response reports the
+    // generation it just caused, so this closes the optimistic-update-vs-poll race
+    // exactly instead of guessing a duration long enough to usually cover it.
+    const pendingGenRef = useRef({});
+    const isLocalDirty = (f, gen) => (pendingGenRef.current[f] || 0) > (gen || 0);
+    // The client's own last-seen stateGen, sent as "&g=" on FX-config writes (/fx, /modfx,
+    // /colfx, /sgobfx, /rgobfx) so the backend can reject one that was built before this client
+    // even knew about a more recent /recall -- see isStaleWrite()'s comment in WebAPI.h. Belt-
+    // and-suspenders alongside the frontend-side reconciliation above: that closes the common
+    // case (nothing spurious gets sent), this closes the race where something was already
+    // in-flight when a recall happened and would otherwise land after it and stomp part of the
+    // just-recalled preset. Confirmed live 2026-08-25 via gsrc telemetry: the identical preset
+    // slot recalled repeatedly landed with Dimmer FX active/inactive inconsistently even after
+    // the frontend-only fixes.
+    const lastKnownGenRef = useRef(0);
+    const markPending = (f) => (text) => { const g = parseInt(text, 10); if (!isNaN(g)) pendingGenRef.current[f] = g; };
+    // Provisionally blocks poll updates to `f` (set to Infinity) until the confirming response's
+    // markPending call replaces it with the real generation -- see syncFx below. tFetch's debounce
+    // queue can silently drop a queued call's own callback if a THIRD call for the same id arrives
+    // before the queued one starts (it just overwrites the one-slot queue), which would otherwise
+    // leave `f` stuck at Infinity for the rest of the session -- permanently freezing that field's
+    // display (e.g. Dimmer FX run-state, rotating gobo) at whatever it was, since a stuck Infinity
+    // also gets baked into syncFx's "last sent" baseline (see the pr2.* reconciliation below),
+    // which then never sees a diff again and stops sending, so nothing ever resolves it. This
+    // safety-net timeout guarantees self-healing within a few seconds even if that confirming
+    // callback never arrives, instead of a silent permanent freeze. Reported live 2026-08-25:
+    // Dimmer FX / rotating gobo state not reliably updating after repeated fast preset switching.
+    const armPending = (f) => { pendingGenRef.current[f] = Infinity; setTimeout(() => { if (pendingGenRef.current[f] === Infinity) pendingGenRef.current[f] = 0; }, 3000); };
 
     useEffect(() => {
       const sync = async () => {
         try {
           const r = await fetch('/api/get_dmx'); const d = await r.json();
           if (d.bpm) setBpm(d.bpm);
+          if (d.gen != null) lastKnownGenRef.current = d.gen;
 
           isReceiving.current = true; // set flag: we're currently receiving data
 
           setState(prev => {
             const next = { ...prev };
-            const color = d[CH.COLOR]; const colorEntry = COLORS.find(c => c.v === color);
+            // Fresh FX-running flags computed FIRST, before the manual-channel merge below --
+            // that block needs to know whether e.g. dimFX *just* stopped as of THIS poll, not
+            // whether it was running before this poll. Checking prev.dimFxRunning there (as this
+            // used to) left a full ~2s poll cycle where dimmer/goboRot/prismRot/colorBase/
+            // sgoboBase/rgoboBase stayed frozen at their last pre-stop snapshot, during which
+            // track()'s force-resync-on-stop below could fire using that stale value and stomp
+            // whatever the backend had just switched to (e.g. a recalled preset's own static
+            // value). Reported live 2026-08-25 as a random dimmer level and "no slot active"
+            // appearing right after switching presets, and a rotating-gobo effect intermittently
+            // not applying.
+            const fxRunning = d.fA !== undefined ? (isLocalDirty('fxRunning', d.gen) ? prev.fxRunning : !!d.fA) : prev.fxRunning;
+            const dimFxRunning = d.fA !== undefined ? (isLocalDirty('dimFxRunning', d.gen) ? prev.dimFxRunning : !!d.dA) : prev.dimFxRunning;
+            const grFxRunning = d.fA !== undefined ? (isLocalDirty('grFxRunning', d.gen) ? prev.grFxRunning : !!d.grA) : prev.grFxRunning;
+            const prFxRunning = d.fA !== undefined ? (isLocalDirty('prFxRunning', d.gen) ? prev.prFxRunning : !!d.prA) : prev.prFxRunning;
+            const colFxRunning = d.fA !== undefined ? (isLocalDirty('colFxRunning', d.gen) ? prev.colFxRunning : !!d.cA) : prev.colFxRunning;
+            const sgFxRunning = d.fA !== undefined ? (isLocalDirty('sgFxRunning', d.gen) ? prev.sgFxRunning : !!d.sgA) : prev.sgFxRunning;
+            const rgFxRunning = d.fA !== undefined ? (isLocalDirty('rgFxRunning', d.gen) ? prev.rgFxRunning : !!d.rgA) : prev.rgFxRunning;
+            const showRunning = d.fA !== undefined ? (isLocalDirty('showRunning', d.gen) ? prev.showRunning : !!d.chA) : prev.showRunning;
+
             // Dimmer/gobo-rot/prism-rot/color base are skipped here while their FX is running -- otherwise
             // the manual control visibly jitters with the FX's live oscillating output every poll, and any
             // manual edit the user makes *while the FX is active* (meant to take effect once stopped) gets
             // silently overwritten by the next poll before Stop is even pressed. Reported live 2026-08-18.
-            next.dimmer = prev.dimFxRunning ? prev.dimmer : (d[CH.DIMMER] ?? prev.dimmer); next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d.cp != null ? Math.round(d.cp / 257) : prev.pan; next.tilt = d.ct != null ? Math.round(d.ct / 257) : prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = prev.grFxRunning ? prev.goboRot : (d[CH.GOBO_IDX] ?? prev.goboRot); next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = prev.prFxRunning ? prev.prismRot : (d[CH.PRISM_ROT] ?? prev.prismRot); next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
-            if (colorEntry && !prev.colFxRunning) next.colorBase = colorEntry.v;
+            next.dimmer = dimFxRunning ? prev.dimmer : (d[CH.DIMMER] ?? prev.dimmer); next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d.cp != null ? Math.round(d.cp / 257) : prev.pan; next.tilt = d.ct != null ? Math.round(d.ct / 257) : prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = grFxRunning ? prev.goboRot : (d[CH.GOBO_IDX] ?? prev.goboRot); next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = prFxRunning ? prev.prismRot : (d[CH.PRISM_ROT] ?? prev.prismRot); next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
+            if (d[CH.COLOR] != null && !colFxRunning) { const z = findGoboZone(COLOR_ZONES, d[CH.COLOR]); next.colorBase = z.v; next.colorOff = d[CH.COLOR] - z.v; }
             // Gobo dropdowns are otherwise frontend-authoritative (nothing else read them back) --
             // without this, recalling a preset/chaser slot (or an Art-Net takeover) silently applied
             // the new gobo on the actual fixture while the Live/Programmer dropdown kept showing
             // whichever gobo was last picked by hand. Reported live 2026-08-20.
-            if (d[CH.GOBO] != null && !prev.sgFxRunning) { const z = findGoboZone(SGOBO_ZONES, d[CH.GOBO]); next.sgoboBase = z.v; next.sgoboOff = d[CH.GOBO] - z.v; }
-            if (d[CH.GOBO_ROT] != null && !prev.rgFxRunning) { const z = findGoboZone(RGOBO_ZONES, d[CH.GOBO_ROT]); next.rgoboBase = z.v; next.rgoboOff = d[CH.GOBO_ROT] - z.v; }
-            if (d.pn) next.presetNames = d.pn; next.presetActive = d.pr > 0 ? d.pr : null;
+            if (d[CH.GOBO] != null && !sgFxRunning) { const z = findGoboZone(SGOBO_ZONES, d[CH.GOBO]); next.sgoboBase = z.v; next.sgoboOff = d[CH.GOBO] - z.v; }
+            if (d[CH.GOBO_ROT] != null && !rgFxRunning) { const z = findGoboZone(RGOBO_ZONES, d[CH.GOBO_ROT]); next.rgoboBase = z.v; next.rgoboOff = d[CH.GOBO_ROT] - z.v; }
+
+            // Same "keep the last-sent baseline in lockstep" fix as syncFx's pr2.* reconciliation
+            // below, applied to track()'s own per-channel baseline (p['ch'+ch] / prevRef.current,
+            // read in the debounced-send effect further down). Without this, EVERY poll-driven
+            // refresh of a manual channel (e.g. a recalled preset's own gobo/dimmer/focus value)
+            // looked like a fresh value to echo back via /set_all -- normally a harmless no-op
+            // echo of a value the backend already has, but if that echo was still in flight when
+            // the user recalled a DIFFERENT slot right after, it could land AFTER that second
+            // recall and silently overwrite its freshly-applied channel value with the stale one
+            // from before. This was real data corruption, not just a display glitch: confirmed via
+            // gsrc telemetry showing the exact same slot recalled twice in a row landing with
+            // different rotating-gobo/dimmer-FX state each time. Reported live 2026-08-25.
+            const chP = prevRef.current;
+            chP['ch' + CH.DIMMER] = next.dimmer; chP['ch' + CH.STROBE] = next.strobe; chP['ch' + CH.SPEED] = next.motorSpeed;
+            chP['ch' + CH.COLOR] = next.colorBase + next.colorOff; chP['ch' + CH.GOBO] = next.sgoboBase + next.sgoboOff; chP['ch' + CH.GOBO_ROT] = next.rgoboBase + next.rgoboOff; chP['ch' + CH.GOBO_IDX] = next.goboRot;
+            chP['ch' + CH.PRISM] = next.prism ? 200 : 0; chP['ch' + CH.PRISM_ROT] = next.prismRot; chP['ch' + CH.FROST] = next.frost ? 200 : 0; chP['ch' + CH.FOCUS] = next.focus; chP['ch' + CH.ZOOM] = next.zoom; chP['ch' + CH.MACRO] = next.macro;
+            // Same protection as the FX running-flags below: recallPreset()/savePreset() set
+            // these optimistically the instant a slot is tapped/renamed, but the 2s poll can
+            // still land mid-flight with a not-yet-updated backend value and clobber them back
+            // for one cycle. Reported live 2026-08-25 as "no slot active" flashing briefly when
+            // switching between slots -- generalized to presetNames too, same underlying race.
+            if (d.pn) next.presetNames = isLocalDirty('presetNames', d.gen) ? prev.presetNames : d.pn;
+            next.presetActive = isLocalDirty('presetActive', d.gen) ? prev.presetActive : (d.pr > 0 ? d.pr : null);
             if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
             if (d.dSm !== undefined) next.damping = d.dSm;
             if (d.fA !== undefined) {
-              next.fxRunning = isLocalDirty('fxRunning') ? prev.fxRunning : !!d.fA; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS;
-              next.dimFxRunning = isLocalDirty('dimFxRunning') ? prev.dimFxRunning : !!d.dA; next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy;
-              next.grFxRunning = isLocalDirty('grFxRunning') ? prev.grFxRunning : !!d.grA; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
-              next.prFxRunning = isLocalDirty('prFxRunning') ? prev.prFxRunning : !!d.prA; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
-              next.colFxRunning = isLocalDirty('colFxRunning') ? prev.colFxRunning : !!d.cA; next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy;
-              next.sgFxRunning = isLocalDirty('sgFxRunning') ? prev.sgFxRunning : !!d.sgA; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp != null ? Math.round(d.sgSp * 10) : prev.sgSp; next.sgRng = d.sgRng ?? prev.sgRng;
-              next.rgFxRunning = isLocalDirty('rgFxRunning') ? prev.rgFxRunning : !!d.rgA; next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc; next.rgSp = d.rgSp ?? prev.rgSp;
-              next.showRunning = isLocalDirty('showRunning') ? prev.showRunning : !!d.chA; next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; next.transMode = d.dip ?? prev.transMode;
+              next.fxRunning = fxRunning; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS;
+              next.dimFxRunning = dimFxRunning; next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy;
+              next.grFxRunning = grFxRunning; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
+              next.prFxRunning = prFxRunning; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
+              next.colFxRunning = colFxRunning; next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy;
+              next.sgFxRunning = sgFxRunning; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp != null ? Math.round(d.sgSp * 10) : prev.sgSp; next.sgRng = d.sgRng ?? prev.sgRng;
+              next.rgFxRunning = rgFxRunning; next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc; next.rgSp = d.rgSp ?? prev.rgSp;
+              next.showRunning = showRunning; next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; next.transMode = d.dip ?? prev.transMode;
+
+              // Keep syncFx's "last sent" baseline (prevRef.current, aka p in the debounced-send
+              // effect below) in lockstep with whatever this poll just applied -- otherwise a
+              // recalled preset's OWN new FX config looks like an unsent local edit the very next
+              // render, and syncFx echoes it straight back to the device via a redundant /fx,
+              // /modfx, /colfx, /sgobfx, /rgobfx or /chaser call. That stray echo doesn't persist
+              // anything (those routes only touch live in-RAM state, not NVS), but it can race a
+              // second, fast-following recall and stomp part of the newly-recalled preset's state
+              // with the previous preset's values. Reported live 2026-08-25: a rotating-gobo effect
+              // silently missing after one recall (present on a second, identical recall), and more
+              // broadly "parameters transferred between presets" when switching quickly.
+              const pr2 = prevRef.current;
+              pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy]);
+              pr2.dimFxState = JSON.stringify([next.dimFxRunning, next.dimSt, next.dimEn, next.dimMo, next.dimCu, next.dimSp, next.dimTr, next.dimSy]);
+              pr2.grFxState = JSON.stringify([next.grFxRunning, next.grSt, next.grEn, next.grMo, next.grCu, next.grSp, next.grTr, next.grSy]);
+              pr2.prFxState = JSON.stringify([next.prFxRunning, next.prSt, next.prEn, next.prMo, next.prCu, next.prSp, next.prTr, next.prSy]);
+              pr2.colFxState = JSON.stringify([next.colFxRunning, next.colSt, next.colEn, next.colHo, next.colTr, next.colSy]);
+              pr2.sgFxState = JSON.stringify([next.sgFxRunning, next.sgSt, next.sgEn, next.sgHo, next.sgTr, next.sgSy, next.sgSc, next.sgSp, next.sgRng]);
+              pr2.rgFxState = JSON.stringify([next.rgFxRunning, next.rgSt, next.rgEn, next.rgHo, next.rgTr, next.rgSy, next.rgSc, next.rgSp]);
+              pr2.chaserState = JSON.stringify([next.showRunning, next.chaserTrigger, next.chaserSync, next.chaserOrder, next.chaserFrom, next.chaserTo, next.chaserFade, next.chaserHold, next.chaserFadeMode, next.chaserFadeSync]);
             }
             if (d.fO !== undefined) { const nowMuted = d.fO === 1; setMuted(nowMuted); }
             if (d.hwA !== undefined) setMicOn(d.hwA === 1);
@@ -1772,9 +1948,18 @@ const isReceiving = useRef(false);
       // resumes the moment the FX is stopped and the next poll has refreshed the slider to match.
       track(CH.DIMMER, s.dimmer, s.dimFxRunning); track(CH.STROBE, s.strobe); track(CH.SPEED, s.motorSpeed);
       track(CH.COLOR, s.colorBase + s.colorOff, s.colFxRunning); track(CH.GOBO, s.sgoboBase + s.sgoboOff, s.sgFxRunning); track(CH.GOBO_ROT, s.rgoboBase + s.rgoboOff, s.rgFxRunning); track(CH.GOBO_IDX, s.goboRot, s.grFxRunning);
-      track(CH.PRISM, s.prism ? 200 : 0); track(CH.PRISM_ROT, s.prismRot, s.prFxRunning); track(CH.FROST, s.frost ? 200 : 0); track(CH.FOCUS, s.focus); track(CH.ZOOM, s.zoom); track(CH.PAN_FINE, s.panFine); track(CH.TILT_FINE, s.tiltFine); track(CH.MACRO, s.macro);
+      track(CH.PRISM, s.prism ? 200 : 0); track(CH.PRISM_ROT, s.prismRot, s.prFxRunning); track(CH.FROST, s.frost ? 200 : 0); track(CH.FOCUS, s.focus); track(CH.ZOOM, s.zoom); track(CH.MACRO, s.macro);
+      // PAN_FINE/TILT_FINE deliberately NOT tracked/echoed here -- there is no UI control that
+      // ever sets them; they're purely a read-only mirror of joystick/map_go/recall-driven backend
+      // state (see the poll merge below), which already keeps dmxData[CH_PAN_FINE/CH_TILT_FINE] in
+      // sync on its own via centerPan16/centerTilt16. Echoing them back through /set_all was not
+      // just redundant but actively harmful: they drift continuously (~30ms smoothing loop, see
+      // updateEngines()), so the echoed value was very often already stale by the time it landed,
+      // which /set_all's anyChange check correctly read as "a real edit" and used to clear
+      // activePresetSlot -- surfacing as "no slot active" shortly after almost any recall. Reported
+      // live 2026-08-25, confirmed via gsrc debug instrumentation (see bumpGen).
       
-      if (Object.keys(batch).length > 0) { const params = new URLSearchParams(); Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v)); fetch('/set_all?' + params.toString()).catch(() => {}); }
+      if (Object.keys(batch).length > 0) { const params = new URLSearchParams(); Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v)); params.append('g', lastKnownGenRef.current); fetch('/set_all?' + params.toString()).catch(() => {}); }
       
       // Shared by all FX/chaser state-sync blocks below: diff `fields` (with the running flag always
       // first) against the last-sent snapshot stored under p[stateKey], and if changed, fetch
@@ -1788,31 +1973,34 @@ const isReceiving = useRef(false);
           // Only mark the snapshot "seen" once it's actually sent -- same discipline as track()'s own
           // comment above explains. Updating p[stateKey] unconditionally (as this used to) meant a
           // Start/Stop press landing inside the post-poll isReceiving window got marked as handled
-          // without ever reaching the device: dirtyUntilRef was never armed, so the very next poll
-          // (device still reporting "not running") flipped the button back within ~2s. Reported live
-          // 2026-08-20: "FX-Start-Button wird kurz gruen, geht nach 2 Sekunden wieder auf rot."
+          // without ever reaching the device: the pending-generation guard was never armed, so the
+          // very next poll (device still reporting "not running") flipped the button back. Reported
+          // live 2026-08-20: "FX-Start-Button wird kurz gruen, geht nach 2 Sekunden wieder auf rot."
           if (!isReceiving.current) {
             p[stateKey] = snapshot;
-            dirtyUntilRef.current[runningKey] = Date.now() + 2500;
+            // Provisionally block ALL poll updates to this field until the write's own response
+            // reports the real generation it caused (markPending below) -- covers the brief window
+            // between "decided to send" and "response received" without guessing a duration.
+            armPending(runningKey);
             const url = urlBuilder();
-            if (!fields[0]) tFetchImmediate(url, fetchId); else tFetch(url, fetchId);
+            if (!fields[0]) tFetchImmediate(url, fetchId, markPending(runningKey)); else tFetch(url, fetchId, 40, markPending(runningKey));
           }
         }
       };
       syncFx('fxState', 'fxRunning', [s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy],
-        () => `/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}`, 'fx');
+        () => `/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}&g=${lastKnownGenRef.current}`, 'fx');
       syncFx('dimFxState', 'dimFxRunning', [s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy],
-        () => `/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}&mv=${s.dimmer}`, 'mfx_dim');
+        () => `/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}&mv=${s.dimmer}&g=${lastKnownGenRef.current}`, 'mfx_dim');
       syncFx('grFxState', 'grFxRunning', [s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy],
-        () => `/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}&mv=${s.goboRot}`, 'mfx_gr');
+        () => `/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}&mv=${s.goboRot}&g=${lastKnownGenRef.current}`, 'mfx_gr');
       syncFx('prFxState', 'prFxRunning', [s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy],
-        () => `/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}&mv=${s.prismRot}`, 'mfx_pr');
+        () => `/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}&mv=${s.prismRot}&g=${lastKnownGenRef.current}`, 'mfx_pr');
       syncFx('colFxState', 'colFxRunning', [s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy],
-        () => `/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}&mv=${s.colorBase + s.colorOff}`, 'cfx');
+        () => `/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}&mv=${s.colorBase + s.colorOff}&g=${lastKnownGenRef.current}`, 'cfx');
       syncFx('sgFxState', 'sgFxRunning', [s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc, s.sgSp, s.sgRng],
-        () => `/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}&spd=${(s.sgSp/10).toFixed(1)}&rng=${s.sgRng}&mv=${s.sgoboBase + s.sgoboOff}`, 'sgfx');
+        () => `/sgobfx?a=${s.sgFxRunning?1:0}&st=${s.sgSt}&en=${s.sgEn}&ho=${s.sgHo}&tr=${s.sgTr}&sy=${s.sgSy}&sc=${s.sgSc}&spd=${(s.sgSp/10).toFixed(1)}&rng=${s.sgRng}&mv=${s.sgoboBase + s.sgoboOff}&g=${lastKnownGenRef.current}`, 'sgfx');
       syncFx('rgFxState', 'rgFxRunning', [s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc, s.rgSp],
-        () => `/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}&spd=${s.rgSp}&mv=${s.rgoboBase + s.rgoboOff}`, 'rgfx');
+        () => `/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}&spd=${s.rgSp}&mv=${s.rgoboBase + s.rgoboOff}&g=${lastKnownGenRef.current}`, 'rgfx');
       syncFx('chaserState', 'showRunning', [s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync],
         () => `/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog');
       
@@ -1833,9 +2021,25 @@ const isReceiving = useRef(false);
       }
     }, [state]);
 
-    const recallPreset = useCallback((slot) => { fetch('/recall?slot=' + slot).then(() => {}); setState(s => ({ ...s, presetActive: slot })); }, []);
-    const savePreset = useCallback((slot, name) => { fetch(`/save?slot=${slot}&n=${encodeURIComponent(name)}`).then(() => { setState(s => { const pn = [...s.presetNames]; pn[slot - 1] = name; return { ...s, presetNames: pn }; }); showToast(`✓ Preset ${slot} saved — "${name}"`, 'ok'); haptic(12); }).catch(() => showToast('✗ Save failed', 'err')); }, []);
-    const killAllFx = useCallback(() => { fetch('/kill_fx'); setState(s => ({ ...s, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, showRunning: false, presetActive: null })); }, []);
+    const recallPreset = useCallback((slot) => {
+      armPending('presetActive'); // see syncFx's comment -- provisional until the response confirms the real generation
+      fetch('/recall?slot=' + slot).then((r) => r.text()).then(markPending('presetActive')).catch(() => {});
+      setState(s => ({ ...s, presetActive: slot }));
+    }, []);
+    const savePreset = useCallback((slot, name) => {
+      armPending('presetNames');
+      fetch(`/save?slot=${slot}&n=${encodeURIComponent(name)}`).then((r) => r.text()).then((text) => {
+        markPending('presetNames')(text);
+        setState(s => { const pn = [...s.presetNames]; pn[slot - 1] = name; return { ...s, presetNames: pn }; });
+        showToast(`✓ Preset ${slot} saved — "${name}"`, 'ok'); haptic(12);
+      }).catch(() => showToast('✗ Save failed', 'err'));
+    }, []);
+    const killAllFx = useCallback(() => {
+      const killedKeys = ['fxRunning', 'dimFxRunning', 'grFxRunning', 'prFxRunning', 'colFxRunning', 'sgFxRunning', 'rgFxRunning', 'showRunning', 'presetActive'];
+      killedKeys.forEach((k) => armPending(k));
+      fetch('/kill_fx').then((r) => r.text()).then((text) => { const g = parseInt(text, 10); if (!isNaN(g)) killedKeys.forEach((k) => { pendingGenRef.current[k] = g; }); }).catch(() => {});
+      setState(s => ({ ...s, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, showRunning: false, presetActive: null }));
+    }, []);
     
     const handleMute = useCallback(() => {
       fetch(`/autofade?t=${state.fadeTime}&c=${state.fadeCurve}`);
@@ -1868,7 +2072,7 @@ const isReceiving = useRef(false);
 
     return (
       <div style={{ width: '100%', height: '100vh', display: 'flex', flexDirection: 'column', background: night ? '#0a0606' : '#0b0b0e', color: '#fff', fontFamily: '"Inter", -apple-system, system-ui, sans-serif', overflow: 'hidden', filter: night ? 'brightness(0.85) sepia(0.5) hue-rotate(-50deg) saturate(2.2)' : 'none', position: 'relative' }}>
-        <StatusBar accent={accent} onAccentChange={handleAccentChange} night={night} onNightToggle={() => setNight(n => { const next = !n; try { localStorage.setItem('hz_night', next ? '1' : '0'); } catch(e) {} return next; })} telemetry={tele} bpm={bpm} micOn={micOn} fixtureCount={fixtureCount} />
+        <StatusBar accent={accent} onAccentChange={handleAccentChange} night={night} onNightToggle={() => setNight(n => { const next = !n; try { localStorage.setItem('hz_night', next ? '1' : '0'); } catch(e) {} return next; })} telemetry={tele} bpm={bpm} micOn={micOn} fixtureCount={fixtureCount} uiScale={uiScale} onUiScaleChange={setUiScale} />
         <Tabs tab={tab} setTab={setTab} accent={accent} tabs={['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH']} />
         <div className="tab-scroll">
           {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}

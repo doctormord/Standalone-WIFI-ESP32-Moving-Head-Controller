@@ -7,6 +7,27 @@
 
 ## 🛠 Technische Schulden (Tech Debt)
 
+**Offen: State-Sync-Architektur strukturell fragil — Neuentwurf für künftige Session
+vorgeschlagen (2026-08-25, User-Wunsch, evtl. mit mehr Reasoning-Budget/Opus).** Die
+lange Bugjagd vom 2026-08-25 (neun echte Root Causes, siehe `history.md` für die volle
+Liste) hat gezeigt, dass mehrere unabhängige, asynchrone Schreibpfade (`syncFx`/
+`track()`-Echo aus dem Frontend, der 2s-Poll-Merge, das Joystick-Smoothing im
+30ms-Loop, NVS-Recall) alle denselben `dmxData[]`/Live-State ohne zentrale Ownership
+anfassen — jeder einzelne der neun Fixes ist chirurgisch korrekt, aber es sind jetzt
+vier verschiedene Nebenläufigkeits-Sicherungsmechanismen gleichzeitig im Einsatz, die
+sich gegenseitig ergänzen müssen, statt dass das Problem strukturell nicht auftreten
+kann: `pendingGenRef`/`isLocalDirty` (Generation-Gate für Poll-Updates),
+`armPending`-Sicherheitsnetz (3s-Timeout gegen verlorene `tFetch`-Callbacks),
+`pr2.*`/`chP.*`-Reconciliation (verhindert redundante Echos), `&g=`/`lastRecallGen`-
+Staleness-Guard (lehnt serverseitig veraltete Writes ab). Kandidaten für einen
+saubereren Neuentwurf: (a) ein einziger, eindeutig besessener Server-State mit echtem
+Request/Response-Pattern statt Fire-and-forget-Echo-Routen, (b) WebSockets statt
+Poll+Echo (steht ohnehin schon als Feature-Wunsch weiter unten — würde dieses ganze
+Problemfeld strukturell mit erledigen), (c) ein einziges „wer darf gerade schreiben"-
+Konzept statt pro-Feld-Generation-Tracking. Kein akuter Bug mehr (alle neun Instanzen
+sind gefixt und live verifiziert) — das hier ist eine bewusste Architektur-Empfehlung,
+kein offener Defekt.
+
 **Offen: Mic-BPM-Oktave-Korrektur braucht Live-Test mit echtem Audio (2026-08-19).** Siehe
 „Kürzlich gefixt" unten — Fix ist gebaut und kompiliert/geflasht, aber ohne Mikrofon-Input in
 dieser Umgebung nicht verifizierbar. `rawBPM`/`rawMs` in `/api/state` beobachten, während Musik
@@ -131,8 +152,15 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 - **WLAN Reconnect:** Bei sehr schwachem Signal reagiert der C3 trotz
   `WiFi.setAutoReconnect(true)` manchmal träge.
-- **UI State Sync:** Zwei gleichzeitig offene Browser-Fenster überschreiben
-  sich beim Auto-Sync (Polling) teilweise gegenseitig.
+- **UI State Sync (Multi-Client):** Zwei gleichzeitig offene Browser-Fenster/
+  -Tabs überschreiben sich beim Auto-Sync (Polling) teilweise gegenseitig.
+  **Nicht dasselbe** wie die am 2026-08-25 gefixte Single-Client-Race (siehe
+  „Kürzlich gefixt" — dort ging es um denselben Browser-Tab, der seine
+  eigenen veralteten Requests überschrieb, nicht um mehrere Clients). Der
+  neue `&g=`/`lastRecallGen`-Staleness-Guard hilft hier indirekt (ein
+  Request von Client A, der vor Client Bs letztem Recall gebaut wurde, wird
+  jetzt auch abgelehnt), löst das Grundproblem (kein Konzept von „wer hat
+  gerade die Kontrolle") aber nicht vollständig — bleibt offen.
 - **Statische Gobo-Nummer 6 kommt laut User am Fixture nicht.** **Update
   2026-08-17:** Mit dem jetzt vorliegenden offiziellen Datenblatt (siehe
   `mapping_sheds_160w_3in1_gobo.md`) verifiziert: `sGoboMap[6] = 60` trifft
@@ -159,6 +187,57 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   -Größe so wählen, dass der Zenit nicht gekreuzt wird.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
+
+- **LIVE-UI-Politur plus neun echte State-Sync-Bugs gefunden und gefixt (2026-08-25).**
+  Volle Diagnose-Historie (jeder der neun Fixes einzeln begründet, mit Telemetrie-Belegen)
+  in `history.md`. Kurzfassung:
+  - **UI:** größere Default-Schrift/-Buttons per CSS `zoom` auf `.tab-scroll` (nicht auf
+    `html`/`body` — brach sonst das Scrollen, siehe `history.md`), umschaltbar 100/115/130 %;
+    gemeinsame `PresetGrid`-Komponente ersetzt das alte `<select>` im Programmer-Tab (zeigt
+    jetzt Namen + aktiven Slot, wie im LIVE-Tab); neue `/save_center`-Route + `SaveCenterButton`
+    speichert nur Pan/Tilt-Center eines bereits programmierten Slots, ohne den Rest anzufassen;
+    Programmer-Tab warnt vor einem Recall jetzt nur noch, wenn seit dem letzten Recall/Save
+    tatsächlich etwas geändert wurde (Baseline-Snapshot statt blindem Boolean).
+  - **Bug 1–2:** `/chaser` und `/set_all` setzten `activePresetSlot=0` bei *jedem* Aufruf statt
+    nur bei einer echten Zustandsänderung — Ursache für das ursprünglich gemeldete
+    „no slot active"-Flackern beim Preset-Wechsel.
+  - **Bug 3:** Optimistic-Write-vs-Poll-Race von einem Wall-Clock-Timer
+    (`dirtyUntilRef`, „~2,5 s vertrauen") auf einen echten `stateGen`-Generation-Counter
+    umgebaut, den jede mutierende Route zurückgibt.
+  - **Bug 4–5:** `colorOff` wurde nie vom Poll zurückgelesen (Rotation-Farbmodus korrumpierte
+    sich dauerhaft selbst); `panFine`/`tiltFine` wurden unnötig zurückgesendet, obwohl kein
+    UI-Element sie editiert — beides führte zu veralteten `/set_all`-Echos.
+  - **Bug 6:** Poll-Merge prüfte den *alten* FX-Running-Status statt des in demselben Poll
+    frisch berechneten — ließ Dimmer/Gobo-Rotation/Prisma-Rotation nach einem FX-Stop bis zu
+    2 s auf einem eingefrorenen Snapshot hängen.
+  - **Bug 7:** `/set_all`s „war das eine echte Bearbeitung"-Inferenz per Byte-Diff erwies sich
+    als grundsätzlich unzuverlässig (nach vier Einzelfixen tauchte bei jedem Live-Test ein
+    weiterer Fall auf) — pragmatisch entfernt; `activePresetSlot` ändert sich seither nur noch
+    über `/recall`, `/kill_fx` und einen echten `/chaser`-Stop.
+  - **Bug 8:** Trotzdem blieb echte Daten-Korruption (derselbe Slot zweimal recallt, andere
+    Werte beim zweiten Mal) — die `syncFx`/`track()`-eigenen „zuletzt gesendet"-Baselines
+    wurden nie mit Poll-Updates nachgezogen, ein frisch recalltes Preset sah deshalb wie eine
+    unversendete lokale Änderung aus und wurde redundant zurückgeschickt; landete dieser Echo
+    verzögert nach einem zweiten Recall, überschrieb er dessen Werte. Fix: beide Baselines
+    werden jetzt direkt im Poll-Merge nachgezogen.
+  - **Bug 9 (hartnäckigster Fall, nur Dimmer FX betroffen):** `tFetch`s Debounce-Queue konnte
+    einen wartenden Callback stillschweigend verlieren (3-Sekunden-Sicherheitsnetz `armPending`
+    ergänzt), UND `/set_all`s Dimmer-Kanal hat einen Seiteneffekt (`dimFX.stop()`), den kein
+    anderer Kanal hat — ein spät ankommender veralteter Echo konnte dadurch Dimmer FX direkt
+    nach einem Recall wieder deaktivieren. **Finaler Fix:** generation-basierte
+    Staleness-Ablehnung auf dem Backend (`isStaleWrite()`, `&g=`-Parameter + `lastRecallGen`,
+    `WebAPI.h`/`Moving_Head_Horizon.ino`) — ein Request, der vor dem letzten Recall gebaut
+    wurde, wird jetzt serverseitig verworfen, unabhängig davon, wie spät er ankommt.
+  - **Debug-Instrumentierung dauerhaft behalten:** `"gsrc"`-Feld in `/api/get_dmx` (welche
+    Route hat die letzte State-Änderung verursacht) — war der Schlüssel, um Bug 8/9 überhaupt
+    von reinem Kanal-Diff-Rätselraten zu unterscheiden, siehe `history.md`.
+  - Live per `curl`-Telemetrie-Polling (~150–200 ms Intervall über mehrere Minuten, während der
+    User zwischen Presets wechselte) nach jedem Einzelfix gegenverifiziert, nicht nur
+    kompiliert. Nach Bug 9 vom User über einen längeren Testlauf (alle sieben FX aktiv,
+    wiederholtes schnelles Preset-Wechseln) als „ist gefixt jetzt" bestätigt.
+  - **Siehe auch:** neuer Eintrag oben unter „Technische Schulden" — die Architektur selbst
+    bleibt strukturell fragil, auch nach allen neun Fixes; Neuentwurf für künftige Session
+    vorgeschlagen.
 
 - **Movement-„Figure 8"-Optik untersucht bis zur physischen Root Cause — kein Software-Fix
   möglich, Workaround-Versuch wieder entfernt (2026-08-20, Fortsetzung).** Ausführliche
