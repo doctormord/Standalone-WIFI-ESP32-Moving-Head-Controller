@@ -108,7 +108,7 @@ graph TD
 * **Advanced FX Engine:** Generative, math-based movement and parameter modulation (LFOs) running at high refresh rates.
 * **Global BPM Synchronization:** Unified timing engine with Tap Tempo (moving average) and real-time Audio/Mic Sync via Web Audio API (FFT analysis).
 * **Non-Volatile Scene Memory:** Save up to 10 complete fixture states—including all active FX, modulators, and custom labels—directly to the ESP32's NVRAM.
-* **Over-The-Air (OTA) Updates:** Flash new firmware directly via the web interface without USB cables.
+* **Over-The-Air (OTA) Updates:** Flash new firmware over WiFi without USB cables, via `ArduinoOTA` (the standard Arduino IDE network port, or PlatformIO's `espota` upload protocol) once the device is connected in station mode. Note: this is an OTA *network port*, not an upload form in the web UI. It requires firmware from 2026-08-25 or later — earlier builds included the library and called `ArduinoOTA.handle()` but never called `ArduinoOTA.begin()`, so no OTA listener was ever started and OTA silently did not work at all.
 * **Fully Offline-Capable:** The React/Babel frontend is bundled gzip-compressed on-device rather than loaded from a CDN, so the console works even when the ESP32's own WiFi AP has no internet uplink (a common venue scenario).
 * **Adjustable UI Scale:** A tap-to-cycle 100/115/130% zoom control in the status bar for readability at dark venues, defaulting to 115% since pinch-zoom is disabled on mobile.
 * **Save Center:** Re-save just a preset's pan/tilt center position on-site (after re-aiming a pre-programmed fixture) without touching any of its other saved FX/color/gobo settings, and without the full load → edit → save round trip.

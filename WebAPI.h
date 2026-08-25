@@ -217,6 +217,24 @@ void setupAPI() {
     server.send(200, "OK");
   });
 
+  // Read-back for /joy_cfg. These nine values were persisted to NVS and restored at boot, but no
+  // route ever exposed them, so a freshly loaded browser tab held the frontend's hardcoded defaults
+  // instead of the device's real config -- and the first state change made its joyKey diff fire and
+  // overwrite the saved config with those defaults. Silent data loss on every page reload.
+  // Deliberately its own one-shot route rather than extra fields in /api/get_dmx, which is already
+  // ~960 bytes built from ~50 sequential String += on a heap-constrained ESP32-C3 and is polled
+  // every 2s. Values are emitted in the same units /joy_cfg accepts, so the round-trip is lossless:
+  // momentum as a percentage, the pan/tilt limits as the 0-255 bytes the UI works in (they are
+  // stored internally as 16-bit, see axisLimits above).
+  server.on("/api/joycfg", []() {
+    String json = "{\"spd\":" + String(joyMaxSpeed) + ",\"crv\":" + String(joyCurve, 2) +
+                  ",\"mom\":" + String(joyMomentum * 100.0f, 0) +
+                  ",\"prv\":" + String(joyPanRev ? 1 : 0) + ",\"trv\":" + String(joyTiltRev ? 1 : 0) +
+                  ",\"pmin\":" + String(panMinLimit >> 8) + ",\"pmax\":" + String(panMaxLimit >> 8) +
+                  ",\"tmin\":" + String(tiltMinLimit >> 8) + ",\"tmax\":" + String(tiltMaxLimit >> 8) + "}";
+    server.send(200, "application/json", json);
+  });
+
   server.on("/joy_in", []() {
     joyInputX = server.arg("x").toFloat(); 
     joyInputY = server.arg("y").toFloat();
@@ -254,7 +272,14 @@ void setupAPI() {
         if(i==CH_TILT_FINE) centerTilt16 = (centerTilt16 & 0xFF00) | v;
       }
     }
-    server.send(200, "OK");
+    // Replies with the post-write generation, like every other mutating route. It used to send
+    // server.send(200, "OK") -- the two-arg overload, which passes "OK" as the *Content-Type* and
+    // leaves the body empty, so the frontend had nothing to read even if it had looked. Without a
+    // generation to arm pendingGenRef against, every manually edited channel (static gobo slot,
+    // colour, focus, zoom, strobe, prism, macro, gobo index) was unprotected against the 2s poll
+    // merging a stale value back over a just-made edit. Reported live 2026-08-25: values picked in
+    // the Programmer tab reverting within about a second and only sticking on a second attempt.
+    server.send(200, "text/plain", String(bumpGen("set_all")));
   });
 
   server.on("/fx", []() {
@@ -308,6 +333,11 @@ void setupAPI() {
   });
 
   server.on("/chaser", []() {
+    // Same staleness guard the other FX routes carry (/fx, /modfx, /colfx, /sgobfx, /rgobfx): the
+    // chaser group was the one FX group with no protection at all -- it bumped the generation but
+    // never checked one, and the frontend sent no "g" either, so an echo still in flight from
+    // before a recall could land after it and stomp the freshly recalled chaser config.
+    if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
     bool wasActive = chaserActive;
     bool startFresh = !chaserActive && (server.arg("act") == "1");
     chaserActive = (server.arg("act") == "1");
@@ -347,12 +377,18 @@ void setupAPI() {
   server.on("/recall", []() { triggerLoad(1, server.arg("slot").toInt()); lastRecallGen = bumpGen("recall"); server.send(200, "text/plain", String(lastRecallGen)); });
   server.on("/kill_fx", []() { moveFX.stop(); dimFX.stop(); colFX.active = false; sgobFX.active = false; rgobFX.active = false; gRotFX.stop(); pRotFX.stop(); chaserActive = false; activePresetSlot = 0; server.send(200, "text/plain", String(bumpGen("kill_fx"))); });
   server.on("/bump", []() { String t = server.arg("t"); bool s = (server.arg("s") == "1"); if(t=="blinder") bumpBlinder=s; if(t=="strobeF") bumpStrobeF=s; if(t=="strobe50") bumpStrobe50=s; if(t=="blackout") bumpBlackout=s; server.send(200, "OK"); });
-  server.on("/masterdim", []() { masterBrightness = server.arg("v").toFloat() / 100.0f; prefs.begin("sys", false); prefs.putFloat("mdim", masterBrightness); prefs.end(); server.send(200, "OK"); });
-  server.on("/smooth", []() { dimSmoothVal = constrain(server.arg("v").toInt(), 0, 100); prefs.begin("sys", false); prefs.putInt("ds", dimSmoothVal); prefs.end(); server.send(200, "OK"); });
-  server.on("/autofade", []() { fadeDuration = constrain(server.arg("t").toInt(), 1, 3600000); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "OK"); });
-  server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "OK"); });
-  server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "OK"); });
-  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); server.send(200, "OK"); });
+  // /masterdim, /smooth and /trans likewise return the post-write generation: the frontend gates
+  // master, damping and transMode against it now, so that a poll already in flight cannot merge
+  // the pre-edit value back over a just-moved slider.
+  server.on("/masterdim", []() { masterBrightness = server.arg("v").toFloat() / 100.0f; prefs.begin("sys", false); prefs.putFloat("mdim", masterBrightness); prefs.end(); server.send(200, "text/plain", String(bumpGen("masterdim"))); });
+  server.on("/smooth", []() { dimSmoothVal = constrain(server.arg("v").toInt(), 0, 100); prefs.begin("sys", false); prefs.putInt("ds", dimSmoothVal); prefs.end(); server.send(200, "text/plain", String(bumpGen("smooth"))); });
+  // /autofade, /unmute and /hwaudio return the post-write generation (rather than a bare "OK")
+  // because the frontend now gates the mute and mic toggles against it -- both are optimistic
+  // local writes that an already-in-flight poll could otherwise revert for a cycle.
+  server.on("/autofade", []() { fadeDuration = constrain(server.arg("t").toInt(), 1, 3600000); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "text/plain", String(bumpGen("autofade"))); });
+  server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "text/plain", String(bumpGen("unmute"))); });
+  server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "text/plain", String(bumpGen("trans"))); });
+  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); server.send(200, "text/plain", String(bumpGen("hwaudio"))); });
 
   // Live band-energy telemetry for the AUDIO DEBUG tab's scrolling graph. Polled fast (frontend
   // targets ~15Hz) so build the response with one snprintf into a fixed buffer instead of this
@@ -481,7 +517,9 @@ void setupAPI() {
       lastBeatTime = now - interval;
     }
     manualTap = true;
-    server.send(200, "OK");
+    // Returns the post-write generation so the frontend can gate its optimistic tapped BPM against
+    // it -- a poll landing right after a tap used to snap the displayed BPM back to the pre-tap value.
+    server.send(200, "text/plain", String(bumpGen("beat")));
   });
   server.on("/sync", []() {
     unsigned long now = millis();

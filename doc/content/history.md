@@ -3492,3 +3492,138 @@ sauberer Neuentwurf (z. B. ein einziger, klar besessener Server-State mit
 echtem Request/Response statt Fire-and-forget-Echos, oder WebSockets statt
 Poll+Echo) wäre die eigentliche strukturelle Lösung — siehe `backlog.md`
 für den neuen Eintrag dazu.
+
+---
+
+## 2026-08-25 (2) — Der eigentliche Grund, warum die neun Fixes vom selben Tag nicht gereicht haben: eine gemeinsame Schreibpfad-Lücke statt N Einzelbugs
+
+**Meldung des Users:** „Es gibt immer noch Probleme, wenn man Werte im UI
+auswählt, die dann in weniger als einer Sekunde zurückgesetzt werden. Wählt
+man den Wert erneut aus, wird er übernommen. Das betrifft alle Einstellungen
+und Werte, z. B. Trigger-Modi in den FX, Static-Gobo-Slot und so weiter. Es
+wirkt, als wäre der Bug in allem oder ein grundlegendes Sync-Problem, das
+beim Programmieren des Fixtures sehr nervt."
+
+Die Einschätzung des Users war exakt richtig, und sie war der Schlüssel: Es
+waren **nicht** N Einzelbugs, sondern **ein gemeinsamer Schreibpfad, der
+Edits verwirft**, plus **ein gemeinsamer Merge-Pfad, der sie zurücksetzt**.
+Die neun Fixes vom selben Tag haben jeweils *ein konkretes Feld* geschützt
+(die sieben `*FxRunning`-Booleans, `showRunning`, `presetActive`,
+`presetNames`, `colorOff`, `panFine`/`tiltFine`) — also genau die Felder, die
+damals symptomatisch aufgefallen waren. Die FX-*Parameter* und die manuellen
+DMX-Kanäle, zusammen der Großteil dessen, was der Programmer-Tab überhaupt
+editiert, hatten diesen Schutz nie. Deshalb las sich das Symptom jetzt als
+„betrifft alles".
+
+### Drei Root Causes
+
+1. **Primär: die 300-ms-Totzone nach jedem Poll verwirft Edits ersatzlos.**
+   Jeder Schreibpfad im State-Sync-Effect ist mit `!isReceiving.current`
+   abgesichert — einem 300-ms-Fenster, das jede `/api/get_dmx`-Antwort öffnet.
+   Der Guard sendet korrekterweise nicht und lässt die „zuletzt gesendet"-
+   Baseline korrekterweise unangetastet. Aber: die Dependency-Liste des
+   Effects ist `[state]`, und `isReceiving` ist eine **ref** — das Zurücksetzen
+   auf `false` löst keinen Render aus, der Effect läuft also nie erneut.
+   **Niemand hat den Edit je wiederholt.** Er blieb ungesendet liegen, bis
+   dasselbe Feld zufällig noch einmal geändert wurde; der nächste Poll hat
+   derweil den alten Backend-Wert darüber gemerged. Bei 2 s Poll-Intervall
+   sind das rund 15 % aller Edits. Der Kommentar an dieser Stelle beschrieb
+   diese Fehlerklasse bereits wörtlich („silently dropped with no retry until
+   this exact field happened to change again") — die Baseline-Hälfte war
+   gefixt, die fehlende Aufweck-Hälfte nicht.
+2. **Der Poll-Merge überschreibt FX-Parameter ohne jeden Dirty-Gate.**
+   `isLocalDirty()` wurde nur auf die acht Running-Booleans plus
+   `presetNames`/`presetActive` angewendet; jeder Parameter derselben Gruppe
+   (`next.fxTr = d.fTr ?? prev.fxTr` usw.) wurde ungefiltert gemerged. Da
+   `syncFx` per `armPending(runningKey)` nur den *Running*-Key armiert, blieb
+   der Start/Stop-Button korrekt gelatcht, während die Regler daneben
+   zurücksprangen. Schlimmer: der `pr2.*`-Baseline-Rewrite direkt danach hat
+   die zurückgesetzten Werte als „zuletzt gesendet" verbucht — damit stimmten
+   State und Baseline auf dem *alten* Wert überein, der Diff sah „nichts zu
+   senden", und der Edit war **endgültig verloren** statt nur um einen Zyklus
+   verzögert. Genau das ist der Grund, warum ein zweites Auswählen nötig war.
+3. **Manuelle Kanäle hatten überhaupt keinen Generation-Schutz.** `/set_all`
+   hat weder `bumpGen()` aufgerufen noch eine Generation zurückgegeben: der
+   Aufruf war `server.send(200, "OK")` — die Zwei-Argument-Überladung, die
+   `"OK"` als *Content-Type* sendet und den Body leer lässt. Live am Gerät
+   verifiziert (`Content-Type: OK`, `Content-Length: 0`). Das Frontend hatte
+   also nichts zu lesen, selbst wenn es gewollt hätte, und armierte
+   entsprechend auch nichts. Static-Gobo-Slot, Farbe, Fokus, Zoom, Strobe,
+   Prisma, Makro und Gobo-Index waren damit ungeschützt.
+
+### Gleiche Fehlerklasse, mitgefixt
+
+- `prism`/`frost` nutzten `?? 0` statt `?? prev.x` — eine fehlende oder
+  abgeschnittene Antwort kippte den Toggle auf `false`, statt ihn zu lassen.
+- `presetActive` wurde ohne `d.pr != null`-Guard zugewiesen: fehlte das Feld,
+  las sich `undefined > 0` als `false` und der Slot-Indicator wurde **aktiv
+  gelöscht** — ein zweiter, vom Generation-Race unabhängiger Weg zum
+  „no slot active"-Flackern.
+- `setBpm(d.bpm)` war ungegated (Tap-Tempo sprang zurück), und `if (d.bpm)`
+  hat eine legitime 0 verschluckt.
+- `setMuted`/`setMicOn` wurden **innerhalb** des `setState`-Updaters
+  aufgerufen (unreiner Reducer; feuert unter StrictMode-Doppelaufruf oder
+  verworfenem Concurrent-Render doppelt) und ebenfalls ungegated.
+- `/chaser` sendete kein `&g=` und hatte keinen `isStaleWrite()`-Guard — die
+  einzige FX-Gruppe ganz ohne Staleness-Schutz.
+
+### Separater Bug, ebenfalls gefixt: Joystick-Config wurde still überschrieben
+
+Die neun `/joy_cfg`-Werte (Speed, Kurve, Momentum, Pan/Tilt-Reverse, die vier
+Pan/Tilt-Limits) werden nach NVS persistiert und beim Boot restauriert — aber
+**keine Route hat sie je zurückgeliefert**. Ein frisch geladener Browser-Tab
+hielt daher die hartcodierten Defaults aus dem State-Initialisierer, und die
+erste beliebige State-Änderung ließ den `joyKey`-Diff feuern und überschrieb
+die gespeicherte Geräte-Config mit genau diesen Defaults. Stiller Config-
+Verlust bei **jedem Reload**, unabhängig vom Revert-Bug.
+
+### Ausgeschlossen
+
+`useTelemetry` (500-ms-Loop auf `/api/state`) schreibt **nicht** in den
+geteilten `state` — nur Ping/Qualität und die Beat-LEDs. Der Backlog-Punkt
+„zwei unsynchronisierte Polling-Loops" ist hier also *keine* Ursache; es gibt
+genau einen Merge-Pfad.
+
+### Umsetzung
+
+- **`deferSync()` + `syncTick`** (Frontend): Statt einen Edit im
+  isReceiving-Fenster zu verwerfen, wird ein einziger, idempotenter 320-ms-
+  Timer gesetzt, der `syncTick` erhöht; `syncTick` steht jetzt in der
+  Dependency-Liste des Effects, der Edit wird also nach dem Fenster gesendet.
+  Ein Timer für den ganzen Effect, nicht einer pro Feld. Statisch geprüft:
+  **alle sechs** Schreibpfade mit `isReceiving`-Guard rufen jetzt `deferSync()`.
+- **Gating pro FX-Gruppe** statt pro Feld: `fxDirty`/`dimDirty`/… werden einmal
+  aus dem ohnehin vorhandenen `runningKey` berechnet und gaten sowohl die
+  Parameter der Gruppe **als auch** deren `pr2.*`-Baseline. Das ist die
+  wichtigere Hälfte — ohne sie wird der Edit gelöscht statt verzögert.
+- **`chDirty`/`'channels'`** für die 13 getrackten Kanäle, armiert vom
+  `/set_all`-Batch. Pan/Tilt (+Fine) bleiben bewusst ungegated: sie liegen nie
+  im Batch und müssen dem Joystick weiter folgen.
+- **Firmware:** `/set_all`, `/beat`, `/masterdim`, `/smooth`, `/trans`,
+  `/autofade`, `/unmute`, `/hwaudio` liefern jetzt die Post-Write-Generation
+  statt eines nackten `"OK"`; `/chaser` bekam den `isStaleWrite()`-Guard; neue
+  Route `/api/joycfg` als Read-back (eigene One-Shot-Route statt zusätzlicher
+  Felder in `/api/get_dmx`, das schon ~960 Bytes aus ~50 sequenziellen
+  `String +=` baut und alle 2 s gepollt wird).
+
+### Nebenbefund: OTA hat noch nie funktioniert
+
+`ArduinoOTA` war eingebunden und `ArduinoOTA.handle()` lief in jedem
+Loop-Durchlauf — **`ArduinoOTA.begin()` wurde aber nirgends aufgerufen**, es
+gab also nie einen OTA-Listener und `handle()` tat nichts. `README.md` hat OTA
+trotzdem als Feature beworben. `begin()` ist jetzt in `setup()` ergänzt (nur im
+Station-Modus), die README-Zeile korrigiert. Konsequenz für diese Session:
+Das Deployment ging **nicht** remote — es braucht einmalig ein USB-Flash
+(Firmware + Filesystem); ab dann ist OTA real nutzbar.
+
+### Verifikation
+
+`pio run` und `pio run -t buildfs` sauber. Zusätzlich alle acht
+`<script type="text/babel">`-Blöcke mit dem **mitgelieferten** Babel
+(`data/vendor/babel.min.js.gz`) transformiert — dieselbe Transformation, die
+das Gerät beim Laden macht; es gibt keinen Build-Schritt, ein Syntaxfehler
+würde sich sonst erst als leere UI am Gerät zeigen. Die Diagnose zu Root
+Cause 3 wurde vor dem Fix live am laufenden Gerät bestätigt
+(`curl -D -` auf `/set_all` → `Content-Type: OK`, `Content-Length: 0`).
+**Noch offen: der Praxistest am Fixture nach dem USB-Flash** (siehe
+`handoff.md`).

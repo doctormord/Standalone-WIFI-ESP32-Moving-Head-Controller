@@ -298,6 +298,18 @@ All endpoints respond `200 OK`/`text/plain "OK"` unless noted otherwise.
 Query parameters are read via `server.arg(name)`; parameters marked
 "optional" only update state when present (`server.hasArg`).
 
+**State generation (`stateGen`) — response bodies.** Every mutating route replies with the
+post-write state generation as plain text (`bumpGen()` in `Moving_Head_Horizon.ino`), which the
+frontend uses to decide when a poll response is fresh enough to be allowed to overwrite an
+optimistic local value (`pendingGenRef`/`isLocalDirty` in `data/index.html`). The FX routes
+(`/fx`, `/modfx`, `/colfx`, `/sgobfx`, `/rgobfx`, `/chaser`) additionally *check* an incoming `g`
+argument via `isStaleWrite()` and reject writes built before the most recent `/recall`, replying
+with the current generation unchanged. As of 2026-08-25 `/set_all`, `/beat`, `/masterdim`,
+`/smooth`, `/trans`, `/autofade`, `/unmute` and `/hwaudio` return the generation too; they
+previously replied `server.send(200, "OK")`, which is the two-argument overload and therefore sent
+`"OK"` as the *Content-Type* with an empty body. Routes still replying a bare `"OK"` (`/bump`,
+`/joy_cfg`, `/joy_in`, …) are ones no optimistic UI value is gated against.
+
 | Endpoint | Method | Parameters | Description |
 |---|---|---|---|
 | `/` | GET | — | Serves the SPA (`index.html` from LittleFS), or the setup-mode upload page if no GUI has been installed yet. |
@@ -308,11 +320,12 @@ Query parameters are read via `server.arg(name)`; parameters marked
 | `/save` | GET | `slot` (1–10), `n` (preset name) | Snapshots the current live DMX channels + all FX engine parameters into `chaserScenes[slot-1]` and persists it (plus `n` as the preset name) to NVS namespace `"sc<slot>"`. Reloads all scenes afterward. |
 | `/chaser_cfg` | GET | `st`, `en` (start/end slot), `fade`, `hold` (ms), `tr` (trigger mode), `sy` (sync index), `o` (order: 0=forward, 1=random), `ftr` (fade trigger mode), `fsy` (fade sync index) — all optional | Updates chaser timing/config and persists it to NVS namespace `"sys"`. |
 | `/joy_cfg` | GET | `spd` (max speed), `crv` (response curve exponent), `mom` (momentum, 0–100 → stored as 0–1), `pr`/`tr` (`"1"` = pan/tilt reversed), `pmin`/`pmax`/`tmin`/`tmax` (8-bit coarse pan/tilt limits, expanded to 16-bit) | Updates joystick tuning/limits and persists to NVS `"sys"`. |
+| `/api/joycfg` | GET | — | Read-back for `/joy_cfg`: returns the nine persisted joystick values as JSON (`spd`, `crv`, `mom` as a 0–100 percentage, `prv`/`trv`, `pmin`/`pmax`/`tmin`/`tmax` as the 0–255 coarse bytes), in the same units `/joy_cfg` accepts. Fetched once at page load. Added 2026-08-25: without it a freshly loaded tab held the frontend's hardcoded defaults and the first state change overwrote the device's saved joystick config with them. |
 | `/joy_in` | GET | `x`, `y` (float, -1..1) | Sets live joystick input (`joyInputX/Y`), consumed by `updateEngines()`. |
-| `/set_all` | GET | `c1`..`c18` (any subset, byte values) | Directly sets raw DMX channels, disabling the chaser and clearing `activePresetSlot`; channel 1 also stops `dimFX` and sets `dimSmoothTarget`, channels 3/15/4/16 also update `centerPan16`/`centerTilt16`. |
+| `/set_all` | GET | `c1`..`c18` (any subset, byte values), `g` (caller's last-seen `stateGen`) | Directly sets raw DMX channels; channel 1 also stops `dimFX` (only when the write is not stale) and sets `dimSmoothTarget`, channels 3/15/4/16 also update `centerPan16`/`centerTilt16`. Deliberately does **not** touch `activePresetSlot` (changed 2026-08-25 — see `backlog.md`). |
 | `/fx` | GET | `a` (`"1"`=active), `t` (shape type 1–12), `r` (rotation degrees), `ss`/`se` (speed start/end), `zs`/`ze` (size start/end), `mm`/`mc` (modulation mode/curve), `ms` (modulation speed), `tr` (trigger mode), `sy` (sync index) | Configures `moveFX` (`MovementEngine`); starts it fresh if it was inactive and `a=1`. |
 | `/modfx` | GET | `pfx` (`"dim"`/`"gr"`/`"pr"` — selects `dimFX`/`gRotFX`/`pRotFX`), `a`, `st`/`en` (range, clamped 0–255), `sp` (speed), `mo` (mode), `cu` (curve), `tr`, `sy`, `mv` (manual value to restore on stop; dim writes `dimSmoothTarget`, gr/pr write CH9/CH11 directly) | Configures the selected `Modulator`. |
-| `/chaser` | GET | `act` (`"1"`=active/`"0"`=stop), `start`/`end`/`fade`/`hold`/`trg`/`sync`/`ord`/`f_trg`/`f_sync` — same meaning as `/chaser_cfg`, all optional | Toggles the chaser. On activation, resets to `chaserStartSlot` and calls `executeChaserSlot` immediately. |
+| `/chaser` | GET | `act` (`"1"`=active/`"0"`=stop), `start`/`end`/`fade`/`hold`/`trg`/`sync`/`ord`/`f_trg`/`f_sync` — same meaning as `/chaser_cfg`, all optional; `g` (caller's last-seen `stateGen`) | Toggles the chaser. On activation, resets to `chaserStartSlot` and calls `executeChaserSlot` immediately. Gained the `isStaleWrite()` guard on 2026-08-25 — it was the one FX group with no staleness protection on the write path. |
 | `/recall` | GET | `slot` (1-based preset number) | Calls `triggerLoad(1, slot)` — recalls a preset (subject to dip-to-black if enabled). |
 | `/kill_fx` | GET | — | Stops every FX engine and the chaser, clears `activePresetSlot`. |
 | `/bump` | GET | `t` (`"blinder"`/`"strobeF"`/`"strobe50"`/`"blackout"`), `s` (`"1"`=on/`"0"`=off) | Momentary override toggle for a bump effect, applied per-fixture in the output stage. |

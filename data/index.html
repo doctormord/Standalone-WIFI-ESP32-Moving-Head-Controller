@@ -1806,11 +1806,42 @@ const isReceiving = useRef(false);
     // Dimmer FX / rotating gobo state not reliably updating after repeated fast preset switching.
     const armPending = (f) => { pendingGenRef.current[f] = Infinity; setTimeout(() => { if (pendingGenRef.current[f] === Infinity) pendingGenRef.current[f] = 0; }, 3000); };
 
+    // Wake-up for edits that the isReceiving window below refuses to send.
+    //
+    // Every write path in the state-sync effect is guarded by `!isReceiving.current` -- a 300ms
+    // window opened by each poll response. The guard correctly declines to send during it AND
+    // correctly leaves the "last sent" baseline untouched, so the edit stays pending... but the
+    // effect's dependency list is [state] and isReceiving is a *ref*, so clearing it 300ms later
+    // schedules no render and the effect never re-runs. Nothing retried the edit: it sat unsent
+    // until that same field happened to change again, and meanwhile the next poll merged the
+    // stale backend value back over it. With a 2s poll that silently dropped roughly one edit in
+    // seven, across every control in the Programmer tab.
+    //
+    // syncTick gives the effect a real dependency to re-run on. One shared, idempotent timer for
+    // the whole effect (not one per field): any number of fields deferred in the same window are
+    // all retried by the single re-run that follows it. Reported live 2026-08-25: "values get
+    // reverted in less than a second, after selecting value again they get used ... it seems the
+    // bug is in everything or a groundlaying sync problem."
+    const [syncTick, setSyncTick] = useState(0);
+    const deferRef = useRef(false);
+    // False until /api/joycfg has been read back once -- gates the /joy_cfg write path so a fresh
+    // tab can't overwrite the device's saved joystick config with the state initialiser's defaults.
+    const joyCfgLoadedRef = useRef(false);
+    const deferSync = () => {
+      if (deferRef.current) return;
+      deferRef.current = true;
+      // 320ms > the 300ms isReceiving window, so the re-run always lands after it has closed.
+      setTimeout(() => { deferRef.current = false; setSyncTick((n) => n + 1); }, 320);
+    };
+
     useEffect(() => {
       const sync = async () => {
         try {
           const r = await fetch('/api/get_dmx'); const d = await r.json();
-          if (d.bpm) setBpm(d.bpm);
+          // Gated like every other optimistic value: a tap sets the BPM locally and POSTs /beat,
+          // and a poll already in flight used to land right after and snap the display back to the
+          // pre-tap value. `!= null` rather than a truthiness test so a legitimate 0 isn't swallowed.
+          if (d.bpm != null && !isLocalDirty('bpm', d.gen)) setBpm(d.bpm);
           if (d.gen != null) lastKnownGenRef.current = d.gen;
 
           isReceiving.current = true; // set flag: we're currently receiving data
@@ -1827,20 +1858,53 @@ const isReceiving = useRef(false);
             // value). Reported live 2026-08-25 as a random dimmer level and "no slot active"
             // appearing right after switching presets, and a rotating-gobo effect intermittently
             // not applying.
-            const fxRunning = d.fA !== undefined ? (isLocalDirty('fxRunning', d.gen) ? prev.fxRunning : !!d.fA) : prev.fxRunning;
-            const dimFxRunning = d.fA !== undefined ? (isLocalDirty('dimFxRunning', d.gen) ? prev.dimFxRunning : !!d.dA) : prev.dimFxRunning;
-            const grFxRunning = d.fA !== undefined ? (isLocalDirty('grFxRunning', d.gen) ? prev.grFxRunning : !!d.grA) : prev.grFxRunning;
-            const prFxRunning = d.fA !== undefined ? (isLocalDirty('prFxRunning', d.gen) ? prev.prFxRunning : !!d.prA) : prev.prFxRunning;
-            const colFxRunning = d.fA !== undefined ? (isLocalDirty('colFxRunning', d.gen) ? prev.colFxRunning : !!d.cA) : prev.colFxRunning;
-            const sgFxRunning = d.fA !== undefined ? (isLocalDirty('sgFxRunning', d.gen) ? prev.sgFxRunning : !!d.sgA) : prev.sgFxRunning;
-            const rgFxRunning = d.fA !== undefined ? (isLocalDirty('rgFxRunning', d.gen) ? prev.rgFxRunning : !!d.rgA) : prev.rgFxRunning;
-            const showRunning = d.fA !== undefined ? (isLocalDirty('showRunning', d.gen) ? prev.showRunning : !!d.chA) : prev.showRunning;
+            // Each FX group is now gated as a UNIT, by the single pending key its own writes
+            // already arm (armPending(runningKey) in syncFx below). Previously only these eight
+            // booleans consulted isLocalDirty while every parameter in the same group was merged
+            // raw -- so an in-flight edit left the Start/Stop button correctly latched while the
+            // sliders and dropdowns right next to it snapped back to the device's pre-edit value.
+            // Worse, the pr2.* baseline rewrite further down then recorded those reverted values
+            // as "last sent", erasing the pending diff so the edit could never be transmitted at
+            // all. That is what turned a one-cycle visual glitch into a permanently lost edit,
+            // and why re-picking the same value was needed to make it stick. Gating both the
+            // group's fields AND its baseline is what lets an in-flight edit survive a poll.
+            // Reported live 2026-08-25: FX trigger modes, gobo slots, "all settings and values".
+            const fxDirty = isLocalDirty('fxRunning', d.gen);
+            const dimDirty = isLocalDirty('dimFxRunning', d.gen);
+            const grDirty = isLocalDirty('grFxRunning', d.gen);
+            const prDirty = isLocalDirty('prFxRunning', d.gen);
+            const colDirty = isLocalDirty('colFxRunning', d.gen);
+            const sgDirty = isLocalDirty('sgFxRunning', d.gen);
+            const rgDirty = isLocalDirty('rgFxRunning', d.gen);
+            const chaserDirty = isLocalDirty('showRunning', d.gen);
+            // Manual DMX channels get the same treatment via one shared key, armed by the
+            // /set_all batch send below. They had no generation protection whatsoever before:
+            // /set_all neither bumped nor returned a generation (see WebAPI.h), so nothing on
+            // either side could tell a just-edited channel from a stale one.
+            const chDirty = isLocalDirty('channels', d.gen);
+
+            const fxRunning = d.fA !== undefined ? (fxDirty ? prev.fxRunning : !!d.fA) : prev.fxRunning;
+            const dimFxRunning = d.fA !== undefined ? (dimDirty ? prev.dimFxRunning : !!d.dA) : prev.dimFxRunning;
+            const grFxRunning = d.fA !== undefined ? (grDirty ? prev.grFxRunning : !!d.grA) : prev.grFxRunning;
+            const prFxRunning = d.fA !== undefined ? (prDirty ? prev.prFxRunning : !!d.prA) : prev.prFxRunning;
+            const colFxRunning = d.fA !== undefined ? (colDirty ? prev.colFxRunning : !!d.cA) : prev.colFxRunning;
+            const sgFxRunning = d.fA !== undefined ? (sgDirty ? prev.sgFxRunning : !!d.sgA) : prev.sgFxRunning;
+            const rgFxRunning = d.fA !== undefined ? (rgDirty ? prev.rgFxRunning : !!d.rgA) : prev.rgFxRunning;
+            const showRunning = d.fA !== undefined ? (chaserDirty ? prev.showRunning : !!d.chA) : prev.showRunning;
 
             // Dimmer/gobo-rot/prism-rot/color base are skipped here while their FX is running -- otherwise
             // the manual control visibly jitters with the FX's live oscillating output every poll, and any
             // manual edit the user makes *while the FX is active* (meant to take effect once stopped) gets
             // silently overwritten by the next poll before Stop is even pressed. Reported live 2026-08-18.
-            next.dimmer = dimFxRunning ? prev.dimmer : (d[CH.DIMMER] ?? prev.dimmer); next.strobe = d[CH.STROBE] ?? prev.strobe; next.pan = d.cp != null ? Math.round(d.cp / 257) : prev.pan; next.tilt = d.ct != null ? Math.round(d.ct / 257) : prev.tilt; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = grFxRunning ? prev.goboRot : (d[CH.GOBO_IDX] ?? prev.goboRot); next.prism = (d[CH.PRISM] ?? 0) > 127; next.prismRot = prFxRunning ? prev.prismRot : (d[CH.PRISM_ROT] ?? prev.prismRot); next.frost = (d[CH.FROST] ?? 0) > 127; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine; next.macro = d[CH.MACRO] ?? prev.macro;
+            // Pan/tilt (and their fine channels) are never in the /set_all batch -- there is no UI
+            // control that sends them -- so they stay ungated and keep following the joystick and
+            // any recall/map_go move even while a manual channel edit is still pending.
+            next.pan = d.cp != null ? Math.round(d.cp / 257) : prev.pan; next.tilt = d.ct != null ? Math.round(d.ct / 257) : prev.tilt; next.panFine = d[CH.PAN_FINE] ?? prev.panFine; next.tiltFine = d[CH.TILT_FINE] ?? prev.tiltFine;
+            if (!chDirty) {
+            // prism/frost use an explicit null check rather than `(d[CH.PRISM] ?? 0) > 127`: every
+            // other channel on these lines falls back to prev, but those two coerced a missing or
+            // truncated field to 0 and so silently flipped the toggle off instead of leaving it be.
+            next.dimmer = dimFxRunning ? prev.dimmer : (d[CH.DIMMER] ?? prev.dimmer); next.strobe = d[CH.STROBE] ?? prev.strobe; next.motorSpeed = d[CH.SPEED] ?? prev.motorSpeed; next.goboRot = grFxRunning ? prev.goboRot : (d[CH.GOBO_IDX] ?? prev.goboRot); next.prism = d[CH.PRISM] != null ? d[CH.PRISM] > 127 : prev.prism; next.prismRot = prFxRunning ? prev.prismRot : (d[CH.PRISM_ROT] ?? prev.prismRot); next.frost = d[CH.FROST] != null ? d[CH.FROST] > 127 : prev.frost; next.focus = d[CH.FOCUS] ?? prev.focus; next.zoom = d[CH.ZOOM] ?? prev.zoom; next.macro = d[CH.MACRO] ?? prev.macro;
             if (d[CH.COLOR] != null && !colFxRunning) { const z = findGoboZone(COLOR_ZONES, d[CH.COLOR]); next.colorBase = z.v; next.colorOff = d[CH.COLOR] - z.v; }
             // Gobo dropdowns are otherwise frontend-authoritative (nothing else read them back) --
             // without this, recalling a preset/chaser slot (or an Art-Net takeover) silently applied
@@ -1864,24 +1928,41 @@ const isReceiving = useRef(false);
             chP['ch' + CH.DIMMER] = next.dimmer; chP['ch' + CH.STROBE] = next.strobe; chP['ch' + CH.SPEED] = next.motorSpeed;
             chP['ch' + CH.COLOR] = next.colorBase + next.colorOff; chP['ch' + CH.GOBO] = next.sgoboBase + next.sgoboOff; chP['ch' + CH.GOBO_ROT] = next.rgoboBase + next.rgoboOff; chP['ch' + CH.GOBO_IDX] = next.goboRot;
             chP['ch' + CH.PRISM] = next.prism ? 200 : 0; chP['ch' + CH.PRISM_ROT] = next.prismRot; chP['ch' + CH.FROST] = next.frost ? 200 : 0; chP['ch' + CH.FOCUS] = next.focus; chP['ch' + CH.ZOOM] = next.zoom; chP['ch' + CH.MACRO] = next.macro;
+            } // end if (!chDirty) -- while a manual channel write is pending, neither the values
+              // nor their baseline may be touched: rewriting the baseline from a stale poll is
+              // exactly what used to erase the pending edit instead of merely delaying it.
             // Same protection as the FX running-flags below: recallPreset()/savePreset() set
             // these optimistically the instant a slot is tapped/renamed, but the 2s poll can
             // still land mid-flight with a not-yet-updated backend value and clobber them back
             // for one cycle. Reported live 2026-08-25 as "no slot active" flashing briefly when
             // switching between slots -- generalized to presetNames too, same underlying race.
             if (d.pn) next.presetNames = isLocalDirty('presetNames', d.gen) ? prev.presetNames : d.pn;
-            next.presetActive = isLocalDirty('presetActive', d.gen) ? prev.presetActive : (d.pr > 0 ? d.pr : null);
-            if (d.mB !== undefined) next.master = Math.round(d.mB * 100);
-            if (d.dSm !== undefined) next.damping = d.dSm;
+            // `d.pr != null` guard: without it a response missing the field at all (get_dmx is
+            // built from ~50 sequential String += on a heap-constrained ESP32-C3) read as
+            // `undefined > 0` === false and actively CLEARED the slot indicator to null -- another
+            // path to the "no slot active" flicker, independent of the generation race.
+            if (d.pr != null) next.presetActive = isLocalDirty('presetActive', d.gen) ? prev.presetActive : (d.pr > 0 ? d.pr : null);
+            // master/damping/transMode keep their send-baselines in lockstep with what the poll
+            // applied, exactly as chP/pr2 do above. Without it these three were the only fields
+            // the poll wrote into state without updating p.*, which meant the isReceiving window
+            // was the sole thing stopping a poll-delivered value from being echoed straight back.
+            // With the lockstep in place that guard is belt-and-braces rather than load-bearing.
+            if (d.mB !== undefined && !isLocalDirty('master', d.gen)) { next.master = Math.round(d.mB * 100); prevRef.current.master = next.master; }
+            if (d.dSm !== undefined && !isLocalDirty('damping', d.gen)) { next.damping = d.dSm; prevRef.current.damping = next.damping; }
             if (d.fA !== undefined) {
-              next.fxRunning = fxRunning; next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS;
-              next.dimFxRunning = dimFxRunning; next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy;
-              next.grFxRunning = grFxRunning; next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy;
-              next.prFxRunning = prFxRunning; next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy;
-              next.colFxRunning = colFxRunning; next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy;
-              next.sgFxRunning = sgFxRunning; next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp != null ? Math.round(d.sgSp * 10) : prev.sgSp; next.sgRng = d.sgRng ?? prev.sgRng;
-              next.rgFxRunning = rgFxRunning; next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc; next.rgSp = d.rgSp ?? prev.rgSp;
-              next.showRunning = showRunning; next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; next.transMode = d.dip ?? prev.transMode;
+              // Running flag first (already individually gated above), then the group's parameters
+              // only when no local write for that group is still pending -- see the fxDirty block.
+              next.fxRunning = fxRunning; if (!fxDirty) { next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS; }
+              next.dimFxRunning = dimFxRunning; if (!dimDirty) { next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy; }
+              next.grFxRunning = grFxRunning; if (!grDirty) { next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy; }
+              next.prFxRunning = prFxRunning; if (!prDirty) { next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy; }
+              next.colFxRunning = colFxRunning; if (!colDirty) { next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy; }
+              next.sgFxRunning = sgFxRunning; if (!sgDirty) { next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp != null ? Math.round(d.sgSp * 10) : prev.sgSp; next.sgRng = d.sgRng ?? prev.sgRng; }
+              next.rgFxRunning = rgFxRunning; if (!rgDirty) { next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc; next.rgSp = d.rgSp ?? prev.rgSp; }
+              next.showRunning = showRunning; if (!chaserDirty) { next.chaserTrigger = d.chTr ?? prev.chaserTrigger; next.chaserSync = d.chSy ?? prev.chaserSync; next.chaserOrder = d.chOrd ?? prev.chaserOrder; next.chaserFrom = d.chSS ?? prev.chaserFrom; next.chaserTo = d.chES ?? prev.chaserTo; next.chaserFade = d.chF ?? prev.chaserFade; next.chaserHold = d.chH ?? prev.chaserHold; next.chaserFadeMode = d.chFTr ?? prev.chaserFadeMode; next.chaserFadeSync = d.chFSy ?? prev.chaserFadeSync; }
+              // transMode is NOT part of the chaser group -- it has its own route (/trans) and so
+              // its own pending key, rather than riding on the chaser's.
+              if (!isLocalDirty('transMode', d.gen)) { next.transMode = d.dip ?? prev.transMode; prevRef.current.transMode = next.transMode; }
 
               // Keep syncFx's "last sent" baseline (prevRef.current, aka p in the debounced-send
               // effect below) in lockstep with whatever this poll just applied -- otherwise a
@@ -1894,19 +1975,32 @@ const isReceiving = useRef(false);
               // silently missing after one recall (present on a second, identical recall), and more
               // broadly "parameters transferred between presets" when switching quickly.
               const pr2 = prevRef.current;
-              pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy]);
-              pr2.dimFxState = JSON.stringify([next.dimFxRunning, next.dimSt, next.dimEn, next.dimMo, next.dimCu, next.dimSp, next.dimTr, next.dimSy]);
-              pr2.grFxState = JSON.stringify([next.grFxRunning, next.grSt, next.grEn, next.grMo, next.grCu, next.grSp, next.grTr, next.grSy]);
-              pr2.prFxState = JSON.stringify([next.prFxRunning, next.prSt, next.prEn, next.prMo, next.prCu, next.prSp, next.prTr, next.prSy]);
-              pr2.colFxState = JSON.stringify([next.colFxRunning, next.colSt, next.colEn, next.colHo, next.colTr, next.colSy]);
-              pr2.sgFxState = JSON.stringify([next.sgFxRunning, next.sgSt, next.sgEn, next.sgHo, next.sgTr, next.sgSy, next.sgSc, next.sgSp, next.sgRng]);
-              pr2.rgFxState = JSON.stringify([next.rgFxRunning, next.rgSt, next.rgEn, next.rgHo, next.rgTr, next.rgSy, next.rgSc, next.rgSp]);
-              pr2.chaserState = JSON.stringify([next.showRunning, next.chaserTrigger, next.chaserSync, next.chaserOrder, next.chaserFrom, next.chaserTo, next.chaserFade, next.chaserHold, next.chaserFadeMode, next.chaserFadeSync]);
+              // Each line is skipped while that group has a local write pending. This is the half
+              // that matters most: rewriting a group's baseline from a poll that does not yet
+              // reflect the pending edit makes state and baseline agree on the STALE value, so the
+              // diff below sees "nothing to send" and the edit is lost for good rather than merely
+              // delayed by a cycle. Recomputing it only for clean groups keeps the original
+              // purpose (a recalled preset's own config must not look like an unsent local edit).
+              if (!fxDirty) pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy]);
+              if (!dimDirty) pr2.dimFxState = JSON.stringify([next.dimFxRunning, next.dimSt, next.dimEn, next.dimMo, next.dimCu, next.dimSp, next.dimTr, next.dimSy]);
+              if (!grDirty) pr2.grFxState = JSON.stringify([next.grFxRunning, next.grSt, next.grEn, next.grMo, next.grCu, next.grSp, next.grTr, next.grSy]);
+              if (!prDirty) pr2.prFxState = JSON.stringify([next.prFxRunning, next.prSt, next.prEn, next.prMo, next.prCu, next.prSp, next.prTr, next.prSy]);
+              if (!colDirty) pr2.colFxState = JSON.stringify([next.colFxRunning, next.colSt, next.colEn, next.colHo, next.colTr, next.colSy]);
+              if (!sgDirty) pr2.sgFxState = JSON.stringify([next.sgFxRunning, next.sgSt, next.sgEn, next.sgHo, next.sgTr, next.sgSy, next.sgSc, next.sgSp, next.sgRng]);
+              if (!rgDirty) pr2.rgFxState = JSON.stringify([next.rgFxRunning, next.rgSt, next.rgEn, next.rgHo, next.rgTr, next.rgSy, next.rgSc, next.rgSp]);
+              if (!chaserDirty) pr2.chaserState = JSON.stringify([next.showRunning, next.chaserTrigger, next.chaserSync, next.chaserOrder, next.chaserFrom, next.chaserTo, next.chaserFade, next.chaserHold, next.chaserFadeMode, next.chaserFadeSync]);
             }
-            if (d.fO !== undefined) { const nowMuted = d.fO === 1; setMuted(nowMuted); }
-            if (d.hwA !== undefined) setMicOn(d.hwA === 1);
             return next;
           });
+
+          // Deliberately OUTSIDE the setState updater above. Calling these siblings' setters from
+          // inside a reducer makes it impure -- under StrictMode's double-invocation or a discarded
+          // concurrent render they fire spuriously. They are also gated now: both are optimistic
+          // local toggles (handleMute/handleMic), so an already-in-flight poll could otherwise
+          // revert the button for a cycle -- the same race pendingGenRef exists to close, just
+          // never extended to these two.
+          if (d.fO !== undefined && !isLocalDirty('muted', d.gen)) setMuted(d.fO === 1);
+          if (d.hwA !== undefined && !isLocalDirty('micOn', d.gen)) setMicOn(d.hwA === 1);
 
           // Longer timeout (300ms) for slow browser engines, so the UI has reliably finished rendering
           setTimeout(() => { isReceiving.current = false; }, 300);
@@ -1934,7 +2028,8 @@ const isReceiving = useRef(false);
           // Only update the comparison baseline when the value is actually
           // sent — otherwise an edit made during the post-poll isReceiving
           // window would be marked "seen" without ever being transmitted.
-          if (!isReceiving.current) { batch[ch] = val; p['ch'+ch] = val; p['pend'+ch] = false; }
+          if (isReceiving.current) deferSync(); // retry after the window instead of dropping it
+          else { batch[ch] = val; p['ch'+ch] = val; p['pend'+ch] = false; }
         }
       };
       
@@ -1959,7 +2054,19 @@ const isReceiving = useRef(false);
       // activePresetSlot -- surfacing as "no slot active" shortly after almost any recall. Reported
       // live 2026-08-25, confirmed via gsrc debug instrumentation (see bumpGen).
       
-      if (Object.keys(batch).length > 0) { const params = new URLSearchParams(); Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v)); params.append('g', lastKnownGenRef.current); fetch('/set_all?' + params.toString()).catch(() => {}); }
+      // Manual channels now take part in the generation scheme like the FX groups do: arm a shared
+      // 'channels' key before sending and replace it with the real post-write generation from the
+      // response, so the poll merge above leaves these channels alone until the device has actually
+      // applied the edit. /set_all previously replied with an empty body and no generation at all,
+      // which is why a freshly picked gobo slot or focus value could be merged back to its old
+      // value by the very next poll. Reported live 2026-08-25.
+      if (Object.keys(batch).length > 0) {
+        const params = new URLSearchParams();
+        Object.entries(batch).forEach(([ch, v]) => params.append('c' + ch, v));
+        params.append('g', lastKnownGenRef.current);
+        armPending('channels');
+        fetch('/set_all?' + params.toString()).then((r) => r.text()).then(markPending('channels')).catch(() => {});
+      }
       
       // Shared by all FX/chaser state-sync blocks below: diff `fields` (with the running flag always
       // first) against the last-sent snapshot stored under p[stateKey], and if changed, fetch
@@ -1976,15 +2083,14 @@ const isReceiving = useRef(false);
           // without ever reaching the device: the pending-generation guard was never armed, so the
           // very next poll (device still reporting "not running") flipped the button back. Reported
           // live 2026-08-20: "FX-Start-Button wird kurz gruen, geht nach 2 Sekunden wieder auf rot."
-          if (!isReceiving.current) {
-            p[stateKey] = snapshot;
-            // Provisionally block ALL poll updates to this field until the write's own response
-            // reports the real generation it caused (markPending below) -- covers the brief window
-            // between "decided to send" and "response received" without guessing a duration.
-            armPending(runningKey);
-            const url = urlBuilder();
-            if (!fields[0]) tFetchImmediate(url, fetchId, markPending(runningKey)); else tFetch(url, fetchId, 40, markPending(runningKey));
-          }
+          if (isReceiving.current) { deferSync(); return; } // retry after the window, never drop
+          p[stateKey] = snapshot;
+          // Provisionally block ALL poll updates to this field until the write's own response
+          // reports the real generation it caused (markPending below) -- covers the brief window
+          // between "decided to send" and "response received" without guessing a duration.
+          armPending(runningKey);
+          const url = urlBuilder();
+          if (!fields[0]) tFetchImmediate(url, fetchId, markPending(runningKey)); else tFetch(url, fetchId, 40, markPending(runningKey));
         }
       };
       syncFx('fxState', 'fxRunning', [s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy],
@@ -2002,24 +2108,38 @@ const isReceiving = useRef(false);
       syncFx('rgFxState', 'rgFxRunning', [s.rgFxRunning, s.rgSt, s.rgEn, s.rgHo, s.rgTr, s.rgSy, s.rgSc, s.rgSp],
         () => `/rgobfx?a=${s.rgFxRunning?1:0}&st=${s.rgSt}&en=${s.rgEn}&ho=${s.rgHo}&tr=${s.rgTr}&sy=${s.rgSy}&sc=${s.rgSc}&spd=${s.rgSp}&mv=${s.rgoboBase + s.rgoboOff}&g=${lastKnownGenRef.current}`, 'rgfx');
       syncFx('chaserState', 'showRunning', [s.showRunning, s.chaserTrigger, s.chaserSync, s.chaserOrder, s.chaserFrom, s.chaserTo, s.chaserFade, s.chaserHold, s.chaserFadeMode, s.chaserFadeSync],
-        () => `/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}`, 'ch_tog');
+        () => `/chaser?act=${s.showRunning?1:0}&start=${s.chaserFrom}&end=${s.chaserTo}&fade=${s.chaserFade}&hold=${s.chaserHold}&trg=${s.chaserTrigger}&sync=${s.chaserSync}&ord=${s.chaserOrder}&f_trg=${s.chaserFadeMode}&f_sync=${s.chaserFadeSync}&g=${lastKnownGenRef.current}`, 'ch_tog');
       
       // Same "only mark it seen once it's actually sent" discipline as track()/syncFx() above -- these
       // four used to update p.xxx unconditionally, so a change landing inside the isReceiving window
       // got silently dropped with no retry until this exact field happened to change again.
-      if (p.transMode !== s.transMode && !isReceiving.current) { p.transMode = s.transMode; tFetch('/trans?dip=' + s.transMode, 'trans'); }
-      if (p.master !== s.master && !isReceiving.current) { p.master = s.master; tFetch(`/masterdim?v=${s.master}`, 'master'); }
-      if (p.damping !== s.damping && !isReceiving.current) { p.damping = s.damping; tFetch('/smooth?v=' + s.damping, 'smth'); }
+      // Each now defers rather than drops (see deferSync) and arms its own pending generation, so
+      // the poll can neither revert nor erase an edit that has not reached the device yet.
+      if (p.transMode !== s.transMode) { if (isReceiving.current) deferSync(); else { p.transMode = s.transMode; armPending('transMode'); tFetch('/trans?dip=' + s.transMode, 'trans', 40, markPending('transMode')); } }
+      if (p.master !== s.master) { if (isReceiving.current) deferSync(); else { p.master = s.master; armPending('master'); tFetch(`/masterdim?v=${s.master}`, 'master', 40, markPending('master')); } }
+      if (p.damping !== s.damping) { if (isReceiving.current) deferSync(); else { p.damping = s.damping; armPending('damping'); tFetch('/smooth?v=' + s.damping, 'smth', 40, markPending('damping')); } }
 
-      // KORREKTUR: joyCurve durch 10 teilen, bevor es an den ESP32 geht!
+      // joyCurve is held in tenths in the UI and divided by 10 before it goes to the ESP32.
       const crvFixed = (s.joyCurve / 10).toFixed(1);
       const joyKey = `${s.joySpeed}|${crvFixed}|${s.joyMomentum}|${s.panRev?1:0}|${s.tiltRev?1:0}|${s.panMin}|${s.panMax}|${s.tiltMin}|${s.tiltMax}`;
 
-      if (p.joyKey !== joyKey && !isReceiving.current) {
-        p.joyKey = joyKey;
-        tFetch(`/joy_cfg?spd=${s.joySpeed}&crv=${crvFixed}&mom=${s.joyMomentum}&pr=${s.panRev?1:0}&tr=${s.tiltRev?1:0}&pmin=${s.panMin}&pmax=${s.panMax}&tmin=${s.tiltMin}&tmax=${s.tiltMax}`, 'joy_cfg');
+      // Nothing is sent until /api/joycfg has seeded state and p.joyKey from the device (see the
+      // mount effect below). These nine values were persisted to NVS but had no read-back route,
+      // so a freshly loaded tab held the hardcoded defaults from the state initialiser -- and the
+      // first unrelated state change made this diff fire and overwrite the device's saved joystick
+      // config (speed, curve, momentum, pan/tilt reverse and all four limits) with those defaults.
+      // Silent config loss on every browser reload, unrelated to the reverting bug.
+      if (joyCfgLoadedRef.current && p.joyKey !== joyKey) {
+        if (isReceiving.current) deferSync();
+        else {
+          p.joyKey = joyKey;
+          tFetch(`/joy_cfg?spd=${s.joySpeed}&crv=${crvFixed}&mom=${s.joyMomentum}&pr=${s.panRev?1:0}&tr=${s.tiltRev?1:0}&pmin=${s.panMin}&pmax=${s.panMax}&tmin=${s.tiltMin}&tmax=${s.tiltMax}`, 'joy_cfg');
+        }
       }
-    }, [state]);
+      // syncTick is what re-runs this effect after an isReceiving window closes; without it a
+      // deferred write would sit here unsent forever (isReceiving is a ref, so clearing it
+      // triggers no render). See deferSync.
+    }, [state, syncTick]);
 
     const recallPreset = useCallback((slot) => {
       armPending('presetActive'); // see syncFx's comment -- provisional until the response confirms the real generation
@@ -2041,14 +2161,19 @@ const isReceiving = useRef(false);
       setState(s => ({ ...s, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, showRunning: false, presetActive: null }));
     }, []);
     
+    // These three set a value optimistically and then tell the device about it, so each arms its
+    // pending generation and confirms it from the response -- the same discipline the FX writes
+    // use. Without it a poll already in flight lands with the pre-toggle value and flips the
+    // button (or the tapped BPM) back for a cycle.
     const handleMute = useCallback(() => {
-      fetch(`/autofade?t=${state.fadeTime}&c=${state.fadeCurve}`);
+      armPending('muted');
+      fetch(`/autofade?t=${state.fadeTime}&c=${state.fadeCurve}`).then((r) => r.text()).then(markPending('muted')).catch(() => {});
       setMuted(m => !m);
     }, [state.fadeTime, state.fadeCurve]);
 
-    const handleMic = useCallback(() => { const next = !micOn; fetch(`/hwaudio?en=${next ? 1 : 0}&sens=${hwSens}`); setMicOn(next); }, [micOn, hwSens]);
+    const handleMic = useCallback(() => { const next = !micOn; armPending('micOn'); fetch(`/hwaudio?en=${next ? 1 : 0}&sens=${hwSens}`).then((r) => r.text()).then(markPending('micOn')).catch(() => {}); setMicOn(next); }, [micOn, hwSens]);
     useEffect(() => { try { localStorage.setItem('hz_hwsens', hwSens); } catch(e) {} if (micOn) { fetch(`/hwaudio?en=1&sens=${hwSens}`).catch(() => {}); } }, [hwSens]);
-    const tapWithFirmware = useCallback(() => { const tapped = tap(); fetch('/beat' + (tapped ? ('?bpm=' + tapped) : '')); }, [tap]);
+    const tapWithFirmware = useCallback(() => { const tapped = tap(); armPending('bpm'); fetch('/beat' + (tapped ? ('?bpm=' + tapped) : '')).then((r) => r.text()).then(markPending('bpm')).catch(() => {}); }, [tap]);
     const hardSync = useCallback(() => { fetch('/sync'); }, []);
     const handleJog = useCallback((v) => { tFetch('/jog?v=' + v, 'jog'); }, []);
     const releaseJog = useCallback(() => { tFetch('/jog?v=0', 'jog'); }, []);
@@ -2061,6 +2186,20 @@ const isReceiving = useRef(false);
     useEffect(() => {
       fetch('/load_map').then(r => r.ok ? r.json() : null).then(json => { if (json && json.image) { setState(s => ({ ...s, mapImage: json.image, mapHasImage: true, mapPoints: json.points || s.mapPoints })); } }).catch(() => {});
       fetch('/api/patch').then(r => r.ok ? r.json() : null).then(data => { if (Array.isArray(data) && data.length > 0) setFixtureCount(data.length); }).catch(() => {});
+      // Seed the joystick config from the device before any /joy_cfg write is allowed (see the
+      // joyCfgLoadedRef guard in the sync effect). Both the state AND the send-baseline p.joyKey
+      // are seeded, so the freshly loaded values don't immediately look like a local edit and get
+      // echoed straight back. joyCurve is stored in tenths in the UI; the limits come back as the
+      // 0-255 bytes the sliders use. On failure the flag is still set, so a device that predates
+      // this route (or a transient error) leaves the UI usable rather than permanently read-only --
+      // it just falls back to the previous behaviour for that session.
+      fetch('/api/joycfg').then(r => r.ok ? r.json() : null).then((j) => {
+        if (j) {
+          const seeded = { joySpeed: j.spd, joyCurve: Math.round(j.crv * 10), joyMomentum: j.mom, panRev: !!j.prv, tiltRev: !!j.trv, panMin: j.pmin, panMax: j.pmax, tiltMin: j.tmin, tiltMax: j.tmax };
+          prevRef.current.joyKey = `${seeded.joySpeed}|${(seeded.joyCurve / 10).toFixed(1)}|${seeded.joyMomentum}|${seeded.panRev?1:0}|${seeded.tiltRev?1:0}|${seeded.panMin}|${seeded.panMax}|${seeded.tiltMin}|${seeded.tiltMax}`;
+          setState((s) => ({ ...s, ...seeded }));
+        }
+      }).catch(() => {}).finally(() => { joyCfgLoadedRef.current = true; });
     }, []);
 
     // Uses the instant /bump override (same mechanism as Blinder/Strobe), not

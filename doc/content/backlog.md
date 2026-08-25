@@ -24,9 +24,21 @@ saubereren Neuentwurf: (a) ein einziger, eindeutig besessener Server-State mit e
 Request/Response-Pattern statt Fire-and-forget-Echo-Routen, (b) WebSockets statt
 Poll+Echo (steht ohnehin schon als Feature-Wunsch weiter unten — würde dieses ganze
 Problemfeld strukturell mit erledigen), (c) ein einziges „wer darf gerade schreiben"-
-Konzept statt pro-Feld-Generation-Tracking. Kein akuter Bug mehr (alle neun Instanzen
-sind gefixt und live verifiziert) — das hier ist eine bewusste Architektur-Empfehlung,
-kein offener Defekt.
+Konzept statt pro-Feld-Generation-Tracking.
+
+> **Nachtrag 2026-08-25 (2): Diese Empfehlung war kein theoretischer Punkt.** Der Satz
+> „kein akuter Bug mehr" an dieser Stelle war falsch. Noch am selben Tag meldete der
+> User, dass Werte im Programmer-Tab weiterhin binnen einer Sekunde zurückspringen und
+> erst beim zweiten Auswählen greifen — quer über *alle* Einstellungen. Ursache war
+> exakt das hier beschriebene Strukturproblem: die neun Fixes hatten jeweils ein
+> *einzelnes Feld* abgesichert, während der **gemeinsame** Schreibpfad (300-ms-
+> `isReceiving`-Totzone ohne Retry) und der **gemeinsame** Merge-Pfad (FX-Parameter und
+> manuelle Kanäle ohne Dirty-Gate) ungeschützt blieben. Gefixt durch `deferSync()`/
+> `syncTick` und Gating **pro Gruppe** statt pro Feld (siehe `history.md` 2026-08-25 (2)).
+> Damit ist die Mechanismenzahl eher gesunken als gestiegen — die grundsätzliche
+> Empfehlung (ein einziger besessener State bzw. WebSockets) bleibt aber bestehen, und
+> die Lehre daraus ist: Bei diesem Problemfeld den *geteilten Pfad* fixen, nicht das
+> gemeldete Feld.
 
 **Offen: Mic-BPM-Oktave-Korrektur braucht Live-Test mit echtem Audio (2026-08-19).** Siehe
 „Kürzlich gefixt" unten — Fix ist gebaut und kompiliert/geflasht, aber ohne Mikrofon-Input in
@@ -69,6 +81,13 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   500 ms gegen `/api/state`, `App` alle 2000 ms gegen `/api/get_dmx`) mit
   überlappenden Feldern. Zusammenlegen wäre eine Architekturänderung am
   Polling-Modell, kein chirurgischer Fix — bewusst zurückgestellt.
+  **Präzisierung 2026-08-25 (2):** Bei der Sync-Bugjagd geprüft — `useTelemetry`
+  schreibt **nicht** in den geteilten `state`, sondern nur in sein eigenes
+  `{ping, quality, raw}` und blitzt die Beat-LEDs per DOM. Die Feld-Überlappung
+  ist real, aber es gibt genau **einen** Merge-Pfad in den State
+  (`/api/get_dmx`). Als Ursache für State-Sync-Bugs damit ausgeschlossen; bleibt
+  ein reiner Aufräum-/Bandbreiten-Punkt, keine Fehlerquelle. (`t.raw` wird
+  gesetzt, aber nirgends gelesen — toter Payload.)
 
 - **Index-Konvention inkonsistent.** `executePreset` nutzt
   `chaserScenes[slot-1]` (1-basiert, Guard 1–10), `executeChaserSlot` nutzt
@@ -187,6 +206,29 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   -Größe so wählen, dass der Zenit nicht gekreuzt wird.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
+
+- **Programmer-Tab: Werte sprangen binnen ~1 s zurück und griffen erst beim zweiten
+  Auswählen — der gemeinsame Schreib-/Merge-Pfad gefixt statt weiterer Einzelfelder
+  (2026-08-25 (2)).** Volle Diagnose in `history.md`. Kurzfassung — drei Root Causes:
+  (1) **Primär:** die 300-ms-`isReceiving`-Totzone nach jedem Poll verwarf Edits
+  *ersatzlos* — der Effect hängt an `[state]`, `isReceiving` ist aber eine ref, ihr
+  Zurücksetzen löst keinen Render aus, es gab also nie einen Retry (~15 % aller Edits
+  bei 2 s Poll). Gefixt mit `deferSync()`/`syncTick`. (2) Der Poll-Merge überschrieb
+  **alle FX-Parameter** ungegated (nur die acht Running-Booleans waren geschützt) und
+  zog danach die `pr2.*`-Baseline auf die zurückgesetzten Werte nach — womit der Edit
+  nicht bloß verzögert, sondern *gelöscht* war. Gefixt durch Gating **pro Gruppe**
+  (Felder *und* Baseline). (3) `/set_all` hatte gar keinen Generation-Schutz: es rief
+  nie `bumpGen()` und antwortete mit `server.send(200, "OK")` — der Zwei-Argument-
+  Überladung, die `"OK"` als *Content-Type* sendet und den Body leer lässt (live am
+  Gerät bestätigt). Mitgefixt, gleiche Fehlerklasse: `prism`/`frost` (`?? 0` statt
+  `?? prev`), `presetActive` ohne `d.pr != null`-Guard, ungegatetes `setBpm`,
+  `setMuted`/`setMicOn` aus dem `setState`-Updater heraus aufgerufen, `/chaser` ohne
+  `&g=`/`isStaleWrite()`. **Separat:** `/joy_cfg` hatte keine Read-back-Route, wodurch
+  ein frischer Browser-Tab die gespeicherte Joystick-Config des Geräts bei der ersten
+  State-Änderung mit UI-Defaults überschrieb (neue Route `/api/joycfg`).
+  **Nebenbefund:** `ArduinoOTA.begin()` wurde nie aufgerufen — OTA hat trotz
+  README-Werbung noch nie funktioniert; jetzt ergänzt.
+  ⚠️ **Praxistest am Fixture steht noch aus** (braucht einmalig USB-Flash).
 
 - **LIVE-UI-Politur plus neun echte State-Sync-Bugs gefunden und gefixt (2026-08-25).**
   Volle Diagnose-Historie (jeder der neun Fixes einzeln begründet, mit Telemetrie-Belegen)

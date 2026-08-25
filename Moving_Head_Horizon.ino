@@ -564,6 +564,12 @@ void setup() {
   }
   
   WiFi.setSleep(false);
+  // ArduinoOTA was included and ArduinoOTA.handle() was already being called every loop, but
+  // begin() was never called anywhere -- so no OTA listener was ever started and handle() did
+  // nothing. OTA has therefore never actually worked, despite README.md advertising it. Starting
+  // it here (station mode only; there is no point advertising OTA on the AP fallback) makes the
+  // documented behaviour real and means a UI/firmware fix no longer needs physical USB access.
+  if (WiFi.status() == WL_CONNECTED) { ArduinoOTA.setHostname("movinghead"); ArduinoOTA.begin(); }
   MDNS.begin("movinghead"); artnet.begin(); artnet.setArtDmxCallback(onArtDmx);
   setupAPI(); server.begin(); setupDMX(); loadAllChaserScenes(); initAudioEngine();
 }
