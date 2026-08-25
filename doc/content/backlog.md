@@ -227,8 +227,12 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   ein frischer Browser-Tab die gespeicherte Joystick-Config des Geräts bei der ersten
   State-Änderung mit UI-Defaults überschrieb (neue Route `/api/joycfg`).
   **Nebenbefund:** `ArduinoOTA.begin()` wurde nie aufgerufen — OTA hat trotz
-  README-Werbung noch nie funktioniert; jetzt ergänzt.
-  ⚠️ **Praxistest am Fixture steht noch aus** (braucht einmalig USB-Flash).
+  README-Werbung noch nie funktioniert; jetzt ergänzt **und real verifiziert**
+  (kompletter Firmware-Upload über WiFi via `espota.py`, Gerät kam sauber hoch;
+  Partitionstabelle ist echtes Dual-OTA). Geflasht per USB (Firmware + FS),
+  NVS unangetastet, Presets überlebten. Die drei Firmware-Änderungen wurden
+  danach live am Gerät nachgemessen (siehe `handoff.md`).
+  ⚠️ **Offen bleibt nur der Bedien-Test im Browser** (braucht echte Klicks).
 
 - **LIVE-UI-Politur plus neun echte State-Sync-Bugs gefunden und gefixt (2026-08-25).**
   Volle Diagnose-Historie (jeder der neun Fixes einzeln begründet, mit Telemetrie-Belegen)

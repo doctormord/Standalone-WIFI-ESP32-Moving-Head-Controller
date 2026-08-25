@@ -3627,3 +3627,46 @@ Cause 3 wurde vor dem Fix live am laufenden Gerät bestätigt
 (`curl -D -` auf `/set_all` → `Content-Type: OK`, `Content-Length: 0`).
 **Noch offen: der Praxistest am Fixture nach dem USB-Flash** (siehe
 `handoff.md`).
+
+### Nachtrag zur selben Session: geflasht und live nachgemessen
+
+Der oben als „noch offen" notierte Punkt ist teilweise erledigt — der User gab
+grünes Licht für USB-Flashen, also wurde direkt deployt:
+
+```
+pio run -t upload   --upload-port /dev/cu.usbmodem1101
+pio run -t uploadfs --upload-port /dev/cu.usbmodem1101
+```
+
+Firmware nach `0x10000`, Filesystem nach `0x290000`, beides mit Hash-Verify.
+**NVS blieb erwartungsgemäß unberührt** — die Presets „Sky Moover"/„yellow
+three" waren nach dem Reboot unverändert vorhanden (genau der Unterschied zum
+`firmware.factory.bin`-an-`0x0`-Unfall vom 2026-08-20).
+
+Danach die drei Firmware-Änderungen direkt am laufenden Gerät nachgemessen:
+
+- **`/set_all`** antwortet jetzt `Content-Type: text/plain`,
+  `Content-Length: 1` mit einer echten Generation. Vor dem Fix am selben Gerät
+  gemessen: `Content-Type: OK`, `Content-Length: 0`. Damit ist Root Cause 3
+  vorher *und* nachher belegt, nicht nur aus dem Code abgeleitet.
+- **`/api/joycfg`** liefert
+  `{"spd":2000,"crv":2.00,"mom":50,"prv":0,"trv":0,"pmin":0,"pmax":255,"tmin":0,"tmax":255}`.
+- **FX-Parameter-Round-trip:** `/sgobfx` mit Trigger-Modus 2, Sync 4, Hold 1500,
+  Start/End 2/5 geschrieben (bei `a=0`, also inaktiv — keine Lichtänderung am
+  Fixture) → in `/api/get_dmx` exakt so wieder ausgelesen, `gen` 25→26,
+  `gsrc` = `sgobfx`, und die Response war die neue Generation `26`. Genau der
+  Wert, gegen den das Frontend den Poll jetzt gated. Testwerte anschließend
+  wieder auf den Ursprungsstand zurückgesetzt.
+
+**OTA wurde ebenfalls verifiziert statt nur behauptet:** Die Partitionstabelle
+ist echtes Dual-OTA (`app0`/`app1` je 1280K plus `otadata`), die Firmware
+belegt 1216K. Ein kompletter Firmware-Upload über WiFi
+(`espota.py -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin`)
+lief durch („Done...") und das Gerät kam sauber wieder hoch. Die
+`README.md`-Zeile zu OTA ist damit nicht nur korrigiert, sondern auch belegt —
+künftige Iterationen brauchen kein USB mehr.
+
+**Weiterhin offen:** der eigentliche Bedien-Test im Browser (15× Trigger-Modus
+umstellen, Static-Gobo-Slot, Regler, Joystick-Config über einen Reload hinweg,
+plus Regressionstest der neun Fixes vom selben Tag). Der braucht echte Klicks
+und ließ sich nicht automatisieren — alles davor ist gemessen, nicht vermutet.

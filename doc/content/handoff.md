@@ -2,8 +2,10 @@
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-25, Session 2)
 > **Der Programmer-Tab-Sync-Bug („Werte springen nach <1 s zurück, greifen
-> erst beim zweiten Auswählen") ist gefixt und compile-/syntaxgeprüft, aber
-> NOCH NICHT AM FIXTURE GETESTET — dafür fehlt ein einmaliger USB-Flash.**
+> erst beim zweiten Auswählen") ist gefixt, geflasht (USB, Firmware + FS) und
+> backend-seitig live verifiziert. Offen ist nur noch der Bedien-Test im
+> Browser** — 15× einen FX-Trigger-Modus umstellen und prüfen, dass jede
+> Änderung beim *ersten* Versuch haftet (siehe unten).
 >
 > **Stand der Arbeit:** Branch `worktree-prog-sync-fix` (Worktree unter
 > `.claude/worktrees/prog-sync-fix`), ein Commit, sauber. Geändert:
@@ -42,28 +44,44 @@
 > ein frischer Tab überschrieb die gespeicherte Joystick-Config des Geräts mit
 > UI-Defaults (neue Route `/api/joycfg`).
 >
-> ### ⚠️ Wichtig: OTA hat noch nie funktioniert
+> ### ⚠️ Wichtig: OTA hatte noch nie funktioniert — jetzt repariert und verifiziert
 >
 > `ArduinoOTA` war eingebunden und `handle()` lief im Loop, aber
 > **`ArduinoOTA.begin()` wurde nie aufgerufen** — es gab nie einen Listener.
 > `README.md` hat OTA trotzdem beworben (Zeile korrigiert). `begin()` ist
-> jetzt in `setup()` ergänzt. Deshalb war ein Remote-Deploy in dieser Session
-> unmöglich.
+> jetzt in `setup()` ergänzt, und **OTA wurde danach real getestet**: ein
+> kompletter Firmware-Upload über WiFi mit
+> `espota.py -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin`
+> lief durch („Done..."), das Gerät kam sauber wieder hoch. Die
+> Partitionstabelle ist echtes Dual-OTA (`app0`/`app1`, je 1280K, plus
+> `otadata`); die Firmware belegt 1216K. **Künftige Iterationen brauchen also
+> kein USB mehr.**
 >
-> ### 👉 Nächster Schritt (das ist der Blocker)
+> ### ✅ Deployment (erledigt am 2026-08-25)
 >
-> **Einmalig per USB flashen — Firmware *und* Filesystem:**
+> Per USB geflasht, Firmware *und* Filesystem:
 > ```
-> pio run -t upload      # Firmware
-> pio run -t uploadfs    # data/ nach LittleFS
+> pio run -t upload --upload-port /dev/cu.usbmodem1101
+> pio run -t uploadfs --upload-port /dev/cu.usbmodem1101
 > ```
-> Klappt der Auto-Reset nicht: `scripts/flash_esptool.sh` benutzen und
-> **niemals** `firmware.factory.bin` an Offset `0x0` schreiben (wischt NVS —
-> siehe `CLAUDE.md`). Ab diesem Flash ist OTA nutzbar
-> (`upload_protocol = espota`, `upload_port = 192.168.8.113`), künftige
-> Iterationen brauchen also kein USB mehr.
+> NVS blieb erwartungsgemäß unangetastet (Firmware nach `0x10000`, FS nach
+> `0x290000`) — die Presets „Sky Moover"/„yellow three" waren nach dem Reboot
+> unverändert da. **Niemals** `firmware.factory.bin` an Offset `0x0` schreiben
+> (wischt NVS — siehe `CLAUDE.md`).
 >
-> **Danach testen (das ist der eigentliche Nachweis):**
+> Backend-seitig direkt am Gerät verifiziert:
+> - `/set_all` antwortet jetzt `Content-Type: text/plain`, `Content-Length: 1`
+>   mit einer echten Generation (vorher: `Content-Type: OK`, leerer Body).
+> - `/api/joycfg` liefert die persistierte Joystick-Config zurück.
+> - Ein FX-Parameter-Write round-trippt korrekt: `/sgobfx` mit Trigger-Modus
+>   2 / Sync 4 / Hold 1500 → in `/api/get_dmx` exakt so wieder ausgelesen,
+>   `gen` hochgezählt, `gsrc` = `sgobfx`, Response = die neue Generation
+>   (Testwerte danach wieder auf den Ursprungsstand zurückgesetzt).
+>
+> ### 👉 Offen: der Bedien-Test im Browser
+>
+> Das ist der einzige verbleibende Nachweis — er braucht echte Klicks und
+> konnte nicht automatisiert werden:
 > 1. Im PROGRAMMER-Tab einen FX-Trigger-Modus ~15× ändern, absichtlich auch
 >    direkt nachdem ein Poll gelandet ist. **Jede** Änderung muss beim
 >    *ersten* Versuch haften, ohne Zurückspringen.
@@ -96,18 +114,20 @@
 ## Aktueller Status
 
 Zielhardware: **ESP32-C3 Supermini** (Fixture: SHEHDS 160W 3in1 GOBO /
-„Pro Beam 280", Pan 540°/Tilt 270°). Das Gerät läuft und ist unter
-`movinghead.local` / `192.168.8.113` erreichbar — **aber noch mit dem Stand
-der Vorsession**; die Fixes dieser Session sind noch nicht darauf. Der
-Movement-FX-„Acht statt Kreis"-Effekt am Zenit-Winkel bleibt unverändert
-(kein Software-Fix aktiv) — in dieser Session nicht angefasst.
+„Pro Beam 280", Pan 540°/Tilt 270°). Das Gerät läuft unter
+`movinghead.local` / `192.168.8.113` **mit dem Stand dieser Session**
+(Firmware + Filesystem am 2026-08-25 per USB geflasht, danach zusätzlich ein
+OTA-Upload zur Verifikation). Der Movement-FX-„Acht statt Kreis"-Effekt am
+Zenit-Winkel bleibt unverändert (kein Software-Fix aktiv) — in dieser Session
+nicht angefasst.
 
-Verifikation bisher: `pio run` und `pio run -t buildfs` sauber; alle acht
+Verifikation: `pio run` und `pio run -t buildfs` sauber; alle acht
 `<script type="text/babel">`-Blöcke mit dem mitgelieferten Babel aus
 `data/vendor/` transformiert (dieselbe Transformation wie am Gerät — es gibt
 keinen Build-Schritt, ein Syntaxfehler zeigte sich sonst erst als leere UI).
-Root Cause 3 wurde vor dem Fix live am Gerät bestätigt. **Der Praxistest am
-Fixture fehlt.**
+Root Cause 3 wurde vor dem Fix live am Gerät bestätigt, alle drei
+Firmware-Änderungen danach live nachgemessen (siehe Banner). **Was fehlt, ist
+allein der Bedien-Test im Browser** — dafür braucht es echte Klicks.
 
 ## Doku-Hinweis
 
