@@ -3670,3 +3670,75 @@ künftige Iterationen brauchen kein USB mehr.
 umstellen, Static-Gobo-Slot, Regler, Joystick-Config über einen Reload hinweg,
 plus Regressionstest der neun Fixes vom selben Tag). Der braucht echte Klicks
 und ließ sich nicht automatisieren — alles davor ist gemessen, nicht vermutet.
+
+---
+
+## 2026-08-26 — Bedien-Test am Gerät: der Programmer-Sync-Fix ist abgenommen
+
+Der am Vortag als „offen" notierte Praxistest wurde gefahren. Ergebnis: **vom
+User abgenommen** („soweit alles gut").
+
+### Methode (relevant für künftige Sync-Bugs)
+
+Die primäre Fehlerart des behobenen Bugs — ein **verworfener** Edit — ist
+geräteseitig grundsätzlich *unsichtbar*: der Wert ändert sich einfach nicht,
+es gibt nichts zu messen. Deshalb wurde nicht „beobachtet", sondern gezählt:
+der User machte im Browser eine **abgezählte** Menge Änderungen, während
+parallel ein Recorder `/api/get_dmx` alle 600 ms abfragte und jede
+geräteseitige Zustandsänderung mit Zeitstempel, `gen` und `gsrc` in eine
+JSONL-Datei schrieb. Damit wird die Frage objektiv beantwortbar:
+**N Klicks rein = N Writes an?**
+
+Nachahmenswert, falls dieses Problemfeld nochmal aufkommt — Skript-Kern: alle
+FX-Parameter, Running-Flags und manuelle DMX-Kanäle pollen, aber die
+FX-getriebenen Kanäle (`1` Dimmer, `9` Gobo-Rotation, `11` Prisma-Rotation)
+**ausschließen**, sonst ertrinkt das Log in Rauschen von laufenden Effekten.
+
+### Ergebnis
+
+| Test | Pfad | Ergebnis |
+|---|---|---|
+| FX-Trigger/Sync/Hold | `syncFx`, `gsrc: sgobfx` | 10 Aktionen → 10 angekommen |
+| Static-Gobo-Slot | `/set_all`, `gsrc: set_all` | 9 Aktionen → 9 angekommen |
+| Joystick-Config über Reload | `/api/joycfg` | überlebt |
+| Leerlauf ~45 s | — | null Writes, `gen` konstant bei 113 |
+
+Einzelbefunde:
+
+- **Jede** Zustandsänderung hatte eine eigene, lückenlos hochgezählte
+  Generation. Es hat sich also nichts ohne echten HTTP-Write verändert —
+  genau der Unterschied zum alten Verhalten, bei dem der Poll Werte
+  zurückschrieb.
+- Die 9 Gobo-Slot-Änderungen kamen alle mit `gsrc: set_all` und je eigener
+  Generation an. Das ist der direkte Beleg für Root Cause 3: vor dem Fix hat
+  `/set_all` überhaupt keine Generation vergeben.
+- **~45 s Leerlauf ohne einen einzigen Write** belegen den Baseline-Lockstep:
+  eine untätige UI echot gepollte Werte nicht mehr zurück. Ein anfangs
+  auffälliger Burst (~64 `set_all`-Bumps in 30 s) war *nicht* die früher
+  vermutete Echo-Schleife, sondern schlicht Slider-Drags des Users — er hörte
+  auf, sobald der User aufhörte.
+- `/api/joycfg` meldete nach dem Reload `spd 652, crv 4.20, mom 12, pmax 68,
+  tmax 153`, also klar abseits der UI-Defaults, die der alte Code beim ersten
+  Klick nach einem Reload zurückgeschrieben hätte.
+
+**Ehrliche Einordnung der Aussagekraft:** Unter dem alten Code hatte jede
+Änderung ~15 % Chance, in die 300-ms-Totzone zu fallen. Bei 19 Änderungen
+wären ~3 Verluste zu erwarten gewesen; null Verluste hätten damals eine
+Wahrscheinlichkeit von rund 5 % gehabt. Das ist ein deutliches, aber für sich
+genommen kein zwingendes Signal — zusammen mit der Beobachtung des Users, dass
+im Browser nichts mehr zurücksprang, als Abnahme gewertet.
+
+### Nicht getestet
+
+**Test 5 (Preset-Regression)** — schnelles Wechseln zwischen Presets mit allen
+sieben FX aktiv — wurde übersprungen. Falls im normalen Betrieb doch wieder
+„no slot active" flackert, Parameter zwischen Presets überlaufen oder ein FX
+beim Recall ausbleibt: dort gezielt ansetzen, es ist derselbe geteilte
+Schreib-/Merge-Pfad.
+
+### Nebenwirkung des Tests
+
+Die Pan/Tilt-Limits stehen seit dem Joystick-Test auf `pmax 68` / `tmax 153`
+und sind persistent in NVS. Das schränkt den Bewegungsbereich real ein —
+notiert, damit das nicht später als Mechanik- oder Movement-FX-Fehler
+fehldiagnostiziert wird.

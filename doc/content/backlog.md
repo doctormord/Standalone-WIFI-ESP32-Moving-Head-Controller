@@ -232,7 +232,13 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   Partitionstabelle ist echtes Dual-OTA). Geflasht per USB (Firmware + FS),
   NVS unangetastet, Presets überlebten. Die drei Firmware-Änderungen wurden
   danach live am Gerät nachgemessen (siehe `handoff.md`).
-  ⚠️ **Offen bleibt nur der Bedien-Test im Browser** (braucht echte Klicks).
+  ✅ **Am 2026-08-26 vom User am Gerät gegengetestet und abgenommen**
+  („soweit alles gut"): 19 abgezählte Bedienaktionen, 19 geräteseitig
+  angekommen, keine spontanen Reverts, ~45 s Leerlauf ohne einen einzigen
+  Write, Joystick-Config überlebt den Browser-Reload. Messprotokoll in
+  `handoff.md`/`history.md`. **Nicht getestet: Preset-Regression** (schnelles
+  Wechseln mit allen FX aktiv) — falls dort noch etwas auftaucht, ist es
+  derselbe geteilte Pfad.
 
 - **LIVE-UI-Politur plus neun echte State-Sync-Bugs gefunden und gefixt (2026-08-25).**
   Volle Diagnose-Historie (jeder der neun Fixes einzeln begründet, mit Telemetrie-Belegen)

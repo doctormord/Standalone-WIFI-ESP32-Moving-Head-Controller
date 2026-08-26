@@ -1,11 +1,10 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-25, Session 2)
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-26)
 > **Der Programmer-Tab-Sync-Bug („Werte springen nach <1 s zurück, greifen
-> erst beim zweiten Auswählen") ist gefixt, geflasht (USB, Firmware + FS) und
-> backend-seitig live verifiziert. Offen ist nur noch der Bedien-Test im
-> Browser** — 15× einen FX-Trigger-Modus umstellen und prüfen, dass jede
-> Änderung beim *ersten* Versuch haftet (siehe unten).
+> erst beim zweiten Auswählen") ist gefixt, geflasht und am 2026-08-26 vom
+> User am Gerät gegengetestet — abgenommen mit „soweit alles gut".** Details
+> zur Messung unten und in `history.md`.
 >
 > **Stand der Arbeit:** auf `future` gemerged (Fast-Forward) und nach GitHub
 > gepusht — lokaler und Remote-Stand sind identisch, Arbeitsbaum sauber.
@@ -81,26 +80,43 @@
 >   `gen` hochgezählt, `gsrc` = `sgobfx`, Response = die neue Generation
 >   (Testwerte danach wieder auf den Ursprungsstand zurückgesetzt).
 >
-> ### 👉 Offen: der Bedien-Test im Browser
+> ### ✅ Bedien-Test am Gerät (2026-08-26, bestanden)
 >
-> Das ist der einzige verbleibende Nachweis — er braucht echte Klicks und
-> konnte nicht automatisiert werden:
-> 1. Im PROGRAMMER-Tab einen FX-Trigger-Modus ~15× ändern, absichtlich auch
->    direkt nachdem ein Poll gelandet ist. **Jede** Änderung muss beim
->    *ersten* Versuch haften, ohne Zurückspringen.
-> 2. Dasselbe für den Static-Gobo-Slot (`/set_all`-Pfad) und einen Regler
->    (Fokus/Zoom).
-> 3. Joystick-Speed/Limits setzen, Browser neu laden → Werte müssen überleben.
-> 4. Gegen das Gerät prüfen, nicht gegen das UI:
->    `curl -s http://192.168.8.113/api/get_dmx`.
-> 5. **Regressionstest der neun Fixes vom Vortag** (gemeinsamer Pfad!):
->    schnelles Preset-Wechseln mit allen sieben FX aktiv — kein
->    „no slot active"-Flackern, keine Parameter, die zwischen Presets
->    überlaufen, kein FX, das beim Recall ausbleibt.
+> Methode: der User hat im Browser eine **abgezählte** Menge Änderungen
+> gemacht, während parallel ein Recorder `/api/get_dmx` alle 600 ms abfragte
+> und jede geräteseitige Zustandsänderung mit Zeitstempel, `gen` und `gsrc`
+> mitschrieb. So ließ sich objektiv „N Klicks rein = N Writes an" zählen —
+> nötig, weil die primäre Fehlerart (verworfener Edit) geräteseitig
+> *unsichtbar* ist: der Wert ändert sich schlicht nicht.
 >
-> Falls der Test durchgeht: Branch nach `future` mergen. Falls nicht: die
-> `gsrc`-Telemetrie in `/api/get_dmx` zeigt, welche Route zuletzt geschrieben
-> hat — sie liest jetzt häufiger `set_all`, das ist erwartet.
+> | Test | Ergebnis |
+> |---|---|
+> | FX-Trigger/Sync/Hold (`syncFx`-Pfad, `gsrc: sgobfx`) | 10 Aktionen → 10 angekommen |
+> | Static-Gobo-Slot (`/set_all`-Pfad, `gsrc: set_all`) | 9 Aktionen → 9 angekommen |
+> | Joystick-Config über Browser-Reload | überlebt ✅ |
+> | Leerlauf ~45 s | **null** Writes, `gen` konstant |
+> | Spontane Reverts | keine |
+>
+> Wichtige Einzelbefunde:
+> - **Jede** Zustandsänderung hatte einen eigenen, lückenlos hochgezählten
+>   `gen` — es hat sich also nichts ohne echten HTTP-Write geändert. Genau das
+>   war beim alten Bug anders (der Poll schrieb Werte zurück).
+> - Die ~45 s Leerlauf ohne einen einzigen Write belegen den
+>   Baseline-Lockstep: eine untätige UI echot gepollte Werte nicht mehr zurück.
+> - `/api/joycfg` meldete nach dem Reload `spd 652, crv 4.20, mom 12,
+>   pmax 68, tmax 153` — klar abseits der Defaults, die der alte Code beim
+>   ersten Klick nach dem Reload zurückgeschrieben hätte.
+> - Einordnung: Unter dem alten Code hatte jede Änderung ~15 % Chance, in die
+>   300-ms-Totzone zu fallen. Bei 19 Änderungen wären ~3 Verluste zu erwarten
+>   gewesen; null Verluste hätten damals eine Wahrscheinlichkeit von ~5 %.
+>   Zusammen mit dem „geht" aus dem Browser als Abnahme gewertet.
+>
+> **Nicht gelaufen: Test 5 (Preset-Regression).** Schnelles Preset-Wechseln
+> mit allen sieben FX aktiv wurde nicht durchgetestet. Falls im normalen
+> Betrieb doch nochmal „no slot active" flackert, Parameter zwischen Presets
+> überlaufen oder ein FX beim Recall ausbleibt: dort gezielt ansetzen, es ist
+> derselbe geteilte Pfad. `gsrc` in `/api/get_dmx` zeigt die zuletzt
+> schreibende Route — sie liest jetzt häufiger `set_all`, das ist erwartet.
 >
 > ### Sonst offen (unverändert aus früheren Sessions)
 > 1. Mic-Sensitivity subjektiv mit echter Musik über den AUDIO-Tab prüfen.
@@ -129,8 +145,17 @@ Verifikation: `pio run` und `pio run -t buildfs` sauber; alle acht
 `data/vendor/` transformiert (dieselbe Transformation wie am Gerät — es gibt
 keinen Build-Schritt, ein Syntaxfehler zeigte sich sonst erst als leere UI).
 Root Cause 3 wurde vor dem Fix live am Gerät bestätigt, alle drei
-Firmware-Änderungen danach live nachgemessen (siehe Banner). **Was fehlt, ist
-allein der Bedien-Test im Browser** — dafür braucht es echte Klicks.
+Firmware-Änderungen danach live nachgemessen, und am 2026-08-26 hat der User
+den Bedien-Test im Browser gefahren (Messprotokoll im Banner oben) und mit
+„soweit alles gut" abgenommen. **Offen bleibt allein Test 5
+(Preset-Regression)**, siehe Banner.
+
+⚠️ **Hinweis zum Gerätezustand:** Beim Joystick-Test wurden Pan/Tilt-Limits
+auf Testwerte gesetzt (`pmax 68`, `tmax 153`) und sind persistent in NVS
+gespeichert — das schränkt den Bewegungsbereich spürbar ein. Falls das
+Fixture „nicht weit genug fährt": zuerst dort nachsehen
+(`curl -s http://192.168.8.113/api/joycfg`), bevor Mechanik oder
+Movement-FX verdächtigt werden.
 
 ## Doku-Hinweis
 
