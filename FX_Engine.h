@@ -37,6 +37,34 @@ struct StepFX {
     int scratchRange = 40;
 };
 
+// Shared LFO shaping, used by BOTH Modulator and MovementEngine.
+//
+// These two used to carry separate copies of this logic and had silently drifted apart:
+// MovementEngine implemented only Quadratic and Sine, so Cubic, Gauss and Random -- all
+// offered by the very same UI dropdown (MOD_CURVES in data/index.html) -- fell through to
+// Linear and did nothing at all. Selecting them changed the movement in no way. One
+// definition now, so a curve added here cannot go missing in one of the two engines.
+//
+// allowRandom: Random re-rolls on every single call. For a dimmer that is a usable
+// flicker effect; for a movement pattern it would re-randomise the size every frame and
+// shake the fixture. The Movement FX curve dropdown therefore does not offer it, and this
+// flag makes movement fall back to Linear if an older saved scene still carries curve 5 --
+// which is exactly the behaviour those scenes already had before this fix.
+inline float lfoShape(float p, int m, int c, bool allowRandom) {
+    // Mode: 0=Forward (Saw), 1=PingPong (Triangle), 2=Reverse (Decay)
+    float val = p;
+    if (m == 1) val = p < 0.5f ? p * 2.0f : 2.0f - (p * 2.0f);
+    else if (m == 2) val = 1.0f - p;
+
+    // Curve: 0=Linear, 1=Quad, 2=Cubic, 3=Sine, 4=Gauss, 5=Random
+    if (c == 1) return val * val;
+    if (c == 2) return val * val * val;
+    if (c == 3) return 0.5f - 0.5f * cosf(val * PI);
+    if (c == 4) { float x = (val - 0.5f) * 2.0f; return expf(-(x * x) * 5.0f); }
+    if (c == 5) return allowRandom ? (random(0, 1000) / 1000.0f) : val;
+    return val; // 0 = Linear, and any unknown value
+}
+
 // =========================================================
 // --- LFO MODULATOR (Dimmer, Prism & Gobo Rotation) ---
 // =========================================================
@@ -58,22 +86,8 @@ public:
     void start() { active = true; lastUpdate = millis(); }
     void stop() { active = false; }
 
-    float getLFO(float p, int m, int c) {
-        float val = 0.0f;
-        // Mode: 0=Forward (Saw), 1=PingPong (Triangle), 2=Reverse (Decay)
-        if (m == 0) val = p;
-        else if (m == 1) val = p < 0.5f ? p * 2.0f : 2.0f - (p * 2.0f);
-        else if (m == 2) val = 1.0f - p;
-
-        // Curve: 0=Linear, 1=Quad, 2=Cubic, 3=Sine, 4=Gauss, 5=Random
-        if (c == 0) return val;
-        if (c == 1) return val * val;
-        if (c == 2) return val * val * val;
-        if (c == 3) return 0.5f - 0.5f * cosf(val * PI);
-        if (c == 4) { float x = (val - 0.5f)*2.0f; return expf(-(x*x)*5.0f); }
-        if (c == 5) return random(0, 1000) / 1000.0f; 
-        return val;
-    }
+    // Modulators drive dimmer/gobo-rot/prism-rot, where Random is a legitimate effect.
+    float getLFO(float p, int m, int c) { return lfoShape(p, m, c, true); }
 
     void process(unsigned long now, float beatsElapsedTotal, const float* syncBeats, float &outVal) {
         if (lastUpdate == 0) lastUpdate = now;
@@ -162,12 +176,16 @@ public:
         if (modPhase > 1.0f) modPhase -= 1.0f;
         if (modPhase < 0.0f) modPhase += 1.0f;
         
-        float mVal = modPhase;
-        if (modMo == 1) mVal = modPhase < 0.5f ? modPhase * 2.0f : 2.0f - (modPhase * 2.0f);
-        else if (modMo == 2) mVal = 1.0f - modPhase;
-
-        if (modCu == 1) mVal = mVal * mVal;
-        else if (modCu == 3) mVal = 0.5f - 0.5f * cosf(mVal * PI);
+        // Shared with Modulator (see lfoShape) instead of a partial local copy, which had
+        // silently reduced Cubic and Gauss to Linear here. allowRandom=false: see lfoShape.
+        //
+        // Worth knowing when a pattern "judders": modes 0 (Forward/Saw) and 2 (Reverse/Decay)
+        // are sawtooths, so whenever szSt != szEn the size snaps back at the end of every
+        // modulation cycle and the head physically jumps. Measured live 2026-08-26 on a Clover:
+        // 9 discontinuities in 10s, spaced exactly one modSp apart, up to 17728 units of pan in
+        // a single frame. That is inherent to a sawtooth, not a defect -- mode 1 (Ping-Pong)
+        // is the continuous one and measured zero discontinuities under the same conditions.
+        float mVal = lfoShape(modPhase, modMo, modCu, false);
 
         currentSize = (szSt + (szEn - szSt) * mVal) / 100.0f;
         currentSpeed = (spdSt + (spdEn - spdSt) * mVal) / 100.0f;

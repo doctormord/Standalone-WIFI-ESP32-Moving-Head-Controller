@@ -1084,6 +1084,13 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   const MOVEMENT_TYPES = [[1, 'Circle'], [2, 'Figure 8'], [3, 'Clover'], [4, 'Square'], [5, 'Star'], [6, 'Waterwave'], [7, 'Lissajous (Chaos)'], [8, 'Pan Sweep (Line X)'], [9, 'Tilt Sweep (Line Y)'], [10, 'Spiral In / Out'], [11, "Ballyhoo (Rock'n'Roll)"], [12, 'Infinity Loop']];
   const MOD_MODES = [[0, 'Mode · Forward (Sawtooth)'], [1, 'Mode · Up / Down (Ping-Pong)'], [2, 'Mode · Reverse (Decay)']];
   const MOD_CURVES = [[3, 'Curve · Sine (Soft)'], [0, 'Curve · Linear'], [1, 'Curve · Quadratic'], [2, 'Curve · Cubic'], [4, 'Curve · Gauss (Flash)'], [5, 'Curve · Random']];
+  // Movement FX deliberately drops "Random": it re-rolls every frame, which is a usable
+  // dimmer flicker but would re-randomise a pattern's size on every frame and shake the
+  // fixture. The firmware ignores curve 5 for movement anyway (lfoShape's allowRandom=false),
+  // so offering it here would just be a control that does nothing. The other five now really
+  // work -- Cubic and Gauss used to be silently reduced to Linear by MovementEngine, which
+  // carried its own incomplete copy of the curve logic. Fixed 2026-08-26.
+  const MOVE_CURVES = MOD_CURVES.filter(([v]) => v !== 5);
 
   function FxButton({ running, label, onClick }) {
     return <button onClick={onClick} style={{ width: '100%', padding: '11px 0', marginTop: 8, background: running ? '#dc2626' : '#16a34a', border: 'none', borderRadius: 10, color: '#fff', fontWeight: 700, fontSize: 12, letterSpacing: 1.2, cursor: 'pointer', textTransform: 'uppercase', boxShadow: running ? '0 0 18px rgba(220,38,38,0.32)' : '0 0 14px rgba(22,163,74,0.22)' }}>{running ? `◼ STOP ${label}` : `▶ START ${label}`}</button>;
@@ -1095,7 +1102,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         <Dropdown value={state.fxType} onChange={(v) => setState((s) => ({ ...s, fxType: parseInt(v) }))} options={MOVEMENT_TYPES} accent={accent} dense />
         <div style={{ marginTop: 8 }}><LabeledSlider label="Rotation" value={state.fxRot} onChange={(v) => setState((s) => ({ ...s, fxRot: v }))} min={0} max={360} unit="°" accent={accent} compact /></div>
         <div style={{ marginTop: 8, marginBottom: 6, fontSize: 9.5, color: FX_HUE.movement, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase' }}>Size + Speed modulator</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.fxMode} onChange={(v) => setState((s) => ({ ...s, fxMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.fxCurve} onChange={(v) => setState((s) => ({ ...s, fxCurve: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.fxMode} onChange={(v) => setState((s) => ({ ...s, fxMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.fxCurve} onChange={(v) => setState((s) => ({ ...s, fxCurve: parseInt(v) }))} options={MOVE_CURVES} accent={accent} dense /></div>
         <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} syncOptions={MOVE_SYNCS} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}><LabeledSlider label="Speed Start" value={state.fxSS} onChange={(v) => setState((s) => ({ ...s, fxSS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Speed End" value={state.fxSE} onChange={(v) => setState((s) => ({ ...s, fxSE: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size Start" value={state.fxZS} onChange={(v) => setState((s) => ({ ...s, fxZS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size End" value={state.fxZE} onChange={(v) => setState((s) => ({ ...s, fxZE: v }))} min={1} max={100} unit="%" accent={accent} compact /></div>
         <FxButton running={state.fxRunning} label="MOVEMENT FX" onClick={() => setState((s) => ({ ...s, fxRunning: !s.fxRunning }))} />

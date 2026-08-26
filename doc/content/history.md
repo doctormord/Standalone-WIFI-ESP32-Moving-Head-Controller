@@ -3742,3 +3742,88 @@ Die Pan/Tilt-Limits stehen seit dem Joystick-Test auf `pmax 68` / `tmax 153`
 und sind persistent in NVS. Das schränkt den Bewegungsbereich real ein —
 notiert, damit das nicht später als Mechanik- oder Movement-FX-Fehler
 fehldiagnostiziert wird.
+
+---
+
+## 2026-08-26 (2) — Movement-FX „hackt" bei unterschiedlichen Size-Werten: kein Bug, aber ein anderer daneben
+
+**Meldung:** „Wenn ich Size Start und Size End auf unterschiedliche Werte setze,
+gibt es z. B. beim Clover hackende bzw. ruckelnde Movements."
+
+### Ursache: Mode 0 ist ein Sägezahn — der Sprung ist beabsichtigt
+
+`MOD_MODES` bietet `0 = Forward (Sawtooth)`, `1 = Up/Down (Ping-Pong)`,
+`2 = Reverse (Decay)`. Bei Mode 0 (und ebenso Mode 2) rampt `mVal` linear und
+**springt am Zyklusende schlagartig zurück**. `currentSize` folgt direkt:
+
+```c
+currentSize = (szSt + (szEn - szSt) * mVal) / 100.0f;
+```
+
+Solange `szSt == szEn` ist, ist dieser Sprung unsichtbar — die Größe ändert sich
+ja nicht, egal was der Modulator macht. Genau deshalb fällt es erst bei
+unterschiedlichen Werten auf. Beim Clover (Typ 3) skaliert die Sprunghöhe
+zusätzlich mit `|sin 2p|`, fällt also je nach Musterposition mal klein und mal
+brutal aus — was den unregelmäßigen, „hackenden" Eindruck erzeugt.
+
+**Live gemessen** (Clover, Size 15→70, modSp 1000 ms, `op`/`ot` mit ~48 Hz
+abgetastet, Diskontinuität = Schritt > 3× Median *und* > 2,5× beider Nachbarn):
+
+| Modus | Diskontinuitäten in 10 s | Abstände |
+|---|---|---|
+| 0 Sawtooth | **9** | 1,01 / 0,98 / 1,02 / 1,00 / 0,99 / 1,01 / 1,00 s |
+| 1 Ping-Pong | **0** | — |
+
+Die Abstände treffen exakt `modSp` — damit ist der Modulator-Wrap zweifelsfrei
+die Quelle. Größter Einzelsprung: **17.728 Einheiten Pan in einem Frame**, gut
+ein Viertel des Gesamtbereichs.
+
+**Kein Code-Fix.** Ein Sägezahn *soll* springen; für Dimmer und Gobo-/Prisma-
+Rotation ist genau das der gewünschte Effekt. Für Positionsdaten ist praktisch
+nur Ping-Pong brauchbar. Ein erster Messversuch mit Schwelle „> 6× Median" fand
+*nichts* und schien die These zu widerlegen — der Sprung lag mit 4,6× knapp
+darunter, weil er zufällig an einer Stelle mit kleinem `|sin 2p|` fiel. Lehre:
+bei einem Muster, dessen Radius selbst schwankt, keine absolute Schwelle auf die
+Schrittweite legen, sondern gegen die *lokalen Nachbarn* prüfen.
+
+### Dabei gefunden und gefixt: drei von sechs Kurven waren im Movement wirkungslos
+
+`Modulator::getLFO()` implementierte alle sechs Kurven, `MovementEngine::process()`
+hatte davon eine **unvollständige Kopie** und behandelte nur Quadratic und Sine.
+`Cubic`, `Gauss` und `Random` fielen still auf Linear zurück — obwohl beide Panels
+dasselbe Dropdown (`MOD_CURVES`) benutzen. Man konnte sie auswählen, sie taten nichts.
+
+Fix (Variante 2 nach Rücksprache mit dem User):
+- Neue gemeinsame Funktion `lfoShape(p, m, c, allowRandom)` in `FX_Engine.h`;
+  `Modulator::getLFO()` delegiert dorthin, `MovementEngine` benutzt sie ebenfalls.
+  **Eine Definition statt zweier Kopien** — genau die Duplizierung war die Ursache
+  dafür, dass beide auseinanderlaufen konnten.
+- `allowRandom = false` für Movement: `Random` würfelt bei *jedem* Aufruf neu, was
+  als Dimmer-Flackern brauchbar ist, die Size eines Musters aber pro Frame neu
+  setzen und das Fixture durchschütteln würde. Im UI neu `MOVE_CURVES` (= `MOD_CURVES`
+  ohne Random) nur für das Movement-Panel. Alte Szenen mit `fMC = 5` fallen auf
+  Linear zurück — exakt das Verhalten, das sie vorher schon hatten.
+
+**Vorher/Nachher live gemessen** (Typ 1 Kreis, dessen geometrischer Radius konstant
+ist, sodass der gemessene Radius direkt `currentSize` entspricht; Ping-Pong, 15→70):
+
+| Kurve | Mittelwert vorher | Mittelwert nachher |
+|---|---|---|
+| 0 Linear | 13671 | 13782 |
+| 2 Cubic | 13809 | **9105** |
+| 4 Gauss | 13874 | **12125** |
+
+Vorher lagen alle drei innerhalb von 204 Einheiten (~1,5 %, Messrauschen) — also
+nachweislich identisch. Nachher 4677 Einheiten Spanne, und die Formen stimmen:
+Cubic drückt zum unteren Ende, Gauss betont die Mitte. Min/Max trafen mit ~4915
+bzw. ~22937 exakt die konfigurierten 15 % bzw. 70 % von 32767.
+
+### Nebenwirkung des Flashens (wichtig zu wissen)
+
+Der Filesystem-Upload rebootet das Gerät, und **der Live-FX-Zustand liegt nicht in
+NVS** — nur Presets und Chaser-Szenen werden persistiert. Nach dem Reboot standen
+die Movement-Parameter daher wieder auf den Struct-Defaults (`fT=1`, Size 10..10,
+`modSp=1000`), die zuvor eingestellte Live-Konfiguration war weg. Das ist
+bestehendes Verhalten, kein Regressionsschaden — aber beim Flashen mitdenken:
+vorher in einen Preset speichern, sonst ist die Live-Einstellung nach dem Reboot
+verloren.

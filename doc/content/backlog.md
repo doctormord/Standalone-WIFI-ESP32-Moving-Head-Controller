@@ -169,6 +169,16 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ## 🐛 Bekannte kleine Issues (Low Priority)
 
+- **Live-FX-Zustand übersteht keinen Reboot (bestätigt 2026-08-26).** Persistiert
+  werden nur Presets/Chaser-Szenen (`sc1`..`sc10`), die Fixture-Patch und die
+  `sys`-Settings — **nicht** die gerade eingestellten FX-Parameter. Nach jedem
+  Neustart (auch nach einem Firmware-/Filesystem-Upload) stehen Movement, Dimmer,
+  Gobo- und Prisma-FX wieder auf den Struct-Defaults aus `FX_Engine.h`. Praktische
+  Konsequenz beim Flashen: vorher in einen Preset speichern, sonst ist die
+  Live-Einstellung weg. Ob das behoben werden soll, ist eine Design-Frage — ein
+  „letzter Live-Zustand" in NVS wäre machbar, würde aber bei jedem
+  FX-Parameter-Write NVS-Schreibzugriffe erzeugen (Flash-Verschleiß), also eher
+  gedrosselt/beim Shutdown, was der ESP32 so nicht signalisiert bekommt.
 - **WLAN Reconnect:** Bei sehr schwachem Signal reagiert der C3 trotz
   `WiFi.setAutoReconnect(true)` manchmal träge.
 - **UI State Sync (Multi-Client):** Zwei gleichzeitig offene Browser-Fenster/
@@ -206,6 +216,27 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   -Größe so wählen, dass der Zenit nicht gekreuzt wird.
 
 ## ✅ Kürzlich geklärt (kein Bug) / kürzlich gefixt
+
+- **Movement-FX „hackt" bei unterschiedlichen Size-Start/End-Werten — kein Bug
+  (2026-08-26).** Mode 0 heißt „Forward (**Sawtooth**)": die Size rampt und springt
+  am Zyklusende zurück. Bei `szSt == szEn` ist der Sprung unsichtbar, deshalb fällt
+  er erst bei unterschiedlichen Werten auf. Live gemessen: 9 Diskontinuitäten in
+  10 s, Abstände exakt = `modSp`, größter Sprung 17.728 Einheiten Pan in einem
+  Frame; mit Mode 1 (Ping-Pong) null Diskontinuitäten. **Für Bewegung ist praktisch
+  nur Ping-Pong brauchbar** (Mode 2 „Reverse" ist ebenfalls ein Sägezahn); für
+  Dimmer/Rotation ist der harte Rücksprung dagegen der gewünschte Effekt. Details
+  und Messmethode in `history.md`.
+
+- **Drei von sechs Modulations-Kurven waren im Movement-FX wirkungslos — gefixt
+  (2026-08-26).** `MovementEngine::process()` hatte eine unvollständige Kopie von
+  `Modulator::getLFO()` und kannte nur Quadratic und Sine; `Cubic`, `Gauss` und
+  `Random` fielen still auf Linear zurück, obwohl beide Panels dasselbe Dropdown
+  benutzen. Jetzt eine gemeinsame Funktion `lfoShape()` für beide Engines — die
+  Duplizierung war ja genau die Ursache. `Random` ist für Movement bewusst
+  ausgeschlossen (`allowRandom=false`, im UI `MOVE_CURVES`): es würfelt pro Frame
+  neu und würde die Size eines Musters durchschütteln. Vorher/Nachher am Gerät
+  gemessen (Mittelwerte der drei Kurven vorher innerhalb von 204 Einheiten, also
+  identisch; nachher 4677 Einheiten Spanne mit korrekten Kurvenformen).
 
 - **Programmer-Tab: Werte sprangen binnen ~1 s zurück und griffen erst beim zweiten
   Auswählen — der gemeinsame Schreib-/Merge-Pfad gefixt statt weiterer Einzelfelder

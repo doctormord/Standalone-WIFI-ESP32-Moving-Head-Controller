@@ -40,6 +40,19 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   Farbrad/statisches Gobo/rotierendes Gobo). Float-Accumulator
   (`exactPan`/`exactTilt` in `updateEngines`) gegen Rundungsdrift bei
   langsamen Joystick-Fahrten.
+  **LFO-Formen liegen seit 2026-08-26 in *einer* gemeinsamen Funktion
+  `lfoShape(p, mode, curve, allowRandom)`**, die sowohl `Modulator` als auch
+  `MovementEngine` benutzen. Vorher hatte `MovementEngine` eine eigene,
+  unvollständige Kopie und kannte nur Quadratic und Sine — `Cubic`, `Gauss` und
+  `Random` fielen dort still auf Linear zurück, obwohl das UI für beide dasselbe
+  Dropdown anbietet. Wer eine Kurve ergänzt, ergänzt sie damit zwangsläufig für
+  beide. `allowRandom=false` ist der eine bewusste Unterschied: `Random` würfelt
+  pro Aufruf neu, was als Dimmer-Flackern taugt, aber die Size eines
+  Bewegungsmusters pro Frame neu setzen würde.
+  **Merke zu den Modes:** `0 Forward` und `2 Reverse` sind Sägezähne und springen
+  am Zyklusende. Bei Movement-Size heißt das ein physischer Sprung des Kopfes,
+  sobald `szSt != szEn` — nur `1 Ping-Pong` ist stetig (live gemessen, siehe
+  `history.md` 2026-08-26 (2)).
 - **`Audio_Engine.h`** — I2S-Audio-Sampling (Pins 4/5/6) für Beat-Detection
   (Bass/Mid/High über Envelope-Follower + dynamischer Threshold) und
   automatisches BPM-Tracking (Median-Filter über Rolling-History,
