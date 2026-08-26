@@ -3827,3 +3827,35 @@ die Movement-Parameter daher wieder auf den Struct-Defaults (`fT=1`, Size 10..10
 bestehendes Verhalten, kein Regressionsschaden — aber beim Flashen mitdenken:
 vorher in einen Preset speichern, sonst ist die Live-Einstellung nach dem Reboot
 verloren.
+
+### Plausibilitätsprüfung des restlichen FX-Codes (2026-08-26, auf Wunsch des Users)
+
+Nach dem Kurven-Fund gezielt nach *derselben Fehlerklasse* gesucht — „UI bietet
+etwas an, das die Firmware nicht oder anders umsetzt". Ergebnis: außer den bereits
+gefixten Kurven **nichts Weiteres gefunden**. Geprüft und für sauber befunden:
+
+| Geprüft | Ergebnis |
+|---|---|
+| `MOVEMENT_TYPES` 1–12 ↔ `switch` in `getValues()` | vollständig, plus sicherer `default` |
+| `TRIGGERS` 0–4 ↔ `checkAudioTrg` | 0/1 intern, 2/3/4 = Bass/Mid/High, alle abgedeckt |
+| Rad-Maps ↔ Klemmungen ↔ UI-Listen | 20/10/7 durchgehend konsistent, Reihenfolge Voll-/Splitfarbe korrekt |
+| Shake-Speed/-Range | UI 0,2–10,0 bzw. 1–5 und 0–100 % = Firmware-Klemmungen |
+| Movement Size/Speed | UI 1–100 = Firmware `constrain(..., 1, 100)` |
+| Chaser-Slots | UI-Werte 0–9 („Slot 1–10") = Firmware 0–9 |
+| Modulator-`speed` | ist ms-Periode, deckt sich mit dem Slider |
+| `runStep`-Map-Zugriffe | alle `constrain(..., 0, mapLen-1)`; `shakeBase` 226 + 5·5 + 4 = exakt 255 |
+| `SceneData` vollständig | alle 57 Felder werden gespeichert *und* zurückgeladen |
+| `dt`-Ersatz bei `dt <= 0` | in der Praxis unkritisch: gemessene Sägezahn-Periode 0,98–1,02 s bei konfigurierten 1000 ms |
+
+**Ein eigener Fehlalarm, dokumentiert als Warnung für die Zukunft:** Aus
+`MovementEngine`s `constrain(sync, 0, 7)` und der globalen `syncBeats[7]` wurde
+zunächst ein Out-of-Bounds-Zugriff geschlossen — mit dem Zusatz, die
+`MOVE_SYNCS`-Labels seien invertiert. **Beides falsch.** Die Messung (Typ 8
+Pan-Sweep, Nulldurchgänge bei 120 BPM) ergab exakt die versprochenen Werte:
+sy=0 → 1,00 Beats/Umdrehung, sy=3 → 8,07. Grund: `updateEngines()` übergibt der
+Movement-Engine `moveSyncBeats[8]`, nicht `syncBeats[7]` — der gleichnamige
+Funktionsparameter hatte in die Irre geführt. Der User bestätigte anschließend auch
+die Design-Absicht: Bewegungen müssen länger als einen Beat dauern dürfen, Bruchteile
+eines Beats schafft die Mechanik nicht. Lehre: bei zwei ähnlich benannten Tabellen
+**die Aufrufstelle** prüfen, nicht den Parameternamen — und im Zweifel messen, bevor
+man einen „Speicherfehler" meldet.

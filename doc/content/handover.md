@@ -53,6 +53,17 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   am Zyklusende. Bei Movement-Size heißt das ein physischer Sprung des Kopfes,
   sobald `szSt != szEn` — nur `1 Ping-Pong` ist stetig (live gemessen, siehe
   `history.md` 2026-08-26 (2)).
+  ⚠️ **Es gibt zwei Sync-Tabellen, und das ist Absicht — nicht „vereinheitlichen":**
+  `syncBeats[7] = {8, 4, 2, 1, 0.5, 0.25, 0.125}` für Modulatoren, StepFX und
+  Chaser (Index 0 = längster Zyklus, herunter bis 1/8 Beat), aber
+  `moveSyncBeats[8] = {1, 2, 4, 8, 16, 32, 64, 128}` für `MovementEngine`
+  (Beats *pro Umdrehung*, aufsteigend). Grund: eine Kopfbewegung muss länger als
+  einen Beat dauern dürfen — Bruchteile eines Beats schafft die Mechanik gar nicht,
+  während ein Dimmer-Flackern im 1/8-Beat-Raster sinnvoll ist. Entsprechend klemmt
+  `MovementEngine` auf `0..7`, alles andere auf `0..6`; beide Klemmungen sind für
+  ihre jeweilige Tabelle korrekt. Der Parameter in `FX_Engine.h` heißt in beiden
+  Fällen `syncBeats`, was beim Lesen leicht in die Irre führt: entscheidend ist,
+  welches Array `updateEngines()` übergibt (`.ino` Zeile ~392 vs ~399).
 - **`Audio_Engine.h`** — I2S-Audio-Sampling (Pins 4/5/6) für Beat-Detection
   (Bass/Mid/High über Envelope-Follower + dynamischer Threshold) und
   automatisches BPM-Tracking (Median-Filter über Rolling-History,
