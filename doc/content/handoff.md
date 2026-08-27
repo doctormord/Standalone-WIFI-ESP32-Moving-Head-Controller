@@ -1,6 +1,46 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-26)
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-27)
+> **Offen und als Erstes dran: die neue Fixed-Point-FFT auf Hardware testen.**
+> Sie ersetzt die bisherige „fake FFT" (drei Envelope-Follower ohne jede
+> Frequenztrennung) durch echte Bänder, damit Mid/High-Trigger nutzbar werden
+> (Ziel des Users: Strobe auf Hi-Hat). Kompiliert und codeseitig geprüft, aber
+> **noch nie auf dem Gerät gelaufen** — das ESP32 war an dem Tag nicht da.
+> Volle Herleitung in `history.md` 2026-08-27.
+>
+> **Flashen:** Firmware reicht (`data/` ist unverändert) — per OTA:
+> ```
+> python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
+>         -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin -r
+> ```
+>
+> **Testreihenfolge — die erste Frage ist NICHT „klingt es gut", sondern
+> „läuft das Fixture noch":**
+> 1. Musik aus, Mikrofon an. `curl -s http://192.168.8.113/api/state` →
+>    `audUs`/`audMax` (Audio-Poll in µs), `fftUs` (nur FFT), `engUs`/`engMax`
+>    (`updateEngines()`), `loopMax` (ms). **Erwartung: `fftUs` grob 150–300 µs,
+>    `audMax` klar unter 1000 µs, `loopMax` nicht schlechter als vorher (~11–14 ms).**
+>    Steigt `loopMax` deutlich, sofort `curl "…/audio_tune?fft=0"` — Rückfall auf
+>    das alte Verfahren ohne Reflash.
+> 2. Movement-FX laufen lassen und **beobachten, ob die Bewegung flüssig bleibt.**
+>    Genau hier ist der frühere FFT-Versuch gescheitert.
+> 3. Erst dann Musik: `curl -s http://192.168.8.113/api/audio_debug` →
+>    `lo`/`mi`/`hi` müssen sich **unabhängig voneinander** bewegen (das war der
+>    ganze Punkt; vorher hing alles am Gesamtpegel). `thM`/`thH` sind die neuen
+>    eigenen Schwellen von Mid/High.
+> 4. **Kalibrierung, falls nötig:** stehen `lo/mi/hi` nahe null →
+>    `curl "…/audio_tune?fg=6"` (Gain erhöhen, Default 4, Bereich 0–10);
+>    schlagen sie an → `fg=2`. Das ist der einzige Wert, der ohne Gerät nicht
+>    kalkuliert werden konnte.
+> 5. Im AUDIO-Tab gegenprüfen, dass Bass-/Mid-/High-LEDs zu Kick/Snare/Hi-Hat
+>    passen, und einen FX-Trigger auf „Audio Hi-Hat (Highs)" stellen.
+>
+> **Wenn es nicht taugt:** `?fft=0` und alles ist wie vorher — kein Reflash, kein
+> Risiko. Danach ist der **Preset-Engine-Split (Layer)** dran, siehe unten.
+>
+> ---
+>
+> ## Vorherige Session (2026-08-26)
 > **Kein offener Blocker. Gerät läuft mit dem aktuellen Stand, alles ist auf
 > `future` gepusht.** Zwei abgeschlossene Themen an diesem Tag:
 >
