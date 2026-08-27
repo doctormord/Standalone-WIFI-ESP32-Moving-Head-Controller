@@ -109,7 +109,10 @@ void setupAPI() {
     // pre-smoothing median-detected value and most recent accepted (possibly octave-folded)
     // interval, loopMax is the worst main-loop gap in the last 5s -- pull these live via curl
     // to check the BPM detection and loop-jitter theories against real audio instead of guessing.
-    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs);
+    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs)
+            + ",\"audUs\":" + String(audioLastUs) + ",\"audMax\":" + String(audioMaxUs)
+            + ",\"fftUs\":" + String(fftLastUs)
+            + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs);
     json += ",\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "]}";
     server.send(200, "application/json", json);
     guiBass = false; guiMid = false; guiHigh = false;
@@ -397,14 +400,20 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    char buf[420];
+    char buf[560];
+    // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
+    // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
-      "{\"lo\":%ld,\"mi\":%ld,\"hi\":%ld,\"th\":%ld,\"xb\":%d,\"xm\":%d,\"xh\":%d,"
-      "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d}",
+      "{\"lo\":%ld,\"mi\":%ld,\"hi\":%ld,\"th\":%ld,\"thM\":%ld,\"thH\":%ld,"
+      "\"xb\":%d,\"xm\":%d,\"xh\":%d,"
+      "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
+      "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
+      (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
       tuneNoiseFloor, tuneFastAttackShift, tuneFastDecayShift, tuneMidAttackShift, tuneMidDecayShift,
-      tuneSlowAttackShift, tuneSlowDecayShift, tuneMidThreshDivShift, tuneHighThreshDivShift, hwAudioSensitivity);
+      tuneSlowAttackShift, tuneSlowDecayShift, tuneMidThreshDivShift, tuneHighThreshDivShift, hwAudioSensitivity,
+      audioUseFFT ? 1 : 0, tuneFftGainShift, (unsigned long)audioLastUs, (unsigned long)fftLastUs);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -424,6 +433,12 @@ void setupAPI() {
     if (server.hasArg("sd"))  tuneSlowDecayShift     = constrain(server.arg("sd").toInt(), 0, 10);
     if (server.hasArg("mtd")) tuneMidThreshDivShift  = constrain(server.arg("mtd").toInt(), 0, 10);
     if (server.hasArg("htd")) tuneHighThreshDivShift = constrain(server.arg("htd").toInt(), 0, 10);
+    // fft=0 falls back to the pre-2026-08-27 envelope-follower method without a reflash --
+    // the FFT path could not be tested on hardware when it was written. fg is the FFT band
+    // gain (left-shift) compensating the transform's 1/N scaling; it depends on the mic's
+    // real output level, so it is tunable rather than baked in.
+    if (server.hasArg("fft")) audioUseFFT = (server.arg("fft") == "1");
+    if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     server.send(200, "OK");
   });
 

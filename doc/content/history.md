@@ -3868,3 +3868,82 @@ Preset-Wechseln mit aktiven FX zeigte laut User „keine Auffälligkeiten" — k
 beim Recall ausbleibendes FX. Damit ist die Abnahme des Programmer-Sync-Fixes
 vollständig, und die neun Fixes vom 2026-08-25 sind implizit mitgeprüft, weil sie
 denselben geteilten Schreib-/Merge-Pfad benutzen. **Kein offener Bug im Projekt.**
+
+---
+
+## 2026-08-27 — Echte FFT statt „fake FFT": Frequenztrennung für Low/Mid/High
+
+**Anlass:** Der User will die Mid-/High-Trigger tatsächlich nutzen können (z. B.
+Strobe auf Hi-Hat) und fragte, ob KISS FFT ressourcenmäßig in Frage kommt.
+
+### Warum die bisherige Lösung das nicht konnte
+
+Die drei „Bänder" waren `bassEnergy = envSlow`, `midEnergy = envMid - envSlow`,
+`highEnergy = envFast - envMid` — also **Differenzen dreier Envelope-Follower mit
+verschiedenen Zeitkonstanten**. Das trennt nach *Anstiegsgeschwindigkeit*, nicht
+nach Frequenz: Hi-Hat, Snare und ein Klick sind dafür ununterscheidbar, „Bass" ist
+schlicht der geglättete Gesamtpegel. Genau deshalb war 2026-08-20 der Bug möglich,
+dass `midEnergy` strukturell ~0 war — bei echten Frequenzbändern kann das nicht
+passieren.
+
+### Zur Bibliotheksfrage: KISS FFT ist nicht schneller
+
+Dass KISS FFT auf einem 8-Bit-Mega läuft, heißt nur, dass sie *klein* ist. Sie ist
+Mixed-Radix und generisch (beliebiges N, eigener State, Dispatch pro Butterfly); eine
+fest auf N=256/Radix-2 zugeschnittene Integer-FFT ist kleiner und schneller.
+**Entscheidend ist nicht die Bibliothek, sondern Fixed-Point vs. Float.** Der C3 ist
+RV32IMC ohne FPU — eine Float-FFT konkurriert direkt mit der Soft-Float-Last der
+Movement-Engine. Das ist mit hoher Wahrscheinlichkeit auch die Erklärung für den
+gescheiterten FFT-Versuch des Users vor Monaten („ESP stieg aus, Fixture bewegte sich
+nicht mehr").
+
+### Vorab gemessen statt geschätzt
+
+Mit einer temporären Sonde im Build gemessen, bevor irgendetwas umgebaut wurde:
+eine N=256-Fixed-Point-FFT kostet **+718 Bytes Flash und +2 KB RAM**. Die fertige
+Implementierung inkl. Umbau und Instrumentierung: **+2.434 Bytes Flash
+(1.202.887 → 1.205.321), +3.368 Bytes RAM**. Ressourcen waren also nie das Argument —
+weder dafür noch dagegen.
+
+### Umsetzung
+
+- **N=256 @ 8 kHz** → 31,25 Hz/Bin, 32 ms Frame. Bänder: Bass Bin 1–5 (31–156 Hz),
+  Mid 6–38 (187–1187 Hz), High 80–127 (2500–3968 Hz).
+- **8 kHz bleibt.** Die zwischenzeitliche Idee „2 kHz reicht" wurde verworfen: sie
+  würde das High-Band komplett löschen, und genau das ist der gewünschte Hi-Hat-Trigger.
+- **Alles Integer:** Q15-Twiddles, Hann-Fenster in Q15, `>>1` pro Stage gegen
+  int16-Überlauf, Magnitude per Alpha-Max-Beta-Min statt `sqrtf` (128 emulierte
+  Wurzeln pro Frame wären teurer gewesen als die ganze FFT). Verifiziert: im Code von
+  `fftRun()` steht keine einzige Float-Operation; `cosf`/`sinf` laufen ausschließlich
+  einmal beim Boot in `fftInitTables()`.
+- **Eingangs-Shift `>>16`** statt `>>14`: 24-Bit-Daten links im 32-Bit-Wort ergeben so
+  exakt den int16-Bereich ohne Clipping. Der Legacy-Wert 14 würde int16 überlaufen —
+  dort harmlos, weil nur `abs()` daraus gelesen wird, für eine FFT fatal.
+- **Eigene dynamische Schwellen für Mid und High.** Vorher wurden beide gegen die
+  *Bass*-Schwelle gemessen. Mit echten Bändern trägt ein Hi-Hat viel weniger Energie
+  als eine Kick, die bass-abgeleitete Schwelle läge dauerhaft über dem gesamten
+  High-Band und der Trigger würde nie auslösen — also genau der Anwendungsfall.
+  Jetzt feuert jedes Band, wenn es über seinen *eigenen* gleitenden Mittelwert steigt.
+- **Nicht blockierend:** `i2s_read` mit Timeout 0. Ein unvollständiger Frame wird
+  übersprungen statt abgewartet — ein blockierender Read hier würde DMX und Bewegung
+  anhalten, also genau die Fehlerart von damals. DMA-Ring auf 4×256 Samples (~128 ms
+  Reserve) vergrößert, Poll-Kadenz auf 32 ms = exakt die Frame-Dauer, damit Verbrauch
+  und Produktion sich decken.
+- **Überlaufschutz:** Bandmittelwert wird vor dem Gain-Shift auf 200000 geklemmt,
+  Shift auf 0–10 begrenzt. Ohne das könnte ein lauter Passus int32 überlaufen und als
+  negative Energie („Stille") erscheinen.
+
+### Rückfallschalter und Messbarkeit
+
+- `/audio_tune?fft=0` schaltet **ohne Reflash** auf das alte Envelope-Verfahren
+  zurück; `fft=1` zurück. Zustand steht in `/api/audio_debug` (`"fft"`).
+- `/audio_tune?fg=N` setzt die Bandverstärkung (Shift 0–10, Default 4). Sie hängt vom
+  realen Mikrofonpegel ab und war ohne Gerät nicht kalibrierbar — bei Werten nahe null
+  erhöhen, bei Anschlag verringern.
+- **Neue Kostenmessung** in `/api/state`: `audUs`/`audMax` (Audio-Poll),
+  `fftUs` (nur die FFT), `engUs`/`engMax` (`updateEngines()`, die Soft-Float-Last),
+  alle in µs, Spitzenwerte über ein 5-s-Fenster. Der Fenster-Reset liegt im
+  Haupt-Loop, damit er auch bei abgeschaltetem Mikrofon weiterläuft.
+
+**Status: kompiliert und geprüft, aber noch nicht auf Hardware getestet** — das Gerät
+war an diesem Tag nicht verfügbar. Testplan siehe `handoff.md`.

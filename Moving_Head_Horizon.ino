@@ -578,7 +578,9 @@ void loop() {
   unsigned long loopNow = millis();
   if (loopLastMs > 0) {
     unsigned long delta = loopNow - loopLastMs;
-    if (loopNow - loopMaxWindowStart > 5000) { loopMaxWindowStart = loopNow; loopMaxMs = delta; }
+    // Same 5s window also clears the audio/engine cost peaks, so they cannot go stale -- and it
+    // lives here rather than in pollAudioEngine() so it keeps running with the mic switched off.
+    if (loopNow - loopMaxWindowStart > 5000) { loopMaxWindowStart = loopNow; loopMaxMs = delta; audioMaxUs = 0; engineMaxUs = 0; }
     else if (delta > loopMaxMs) loopMaxMs = delta;
   }
   loopLastMs = loopNow;
@@ -587,6 +589,11 @@ void loop() {
   ArduinoOTA.handle();
   artnet.read();
   pollAudioEngine();
-  updateEngines(millis());
+  // Timed alongside pollAudioEngine() (see Audio_Engine.h) so the actual CPU split between the
+  // audio path and the Movement soft-float maths is measurable via /api/state, rather than
+  // argued about from estimates. This is the expensive one: it rebuilds the output buffer on
+  // every loop iteration, ~15x more often than the 30ms DMX cadence needs.
+  { uint32_t t0 = micros(); updateEngines(millis()); engineLastUs = micros() - t0;
+    if (engineLastUs > engineMaxUs) engineMaxUs = engineLastUs; }
   delay(2);
 }
