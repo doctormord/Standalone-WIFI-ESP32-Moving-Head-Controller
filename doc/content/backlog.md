@@ -267,9 +267,10 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   („soweit alles gut"): 19 abgezählte Bedienaktionen, 19 geräteseitig
   angekommen, keine spontanen Reverts, ~45 s Leerlauf ohne einen einzigen
   Write, Joystick-Config überlebt den Browser-Reload. Messprotokoll in
-  `handoff.md`/`history.md`. **Nicht getestet: Preset-Regression** (schnelles
-  Wechseln mit allen FX aktiv) — falls dort noch etwas auftaucht, ist es
-  derselbe geteilte Pfad.
+  `handoff.md`/`history.md`. **Preset-Regression am 2026-08-27 nachgeholt und
+  bestanden** (schnelles Wechseln mit aktiven FX, „keine Auffälligkeiten") —
+  damit sind auch die neun Fixes vom 2026-08-25 mitgeprüft, sie teilen sich
+  denselben Pfad. Abnahme vollständig.
 
 - **LIVE-UI-Politur plus neun echte State-Sync-Bugs gefunden und gefixt (2026-08-25).**
   Volle Diagnose-Historie (jeder der neun Fixes einzeln begründet, mit Telemetrie-Belegen)

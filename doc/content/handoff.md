@@ -132,12 +132,13 @@
 >   gewesen; null Verluste hätten damals eine Wahrscheinlichkeit von ~5 %.
 >   Zusammen mit dem „geht" aus dem Browser als Abnahme gewertet.
 >
-> **Nicht gelaufen: Test 5 (Preset-Regression).** Schnelles Preset-Wechseln
-> mit allen sieben FX aktiv wurde nicht durchgetestet. Falls im normalen
-> Betrieb doch nochmal „no slot active" flackert, Parameter zwischen Presets
-> überlaufen oder ein FX beim Recall ausbleibt: dort gezielt ansetzen, es ist
-> derselbe geteilte Pfad. `gsrc` in `/api/get_dmx` zeigt die zuletzt
-> schreibende Route — sie liest jetzt häufiger `set_all`, das ist erwartet.
+> **Test 5 (Preset-Regression) am 2026-08-27 nachgeholt: bestanden.** Schnelles
+> Preset-Wechseln mit aktiven FX zeigte laut User „keine Auffälligkeiten" — kein
+> „no slot active"-Flackern, keine überlaufenden Parameter, kein fehlendes FX beim
+> Recall. Damit ist die Abnahme des Sync-Fixes vollständig; die neun Fixes vom
+> 2026-08-25 sind mitgeprüft, da sie denselben Pfad benutzen. Falls doch je wieder
+> etwas auftaucht: `gsrc` in `/api/get_dmx` zeigt die zuletzt schreibende Route —
+> sie liest jetzt häufiger `set_all`, das ist erwartet.
 >
 > ### Sonst offen (unverändert aus früheren Sessions)
 > 1. Mic-Sensitivity subjektiv mit echter Musik über den AUDIO-Tab prüfen.

@@ -3859,3 +3859,12 @@ die Design-Absicht: Bewegungen müssen länger als einen Beat dauern dürfen, Br
 eines Beats schafft die Mechanik nicht. Lehre: bei zwei ähnlich benannten Tabellen
 **die Aufrufstelle** prüfen, nicht den Parameternamen — und im Zweifel messen, bevor
 man einen „Speicherfehler" meldet.
+
+### Nachtrag 2026-08-27: Test 5 (Preset-Regression) nachgeholt und bestanden
+
+Der einzige noch offene Nachweis aus dem 2026-08-26-Test ist erbracht: schnelles
+Preset-Wechseln mit aktiven FX zeigte laut User „keine Auffälligkeiten" — kein
+„no slot active"-Flackern, keine zwischen Presets überlaufenden Parameter, kein
+beim Recall ausbleibendes FX. Damit ist die Abnahme des Programmer-Sync-Fixes
+vollständig, und die neun Fixes vom 2026-08-25 sind implizit mitgeprüft, weil sie
+denselben geteilten Schreib-/Merge-Pfad benutzen. **Kein offener Bug im Projekt.**
