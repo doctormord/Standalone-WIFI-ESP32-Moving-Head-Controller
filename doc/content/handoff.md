@@ -1,10 +1,31 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-08-26)
-> **Der Programmer-Tab-Sync-Bug („Werte springen nach <1 s zurück, greifen
-> erst beim zweiten Auswählen") ist gefixt, geflasht und am 2026-08-26 vom
-> User am Gerät gegengetestet — abgenommen mit „soweit alles gut".** Details
-> zur Messung unten und in `history.md`.
+> **Kein offener Blocker. Gerät läuft mit dem aktuellen Stand, alles ist auf
+> `future` gepusht.** Zwei abgeschlossene Themen an diesem Tag:
+>
+> **(1) Programmer-Tab-Sync-Bug** („Werte springen nach <1 s zurück, greifen erst
+> beim zweiten Auswählen") — gefixt, geflasht und vom User am Gerät gegengetestet,
+> abgenommen mit „soweit alles gut". Messprotokoll weiter unten.
+>
+> **(2) Movement-FX „hackt" bei unterschiedlichen Size-Werten** — **kein Bug**:
+> Mode 0 ist ein Sägezahn, die Size springt am Zyklusende zurück (bei
+> `szSt == szEn` unsichtbar, daher fiel es nur bei unterschiedlichen Werten auf).
+> Live gemessen: 9 Sprünge in 10 s, Abstände exakt = `modSp`, bis 17.728 Einheiten
+> Pan in einem Frame; mit Mode 1 (Ping-Pong) null. **Lösung für den User: Mode 1
+> benutzen** — Mode 2 ist ebenfalls ein Sägezahn. Dabei aber ein echter Bug
+> gefunden und gefixt: `MovementEngine` hatte eine unvollständige Kopie von
+> `Modulator::getLFO()`, wodurch **Cubic, Gauss und Random im Movement wirkungslos**
+> waren. Jetzt eine gemeinsame `lfoShape()` für beide Engines; `Random` für
+> Movement bewusst ausgeschlossen. Anschließend der ganze übrige FX-Code auf
+> dieselbe Fehlerklasse geprüft — **nichts weiter gefunden** (Tabelle in
+> `history.md`).
+>
+> ⚠️ **Beim Flashen mitdenken:** Der Live-FX-Zustand liegt *nicht* in NVS. Jeder
+> Reboot (auch durch einen Firmware-/Filesystem-Upload) setzt Movement/Dimmer/
+> Gobo-/Prisma-FX auf die Struct-Defaults zurück. Vorher in einen Preset speichern,
+> sonst ist die Live-Einstellung weg. Presets/Chaser/Patch sind davon nicht
+> betroffen. Genau das ist am 2026-08-26 einmal passiert.
 >
 > **Stand der Arbeit:** auf `future` gemerged (Fast-Forward) und nach GitHub
 > gepusht — lokaler und Remote-Stand sind identisch, Arbeitsbaum sauber.
