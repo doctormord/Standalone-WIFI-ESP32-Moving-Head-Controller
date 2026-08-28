@@ -400,7 +400,7 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    char buf[760];
+    char buf[1024];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
@@ -408,7 +408,8 @@ void setupAPI() {
       "\"xb\":%d,\"xm\":%d,\"xh\":%d,"
       "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
       "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
-      "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld}",
+      "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
+      "\"trk\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -417,7 +418,9 @@ void setupAPI() {
       audioUseFFT ? 1 : 0, tuneFftGainShift, (unsigned long)audioLastUs, (unsigned long)fftLastUs,
       audioUseFlux ? 1 : 0, tuneDynThreshSmoothShift,
       (long)lastBassLevel, (long)lastMidLevel, (long)lastHighLevel,
-      (long)lastBassFlux, (long)lastMidFlux, (long)lastHighFlux);
+      (long)lastBassFlux, (long)lastMidFlux, (long)lastHighFlux,
+      audioUseTracker ? 1 : 0, trackedBPM, (long)trackedScore,
+      (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -446,6 +449,7 @@ void setupAPI() {
     // the signal -- the single most relevant knob for sustained-bass material, and it was
     // not reachable from outside at all until now.
     if (server.hasArg("flux")) audioUseFlux = (server.arg("flux") == "1");
+    if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     server.send(200, "OK");

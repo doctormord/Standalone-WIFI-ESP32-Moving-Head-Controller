@@ -227,6 +227,147 @@ inline int32_t fftBand(int lo, int hi) {
 // Previous frame's magnitudes, for spectral flux below.
 inline int32_t fftMagPrev[FFT_N / 2];
 
+// =========================================================
+// --- TEMPO TRACKER (autocorrelation over the flux history) ---
+// =========================================================
+// Why this exists: taking the median of the gaps between detected onsets cannot recover the
+// tempo of syncopated material. Measured live 2026-08-28 on a 176 BPM drum & bass track, the
+// onset gaps clustered at 1.17-1.38x the beat with only ~80ms spread -- a wrong grid, not
+// noise -- because the kicks simply do not sit on the quarter pulse. Autocorrelating the flux
+// signal instead asks "which period best explains ALL the onsets", which is a different and
+// answerable question.
+#define TEMPO_RING      192   // ~6.1s of flux at one frame per 32ms
+#define TEMPO_LAG_MIN     9   // ~208 BPM
+#define TEMPO_LAG_MAX    40   // ~47 BPM
+#define TEMPO_EVAL_MS  1000   // re-evaluate once a second; the ring changes slowly
+
+inline int16_t tempoRing[TEMPO_RING];
+inline int tempoRingIdx = 0;
+inline int32_t tempoFluxMean = 0;
+inline unsigned long tempoLastEval = 0;
+// Smoothed score curves rather than a smoothed decision. Each evaluation is noisy enough on
+// its own that picking a winner per second made the output jump between 179, 89 and 72 on
+// steady material (measured live 2026-08-28). Averaging the per-lag scores over successive
+// evaluations accumulates evidence for ~10s and then takes ONE peak, which is both more
+// stable and cheaper than any post-hoc median of the winners.
+inline int32_t tempoHarmAvg[TEMPO_LAG_MAX + 2];
+inline int32_t tempoPlainAvg[TEMPO_LAG_MAX * 2 + 4];
+inline bool tempoAvgSeeded = false;
+inline int trackedBPM = 0;          // 0 = no confident estimate yet
+inline int32_t trackedScore = 0;    // winning harmonic score, for the AUDIO tab
+// Octave-decision telemetry: which lag won and what the plain scores of the competing
+// octaves were, so the choice can be inspected instead of inferred.
+inline int32_t dbgLagMilli = 0, dbgPlainBase = 0, dbgPlainHalf = 0, dbgPlainDouble = 0;
+inline bool audioUseTracker = true;
+
+inline int64_t tempoAutocorr(int lag) {
+  if (lag < 2 || lag > TEMPO_RING / 3) return 0;
+  int64_t sum = 0;
+  int n = TEMPO_RING - lag;
+  for (int i = 0; i < n; i++) {
+    int a = (tempoRingIdx + i) % TEMPO_RING;
+    int b = (tempoRingIdx + i + lag) % TEMPO_RING;
+    sum += (int32_t)tempoRing[a] * (int32_t)tempoRing[b];
+  }
+  return sum / n;
+}
+
+inline void tempoTrackerEval() {
+  // Step 1 -- find the pulse FAMILY. Summing a lag with its 2x/3x/4x multiples is what
+  // separates a real pulse from a merely common spacing: a syncopated onset distance scores
+  // high on its own but collapses once its multiples are required to line up too. Measured on
+  // the same 176 BPM track: the dotted quarter (117 BPM) led the plain autocorrelation at
+  // 29286, and dropped to 5826 under harmonic summing, while the true pulse family rose to
+  // first place.
+  // Plain autocorrelation for every lag we may need, including the doubled ones the octave
+  // test below looks at, then the harmonic sum on top of it.
+  int32_t plain[TEMPO_LAG_MAX * 2 + 4];
+  for (int lag = 0; lag < TEMPO_LAG_MAX * 2 + 4; lag++) {
+    plain[lag] = (lag >= 2 && lag <= TEMPO_RING / 3) ? (int32_t)(tempoAutocorr(lag) >> 2) : 0;
+  }
+  for (int lag = TEMPO_LAG_MIN; lag <= TEMPO_LAG_MAX + 1; lag++) {
+    int32_t tot = plain[lag];
+    int cnt = 1;
+    for (int k = 2; k <= 4; k++) {
+      if (lag * k <= TEMPO_RING / 3) { tot += plain[lag * k]; cnt++; }
+    }
+    tot /= cnt;
+    if (!tempoAvgSeeded) tempoHarmAvg[lag] = tot;
+    else tempoHarmAvg[lag] += (tot - tempoHarmAvg[lag]) >> 2;   // ~10s of evidence
+  }
+  for (int lag = 0; lag < TEMPO_LAG_MAX * 2 + 4; lag++) {
+    if (!tempoAvgSeeded) tempoPlainAvg[lag] = plain[lag];
+    else tempoPlainAvg[lag] += (plain[lag] - tempoPlainAvg[lag]) >> 2;
+  }
+  tempoAvgSeeded = true;
+
+  int bestLag = 0;
+  int64_t bestScore = 0;
+  for (int lag = TEMPO_LAG_MIN; lag <= TEMPO_LAG_MAX; lag++) {
+    if (tempoHarmAvg[lag] > bestScore) { bestScore = tempoHarmAvg[lag]; bestLag = lag; }
+  }
+  if (bestLag == 0 || bestScore <= 0) { trackedBPM = 0; trackedScore = 0; return; }
+
+  // Step 2 -- refine the peak. At 31 frames/s neighbouring lags are ~17 BPM apart up at 176,
+  // far too coarse to display. Parabolic interpolation through the peak and its neighbours
+  // recovers sub-frame resolution. Kept in integer maths: lag is carried in thousandths.
+  int64_t sPrev = tempoHarmAvg[bestLag - 1], sMid = bestScore, sNext = tempoHarmAvg[bestLag + 1];
+  int64_t den = sPrev - 2 * sMid + sNext;
+  int32_t lagMilli = bestLag * 1000;
+  if (den != 0) {
+    int64_t off = ((sPrev - sNext) * 500) / den;
+    if (off > 500) off = 500; else if (off < -500) off = -500;
+    lagMilli += (int32_t)off;
+  }
+  if (lagMilli < 1000) return;
+
+  // Step 3 -- pick the octave that the onsets actually support. The harmonic sum deliberately
+  // favours the slowest member of the family, which for drum & bass is the half-time feel (it
+  // found 88 for a 176 BPM track). Choosing among half / base / double by PLAIN autocorrelation
+  // asks which of them onsets really land on: on that track plain scored 13211 at 176 against
+  // 402 at 88, so 176 wins. For 90 BPM hip-hop, where kick and snare sit on the beat and the
+  // bass band holds little at half that period, the same test keeps 90 instead of doubling it.
+  // Evidence, not a preferred-tempo window -- a fixed window would wrongly double hip-hop.
+  const int32_t cands[3] = { lagMilli, lagMilli / 2, lagMilli * 2 };
+  int32_t bestCand = lagMilli;
+  int64_t bestPlain = -1;
+  for (int i = 0; i < 3; i++) {
+    int lag = (cands[i] + 500) / 1000;
+    if (lag < TEMPO_LAG_MIN || lag > TEMPO_LAG_MAX) continue;
+    int bpm = (int)(MS_PER_MINUTE / ((int32_t)lag * AUDIO_POLL_INTERVAL_MS));
+    if (bpm < BPM_MIN_LIMIT || bpm > BPM_MAX_LIMIT) continue;
+    int64_t p = tempoPlainAvg[lag];
+    if (p > bestPlain) { bestPlain = p; bestCand = cands[i]; }
+  }
+
+  dbgLagMilli = lagMilli;
+  { int l = (lagMilli + 500) / 1000;
+    dbgPlainBase = (l >= 0 && l < TEMPO_LAG_MAX * 2 + 4) ? tempoPlainAvg[l] : 0;
+    int lh = (lagMilli / 2 + 500) / 1000;
+    dbgPlainHalf = (lh >= 0 && lh < TEMPO_LAG_MAX * 2 + 4) ? tempoPlainAvg[lh] : 0;
+    int ld = (lagMilli * 2 + 500) / 1000;
+    dbgPlainDouble = (ld >= 0 && ld < TEMPO_LAG_MAX * 2 + 4) ? tempoPlainAvg[ld] : 0; }
+  int32_t periodMs = (bestCand * AUDIO_POLL_INTERVAL_MS) / 1000;
+  if (periodMs <= 0) return;
+  int bpm = (int)(MS_PER_MINUTE / periodMs);
+  if (bpm < BPM_MIN_LIMIT || bpm > BPM_MAX_LIMIT) return;
+  trackedBPM = bpm;
+  trackedScore = (int32_t)(bestScore > 0x7FFFFFFF ? 0x7FFFFFFF : bestScore);
+}
+
+// Called once per audio frame with the current bass flux.
+inline void tempoTrackerPush(int32_t flux, unsigned long now) {
+  tempoFluxMean += (flux - tempoFluxMean) >> 5;          // slow mean, so we correlate deviations
+  // >>2, not >>4: the earlier shift crushed the deviations so far that the autocorrelation
+  // came out as single-digit numbers, where quantisation noise decided the octave rather
+  // than the signal. Products stay well inside int32 at this scale.
+  int32_t v = (flux - tempoFluxMean) >> 2;
+  if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+  tempoRing[tempoRingIdx] = (int16_t)v;
+  tempoRingIdx = (tempoRingIdx + 1) % TEMPO_RING;
+  if (now - tempoLastEval >= TEMPO_EVAL_MS) { tempoLastEval = now; tempoTrackerEval(); }
+}
+
 // Spectral flux: the sum of the POSITIVE changes across a bin range, i.e. how much energy
 // newly appeared since the last frame. Negative changes are discarded on purpose -- an onset
 // is energy arriving, not leaving.
@@ -352,6 +493,7 @@ void pollAudioEngine() {
       lastMidFlux  = std::min(fftFlux(BIN_MID_LO,  BIN_MID_HI),  BAND_MAX) << tuneFftGainShift;
       lastHighFlux = std::min(fftFlux(BIN_HIGH_LO, BIN_HIGH_HI), BAND_MAX) << tuneFftGainShift;
       for (int i = 0; i < FFT_N / 2; i++) fftMagPrev[i] = fftMag[i];
+      tempoTrackerPush(lastBassFlux, now);
 
       if (audioUseFlux) {
         // Raw flux goes into the detector unsmoothed, on purpose. An onset IS a single-frame
@@ -474,10 +616,17 @@ void pollAudioEngine() {
             // long enough to look like it never recovers. A median over 16 intervals is already
             // robust enough to trust outright when it is this far away; the smoothing stays for
             // fine tracking, where it belongs.
-            long dev = labs((long)detectedBPM - (long)globalBPM) * 100L / (globalBPM > 0 ? globalBPM : 1);
-            if (dev > BPM_RELOCK_PERCENT) globalBPM = detectedBPM;
-            else globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
-            globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+            // The tempo tracker wins when it has an estimate: it answers "which period
+            // explains all the onsets", whereas this median only averages the gaps between
+            // consecutive ones -- which syncopated material defeats by construction. The
+            // median path stays as the fallback for when the tracker has nothing yet
+            // (startup, silence) and remains visible as rawBPM for comparison.
+            if (!(audioUseTracker && trackedBPM > 0)) {
+              long dev = labs((long)detectedBPM - (long)globalBPM) * 100L / (globalBPM > 0 ? globalBPM : 1);
+              if (dev > BPM_RELOCK_PERCENT) globalBPM = detectedBPM;
+              else globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
+              globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+            }
           }
         }
       }
@@ -544,6 +693,11 @@ void pollAudioEngine() {
   }
 
   // Held per 5s window so a single outlier cannot hide behind an average.
+  // Applied outside the beat-detected block on purpose: the tracker does not need an onset
+  // to have just fired, it works off the rolling flux history.
+  if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled) {
+    globalBPM = constrain(trackedBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+  }
   audioLastUs = micros() - pollT0;
   if (audioLastUs > audioMaxUs) audioMaxUs = audioLastUs;
 }
