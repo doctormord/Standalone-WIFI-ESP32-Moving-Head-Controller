@@ -1,44 +1,44 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-27)
-> **Offen und als Erstes dran: die neue Fixed-Point-FFT auf Hardware testen.**
-> Sie ersetzt die bisherige „fake FFT" (drei Envelope-Follower ohne jede
-> Frequenztrennung) durch echte Bänder, damit Mid/High-Trigger nutzbar werden
-> (Ziel des Users: Strobe auf Hi-Hat). Kompiliert und codeseitig geprüft, aber
-> **noch nie auf dem Gerät gelaufen** — das ESP32 war an dem Tag nicht da.
-> Volle Herleitung in `history.md` 2026-08-27.
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-28)
+> **Die Fixed-Point-FFT ist geflasht, gemessen und läuft.** Sie ersetzt die
+> bisherige „fake FFT" (drei Envelope-Follower ohne jede Frequenztrennung) durch
+> echte Bänder, damit Mid/High-Trigger nutzbar werden (Ziel: Strobe auf Hi-Hat).
+> Herleitung in `history.md` 2026-08-27, Messwerte 2026-08-28.
 >
-> **Flashen:** Firmware reicht (`data/` ist unverändert) — per OTA:
-> ```
-> python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
->         -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin -r
-> ```
+> **Gemessen am Gerät (OTA geflasht, Bewegung aktiv):**
 >
-> **Testreihenfolge — die erste Frage ist NICHT „klingt es gut", sondern
-> „läuft das Fixture noch":**
-> 1. Musik aus, Mikrofon an. `curl -s http://192.168.8.113/api/state` →
->    `audUs`/`audMax` (Audio-Poll in µs), `fftUs` (nur FFT), `engUs`/`engMax`
->    (`updateEngines()`), `loopMax` (ms). **Erwartung: `fftUs` grob 150–300 µs,
->    `audMax` klar unter 1000 µs, `loopMax` nicht schlechter als vorher (~11–14 ms).**
->    Steigt `loopMax` deutlich, sofort `curl "…/audio_tune?fft=0"` — Rückfall auf
->    das alte Verfahren ohne Reflash.
-> 2. Movement-FX laufen lassen und **beobachten, ob die Bewegung flüssig bleibt.**
->    Genau hier ist der frühere FFT-Versuch gescheitert.
-> 3. Erst dann Musik: `curl -s http://192.168.8.113/api/audio_debug` →
->    `lo`/`mi`/`hi` müssen sich **unabhängig voneinander** bewegen (das war der
->    ganze Punkt; vorher hing alles am Gesamtpegel). `thM`/`thH` sind die neuen
->    eigenen Schwellen von Mid/High.
-> 4. **Kalibrierung, falls nötig:** stehen `lo/mi/hi` nahe null →
->    `curl "…/audio_tune?fg=6"` (Gain erhöhen, Default 4, Bereich 0–10);
->    schlagen sie an → `fg=2`. Das ist der einzige Wert, der ohne Gerät nicht
->    kalkuliert werden konnte.
-> 5. Im AUDIO-Tab gegenprüfen, dass Bass-/Mid-/High-LEDs zu Kick/Snare/Hi-Hat
->    passen, und einen FX-Trigger auf „Audio Hi-Hat (Highs)" stellen.
+> | | vorher | nachher |
+> |---|---|---|
+> | `loopMax` | Median 13, Max 14 ms | Median 13, Max 17 ms |
+> | Bewegungs-Aussetzer im Lasttest | 2 Ausreißer | **keine** |
+> | FFT pro Frame | — | **397 µs** |
+> | Audio-Poll gesamt | — | 463 µs / 32 ms = **~1,45 % CPU** |
+> | `updateEngines()` | — | 274 µs, **Spitze 2701 µs** |
 >
-> **Wenn es nicht taugt:** `?fft=0` und alles ist wie vorher — kein Reflash, kein
-> Risiko. Danach ist der **Preset-Engine-Split (Layer)** dran, siehe unten.
+> Frequenztrennung verifiziert (10 s Raumgeräusch): `lo` 112–1085, `mi` 72–319,
+> `hi` 15–179, Korrelationen **lo/mi 0,47 · lo/hi 0,32 · mi/hi 0,33**. Niedrige
+> Korrelation = die Bänder laufen unabhängig; beim alten Verfahren lagen sie
+> bauartbedingt nahe 1,0. Rückfallschalter in beide Richtungen getestet — im
+> Legacy-Modus zeigte sich prompt das alte Problem: `lo=1522` bei `mi=44, hi=57`.
+> Bandverstärkung `fg=4` passt (Werte weder nahe null noch am Anschlag).
 >
-> ---
+> ### 👉 Offen: Feinabstimmung mit echter Musik
+> Im Test lief nur Raumgeräusch. Zwei Beobachtungen, die mit Musik gegenzuprüfen sind:
+> - **Mid hatte 0 Treffer** (Schwelle 301 bei Maximum 319) — bei Raumgeräusch
+>   erwartbar. Falls Mid auch mit Musik stumm bleibt: `?mtd=` runter.
+> - **High hatte 9 Treffer aus reinem Rauschen.** Falls es in Stille zu oft feuert:
+>   `curl "http://192.168.8.113/audio_tune?htd=3"` oder Noise-Floor `?nf=200`.
+>
+> Notausgang bleibt: `?fft=0` schaltet ohne Reflash auf das alte Verfahren zurück.
+>
+> ### 👉 Danach: Preset-Engine-Split (Layer)
+> Der vom User gewünschte nächste Schritt — Movement getrennt von Color/Dimmer
+> recallen. Design-Notiz in `handover.md` → „Preset-Engine-Split". **Braucht kein
+> neues NVS-Format**: alle 57 `SceneData`-Felder existieren bereits und sind per
+> Präfix gruppiert (`f*` Movement, `c*/sg*/rg*` Color/Gobo, `d*/gr*/pr*`
+> Modulatoren), es geht allein darum, welche Gruppe beim Recall angewendet wird.
+> Die Arbeit steckt in `executePreset`, das aktuell global resettet.
 >
 > ## Vorherige Session (2026-08-26)
 > **Kein offener Blocker. Gerät läuft mit dem aktuellen Stand, alles ist auf

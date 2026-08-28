@@ -3947,3 +3947,50 @@ weder dafür noch dagegen.
 
 **Status: kompiliert und geprüft, aber noch nicht auf Hardware getestet** — das Gerät
 war an diesem Tag nicht verfügbar. Testplan siehe `handoff.md`.
+
+### Nachtrag 2026-08-28: FFT geflasht und am Gerät gemessen — bestanden
+
+Per OTA geflasht (Firmware allein, `data/` unverändert). Vorher/nachher unter Last
+gemessen, jeweils mit aktiver Movement-FX (Clover, Size 60, Speed 20):
+
+| | vorher | nachher |
+|---|---|---|
+| `loopMax` | Median 13, Max 14 ms | Median 13, Max 17 ms |
+| Bewegungs-Aussetzer (Schritt > 5× Median) | 2 | **keine** |
+| FFT pro Frame (`fftUs`) | — | **397 µs** |
+| Audio-Poll gesamt (`audUs`) | — | 463 µs alle 32 ms = **~1,45 % CPU** |
+| `updateEngines()` (`engUs`) | — | 274 µs, Spitze **2701 µs** |
+
+**Das Fixture läuft flüssig** — im Lasttest kein einziger Ausreißer, vorher zwei.
+Die Fehlerart des früheren Float-FFT-Versuchs tritt nicht auf.
+
+**Korrektur einer eigenen Schätzung:** vorab waren 150–300 µs für die FFT
+veranschlagt, gemessen sind es 397 µs. Unkritisch, aber die Schätzung lag daneben.
+
+**Wichtigster Nebenbefund:** `updateEngines()` hat Spitzen bis **2701 µs** — rund
+das Siebenfache der FFT. Damit ist erstmals belegt, dass die Soft-Float-Mathematik
+der Bewegung der eigentliche Kostenträger ist und nicht das Audio. Das stützt den
+Backlog-Punkt „Output-Build-Kadenz" mit einer echten Zahl statt einer Vermutung.
+
+### Frequenztrennung verifiziert
+
+10 s Aufzeichnung bei Raumgeräusch über `/api/audio_debug`:
+
+```
+lo (Bass)  112…1085     mi (Mid)  72…319     hi (High)  15…179
+Korrelation:  lo/mi 0,47   lo/hi 0,32   mi/hi 0,33
+```
+
+Niedrige Korrelation bedeutet, dass die Bänder sich **unabhängig voneinander**
+bewegen — genau das, was das alte Verfahren strukturell nicht konnte (dort lagen
+alle drei nahe 1,0, weil sie aus demselben Gesamtpegel abgeleitet waren).
+
+**Rückfallschalter in beide Richtungen getestet** — und er machte das alte Problem
+in einer Zeile sichtbar: mit `?fft=0` meldete das Gerät `lo=1522` bei `mi=44,
+hi=57`, Mid und High also praktisch tot; mit `?fft=1` dann `lo=2949, mi=152,
+hi=101`. Bandverstärkung `fg=4` passt (Werte weder nahe null noch am Anschlag),
+eine Kalibrierung war nicht nötig.
+
+**Offen: Feinabstimmung mit echter Musik.** Im Test lief nur Raumgeräusch. Mid hatte
+0 Treffer (Schwelle 301 bei Maximum 319 — erwartbar), High dagegen 9 Treffer aus
+reinem Rauschen. Falls High in Stille zu oft feuert: `?htd=3` oder `?nf=200`.

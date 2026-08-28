@@ -107,7 +107,10 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 - **`fadeDuration` global geteilt** zwischen Mute-Fade (`/autofade`) und
   Dip-to-Black-Load (`triggerLoad` überschreibt mit `currentFadeTime/2`).
   Fragile Kopplung, entkoppeln (z. B. getrennte Variable für Dip-Fades).
-- **Output-Build-Kadenz (Perf-Hebel, noch nicht nötig).** `updateEngines()`
+- **Output-Build-Kadenz (Perf-Hebel, jetzt mit Messwert unterlegt).** Am 2026-08-28
+  gemessen: `updateEngines()` braucht 274 µs pro Aufruf mit Spitzen bis **2701 µs** —
+  rund das Siebenfache der neuen FFT (397 µs) und damit der mit Abstand größte
+  CPU-Posten. Live abrufbar über `engUs`/`engMax` in `/api/state`. `updateEngines()`
   baut Output-Buffer + `getValues()` in *jedem* Loop-Durchlauf (Hunderte Hz),
   gesendet wird nur alle 30 ms (~15× Overhead). In den
   `if (now - lastDmxOut >= 30)`-Block ziehen → Movement-Soft-Float-Last
