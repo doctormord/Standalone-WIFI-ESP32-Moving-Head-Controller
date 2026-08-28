@@ -101,9 +101,15 @@ inline int tuneHighThreshDivShift = 2;
 #define BPM_MIN_VALID_SAMPLES 6
 #define BPM_DEFAULT_FALLBACK 120
 #define BPM_MIN_LIMIT 60
-#define BPM_MAX_LIMIT 180
+// Raised from 180: drum & bass sits at 172-180, so the old ceiling left a genuine 178 BPM
+// track pinned against the limit with no room for the median filter to settle above it.
+#define BPM_MAX_LIMIT 200
 
 #define BPM_DEVIATION_TOLERANCE_DIVISOR 5 
+// Above this percentage difference between the measured median and the current globalBPM,
+// snap straight to the measurement instead of smoothing towards it -- see the re-lock
+// comment in pollAudioEngine().
+#define BPM_RELOCK_PERCENT 20
 #define BPM_SMOOTHING_WEIGHT_OLD 19
 #define BPM_SMOOTHING_WEIGHT_TOTAL 20
 
@@ -217,6 +223,30 @@ inline int32_t fftBand(int lo, int hi) {
   for (int i = lo; i <= hi; i++) sum += fftMag[i];
   return sum / (hi - lo + 1);
 }
+
+// Previous frame's magnitudes, for spectral flux below.
+inline int32_t fftMagPrev[FFT_N / 2];
+
+// Spectral flux: the sum of the POSITIVE changes across a bin range, i.e. how much energy
+// newly appeared since the last frame. Negative changes are discarded on purpose -- an onset
+// is energy arriving, not leaving.
+//
+// This is what makes drum & bass work. The level-based detector compares a band's absolute
+// value against its own running average, so a continuously rolling sub-bass keeps that average
+// permanently high and the kick barely stands out -- measured live 2026-08-28 with a 178 BPM
+// track: the threshold sat at 9222 while the band read 6709, and detected beat intervals
+// scattered with a standard deviation of 200-594ms around a ~550ms median, locking the BPM
+// readout onto ~118 instead of 178 (not even an octave error, so the existing x2 correction
+// could never recover it). Flux ignores sustained energy by construction: a held sub-bass has
+// near-zero flux, a kick attack is a spike.
+inline int32_t fftFlux(int lo, int hi) {
+  int32_t sum = 0;
+  for (int i = lo; i <= hi; i++) {
+    int32_t d = fftMag[i] - fftMagPrev[i];
+    if (d > 0) sum += d;
+  }
+  return sum / (hi - lo + 1);
+}
 inline unsigned long lastBassTime = 0;
 inline unsigned long lastMidTime  = 0;
 inline unsigned long lastHighTime = 0;
@@ -249,6 +279,13 @@ inline int32_t lastBassEnergy = 0, lastMidEnergy = 0, lastHighEnergy = 0, lastTh
 // noticed mid-show -- so the previous, known-working behaviour stays one HTTP call away instead of
 // requiring a reflash. Reported state is in /api/audio_debug ("fft").
 inline bool audioUseFFT = true;
+// Spectral-flux onset detection instead of absolute level (/audio_tune?flux=0 to compare).
+// Default on: with sustained-bass material (drum & bass) the level detector measurably
+// cannot find the pulse -- see fftFlux() for the numbers.
+inline bool audioUseFlux = true;
+// Display-only copies so the AUDIO tab can show level and flux side by side.
+inline int32_t lastBassLevel = 0, lastMidLevel = 0, lastHighLevel = 0;
+inline int32_t lastBassFlux = 0, lastMidFlux = 0, lastHighFlux = 0;
 // Compensates the FFT's 1/N output scaling. Left-shift, runtime-tunable (/audio_tune?fg=), because
 // the right value depends on the microphone's actual output level and could not be calibrated
 // without the device. If the bands read near zero with music playing, raise it; if they peg, lower it.
@@ -308,12 +345,31 @@ void pollAudioEngine() {
       int32_t mRaw = std::min(fftBand(BIN_MID_LO,  BIN_MID_HI),  BAND_MAX) << tuneFftGainShift;
       int32_t hRaw = std::min(fftBand(BIN_HIGH_LO, BIN_HIGH_HI), BAND_MAX) << tuneFftGainShift;
 
-      if (bRaw > envSlow) envSlow += (bRaw - envSlow) >> tuneSlowAttackShift;
-      else envSlow -= (envSlow - bRaw) >> tuneSlowDecayShift;
-      if (mRaw > envMid)  envMid  += (mRaw - envMid)  >> tuneMidAttackShift;
-      else envMid  -= (envMid - mRaw)  >> tuneMidDecayShift;
-      if (hRaw > envFast) envFast += (hRaw - envFast) >> tuneFastAttackShift;
-      else envFast -= (envFast - hRaw) >> tuneFastDecayShift;
+      // Spectral flux of the same three ranges, computed before fftMagPrev is overwritten.
+      // Kept as display values regardless of which detector is active, so the AUDIO tab can
+      // show level and flux side by side.
+      lastBassFlux = std::min(fftFlux(BIN_BASS_LO, BIN_BASS_HI), BAND_MAX) << tuneFftGainShift;
+      lastMidFlux  = std::min(fftFlux(BIN_MID_LO,  BIN_MID_HI),  BAND_MAX) << tuneFftGainShift;
+      lastHighFlux = std::min(fftFlux(BIN_HIGH_LO, BIN_HIGH_HI), BAND_MAX) << tuneFftGainShift;
+      for (int i = 0; i < FFT_N / 2; i++) fftMagPrev[i] = fftMag[i];
+
+      if (audioUseFlux) {
+        // Raw flux goes into the detector unsmoothed, on purpose. An onset IS a single-frame
+        // spike; running it through the attack/decay envelope would smear exactly the peak the
+        // detector is looking for. The dynamic threshold below still averages over time, so a
+        // spike is judged against the recent typical flux rather than against nothing.
+        envSlow = lastBassFlux;
+        envMid  = lastMidFlux;
+        envFast = lastHighFlux;
+      } else {
+        if (bRaw > envSlow) envSlow += (bRaw - envSlow) >> tuneSlowAttackShift;
+        else envSlow -= (envSlow - bRaw) >> tuneSlowDecayShift;
+        if (mRaw > envMid)  envMid  += (mRaw - envMid)  >> tuneMidAttackShift;
+        else envMid  -= (envMid - mRaw)  >> tuneMidDecayShift;
+        if (hRaw > envFast) envFast += (hRaw - envFast) >> tuneFastAttackShift;
+        else envFast -= (envFast - hRaw) >> tuneFastDecayShift;
+      }
+      lastBassLevel = bRaw; lastMidLevel = mRaw; lastHighLevel = hRaw;
     } else {
       // --- Legacy envelope-follower path (/audio_tune?fft=0) ---------------------------
       for (int i = 0; i < count; i++) {
@@ -377,8 +433,17 @@ void pollAudioEngine() {
         if (errorAsDouble < bestError) { bestError = errorAsDouble; } // keep raw (faster) diff -- it's the correct one
         if (errorAsHalf < bestError && (diff / 2) >= MIN_BEAT_INTERVAL_MS) { candidate = diff / 2; bestError = errorAsHalf; }
 
+        // Every plausible interval is recorded now, instead of only those that already agree
+        // with the current globalBPM. The old gate (bestError < currentInterval/5) was
+        // self-reinforcing: once globalBPM sat on a wrong value more than ~20% away from the
+        // truth, every CORRECT interval was rejected for disagreeing with it, and only an exact
+        // reading of BPM_DEFAULT_FALLBACK could ever break out. Measured live 2026-08-28 on a
+        // 178 BPM track: flux detection produced a clean 349ms median interval (true beat 337ms)
+        // while globalBPM stayed pinned at 131, because 349 vs the assumed 458 exceeded the
+        // tolerance on every single sample. The 16-sample median below is what rejects outliers;
+        // it does not need a gate in front of it that presumes the answer.
         bool sampleWritten = false;
-        if (bestError < (currentInterval / BPM_DEVIATION_TOLERANCE_DIVISOR) || globalBPM == BPM_DEFAULT_FALLBACK) {
+        if (candidate >= MIN_BEAT_INTERVAL_MS && candidate <= MAX_BEAT_INTERVAL_MS) {
             beatIntervals[beatIdx] = candidate;
             beatIdx = (beatIdx + 1) % BPM_HISTORY_SIZE;
             sampleWritten = true;
@@ -403,7 +468,15 @@ void pollAudioEngine() {
             int detectedBPM = MS_PER_MINUTE / medianInterval;
             lastRawDetectedBPM = detectedBPM;
 
-            globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
+            // Snap rather than crawl when the median disagrees sharply with the current value.
+            // The 19:1 smoothing moves globalBPM by ~5% per sample, so recovering from a wrong
+            // lock would take dozens of accepted beats even once they are no longer rejected --
+            // long enough to look like it never recovers. A median over 16 intervals is already
+            // robust enough to trust outright when it is this far away; the smoothing stays for
+            // fine tracking, where it belongs.
+            long dev = labs((long)detectedBPM - (long)globalBPM) * 100L / (globalBPM > 0 ? globalBPM : 1);
+            if (dev > BPM_RELOCK_PERCENT) globalBPM = detectedBPM;
+            else globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
             globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
           }
         }

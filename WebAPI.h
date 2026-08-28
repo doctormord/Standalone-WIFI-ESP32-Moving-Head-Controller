@@ -400,20 +400,24 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    char buf[560];
+    char buf[760];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
       "{\"lo\":%ld,\"mi\":%ld,\"hi\":%ld,\"th\":%ld,\"thM\":%ld,\"thH\":%ld,"
       "\"xb\":%d,\"xm\":%d,\"xh\":%d,"
       "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
-      "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu}",
+      "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
+      "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
       tuneNoiseFloor, tuneFastAttackShift, tuneFastDecayShift, tuneMidAttackShift, tuneMidDecayShift,
       tuneSlowAttackShift, tuneSlowDecayShift, tuneMidThreshDivShift, tuneHighThreshDivShift, hwAudioSensitivity,
-      audioUseFFT ? 1 : 0, tuneFftGainShift, (unsigned long)audioLastUs, (unsigned long)fftLastUs);
+      audioUseFFT ? 1 : 0, tuneFftGainShift, (unsigned long)audioLastUs, (unsigned long)fftLastUs,
+      audioUseFlux ? 1 : 0, tuneDynThreshSmoothShift,
+      (long)lastBassLevel, (long)lastMidLevel, (long)lastHighLevel,
+      (long)lastBassFlux, (long)lastMidFlux, (long)lastHighFlux);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -438,6 +442,11 @@ void setupAPI() {
     // gain (left-shift) compensating the transform's 1/N scaling; it depends on the mic's
     // real output level, so it is tunable rather than baked in.
     if (server.hasArg("fft")) audioUseFFT = (server.arg("fft") == "1");
+    // flux=0 reverts to level-based detection; dts is how fast the dynamic threshold chases
+    // the signal -- the single most relevant knob for sustained-bass material, and it was
+    // not reachable from outside at all until now.
+    if (server.hasArg("flux")) audioUseFlux = (server.arg("flux") == "1");
+    if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     server.send(200, "OK");
   });

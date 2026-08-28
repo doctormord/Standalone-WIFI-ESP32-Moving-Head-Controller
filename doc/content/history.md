@@ -3994,3 +3994,81 @@ eine Kalibrierung war nicht nötig.
 **Offen: Feinabstimmung mit echter Musik.** Im Test lief nur Raumgeräusch. Mid hatte
 0 Treffer (Schwelle 301 bei Maximum 319 — erwartbar), High dagegen 9 Treffer aus
 reinem Rauschen. Falls High in Stille zu oft feuert: `?htd=3` oder `?nf=200`.
+
+---
+
+## 2026-08-28 (2) — Beat-Detection für Drum & Bass: Spectral Flux und ein Fehl-Lock
+
+**Meldung:** „So richtig geil läuft der Beat-Detector nicht, gerade Drum & Bass ist
+schwer." Track lief laut User mit **178 BPM** (= 337 ms pro Beat).
+
+### Erst gemessen, bevor an Reglern gedreht wurde
+
+Ein Sensitivity-Sweep zeigte, dass die Regler **nicht** der Hebel sind: über den
+gesamten Bereich blieb die Trefferzahl bei 22–26 pro 16 s, während die Abstände mit
+einer Standardabweichung von 200–594 ms um einen Median von ~550 ms streuten. Bei
+der ursprünglichen Einstellung `sens=15` lag die Schwelle sogar *über* dem Signal
+(`th`=9222 gegen `lo`=6709) — der Faktor ist `2,0 − sens/100`, also 1,85.
+
+**Ursache:** Der Detektor vergleicht den *absoluten Pegel* des Bassbands gegen dessen
+gleitenden Mittelwert. Drum & Bass hat einen durchgehend rollenden Sub-Bass, der
+diesen Mittelwert permanent hoch hält — der Kick ragt kaum heraus. Für diese Musik
+ist der Detektortyp strukturell falsch, unabhängig von jeder Einstellung.
+
+### Fix 1: Spectral Flux
+
+Statt „Pegel über Mittelwert" jetzt die **Zunahme** der Magnitude von Frame zu Frame
+(`fftFlux()`), negative Änderungen verworfen. Gehaltener Sub-Bass hat nahezu keinen
+Flux, ein Kick-Anschlag eine deutliche Spitze. Kosten: eine Subtraktion pro Bin — die
+FFT lief ohnehin schon. Der Rohflux geht **ungeglättet** in den Detektor; ein Onset
+*ist* eine Einzelframe-Spitze, die Attack/Decay-Hüllkurve würde genau sie verschmieren.
+
+**A/B am selben Track gemessen** (wahrer Beat 337 ms):
+
+| Modus | Treffer | Abstand (Median) | Streuung |
+|---|---|---|---|
+| Pegel | 14 | 1396 ms | 1144 ms |
+| **Flux** | **43** | **349 ms** | 243 ms |
+
+349 ms gegen 337 ms — der Flux-Detektor findet den Puls, der Pegel-Detektor nicht.
+Umschaltbar über `/audio_tune?flux=0|1`.
+
+### Fix 2: Der BPM-Wert konnte sich nie erholen
+
+Trotz sauberer 349-ms-Intervalle meldete `globalBPM` weiter 131. Grund war das
+Aufnahme-Gate `bestError < currentInterval / 5`: bei `globalBPM=131` (458 ms) und
+einem echten Intervall von 349 ms beträgt die Abweichung 109 ms bei 91 ms Toleranz —
+**die korrekten Intervalle wurden verworfen, weil sie dem falschen BPM widersprachen.**
+Ein sich selbst verstärkender Fehl-Lock; der einzige Ausweg war ein exakter Stand von
+`BPM_DEFAULT_FALLBACK`. Die Oktav-Korrektur half nicht, weil das Verhältnis 1,43 war,
+kein Faktor 2.
+
+Jetzt wird **jedes plausible Intervall** in die Historie geschrieben (Ausreißer
+verwirft ohnehin der 16er-Median), und bei mehr als `BPM_RELOCK_PERCENT` (20 %)
+Abweichung schnappt `globalBPM` direkt auf den Median statt sich mit 5 % pro Sample
+heranzukriechen. Live verifiziert: BPM bewegt sich seither frei (151 → 137) statt
+festzuhängen.
+
+Zusätzlich: `BPM_MAX_LIMIT` von 180 auf 200 (178 lag praktisch auf der Grenze), und
+`tuneDynThreshSmoothShift` ist endlich über `/audio_tune?dts=` erreichbar — der
+Parameter war bis dahin überhaupt nicht von außen einstellbar.
+
+### Was noch NICHT gelöst ist
+
+Der BPM-Wert landet weiterhin nicht auf 178. Die Intervalle liegen über alle
+Sensitivity-Stufen bei 395–464 ms, also konstant beim 1,17–1,38-fachen des Beats, bei
+einer Streuung von nur ~80 ms — also ein eigenes, falsches Raster, kein Rauschen.
+Vermutung: Flux feuert auch auf Zwischenschläge, und die 280-ms-Sperre
+(`MIN_BEAT_INTERVAL_MS`) fasst sie tempo-blind zusammen.
+
+**Offener Widerspruch, ehrlich vermerkt:** eine unabhängige Autokorrelation über den
+Bass-Flux (von außen abgetastet) findet die stärkste Periodizität bei 68 BPM (882 ms)
+und ein Cluster um 115–117 BPM — **kein 337-ms-Raster**. Entweder lief zu diesem
+Zeitpunkt ein anderer Track als die genannten 178 BPM, oder der Abschnitt hatte keinen
+durchgehenden Kick im Bassband. Das ist vor weiteren Schlüssen zu klären.
+
+**Nächster Kandidat, falls es weitergehen soll:** ein echter Tempo-Tracker statt
+Median über Intervalle — Ringpuffer der Flux-Werte (4 s = 128 Frames) und
+Autokorrelation über die Lags für 60–200 BPM, einmal pro Sekunde. Kosten grob
+16k Integer-Operationen/s, also vernachlässigbar. Das ist das Standardverfahren und
+löst genau das verbliebene Problem (Puls finden statt Einzelabstände mitteln).
