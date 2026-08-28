@@ -1638,8 +1638,24 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             <span style={{ color: '#fbbf24' }}>■ MID {live.mi}</span>
             <span style={{ color: '#22d3ee' }}>■ HIGH {live.hi}</span>
             <span style={{ color: 'rgba(248,113,113,0.8)' }}>■ THRESHOLD {live.th}</span>
+            <span style={{ color: 'rgba(255,255,255,0.75)' }}>♩ TEMPO {live.tBPM || '--'}</span>
             <span style={{ color: 'rgba(34,197,94,0.6)', marginLeft: 'auto' }}>▌ beat detected</span>
           </div>
+        </Panel>
+        <Panel title="Tempo tracker" accentDot={accent}>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.5, marginBottom: 8 }}>
+            The tracker reports the pulse the bass actually has. For drum &amp; bass that is usually
+            the half-time grid, so a 176 BPM track legitimately measures 88 — the kicks really do sit
+            there. Use ×2 when you want the notated tempo instead. This is a choice, not a guess:
+            an automatic rule would turn 90 BPM hip-hop into 180 just as readily.
+          </div>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontFamily: '"JetBrains Mono", monospace', fontSize: 11 }}>
+            <span style={{ color: accent, fontWeight: 700 }}>measured {live.tBPM || '--'} BPM</span>
+            <span style={{ color: 'rgba(255,255,255,0.45)' }}>shown {live.tBPM ? (tune.tmul === 1 ? live.tBPM * 2 : tune.tmul === 2 ? Math.round(live.tBPM / 2) : live.tBPM) : '--'} BPM</span>
+          </div>
+          <Dropdown value={tune.tmul ?? 0} onChange={(v) => applyTune('tmul', parseInt(v))}
+            options={[[0, 'Octave · as measured'], [1, 'Octave · ×2 (double time)'], [2, 'Octave · ÷2 (half time)']]}
+            accent={accent} dense />
         </Panel>
 
         <Panel title="Sensitivity" accentDot={accent}>

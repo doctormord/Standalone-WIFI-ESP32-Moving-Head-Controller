@@ -4072,3 +4072,38 @@ Median über Intervalle — Ringpuffer der Flux-Werte (4 s = 128 Frames) und
 Autokorrelation über die Lags für 60–200 BPM, einmal pro Sekunde. Kosten grob
 16k Integer-Operationen/s, also vernachlässigbar. Das ist das Standardverfahren und
 löst genau das verbliebene Problem (Puls finden statt Einzelabstände mitteln).
+
+### 2026-08-28 (3) — Tempo-Tracker plus manueller Oktav-Schalter
+
+Der Median über Onset-Abstände scheitert an synkopiertem Material grundsätzlich.
+Ersetzt durch einen **Autokorrelations-Tracker** über einen 6-s-Ringpuffer des
+Bass-Flux: harmonische Summe (Lag plus 2×/3×/4×) findet die Puls-Familie,
+parabolische Interpolation verfeinert den Peak (bei 31 Frames/s liegen benachbarte
+Lags bei 176 BPM sonst 17 BPM auseinander).
+
+**Der entscheidende Kniff war, die Score-*Kurven* zu glätten, nicht die
+Entscheidung.** Mit Auswertung pro Sekunde sprang die Ausgabe bei gleichbleibendem
+Material zwischen 179, 89 und 72; mit exponentiell gemittelten Per-Lag-Scores
+(~10 s Evidenz) hält sie einen Wert. Zusätzlich behoben: `>>4`/`>>6`-Skalierungen
+hatten die Autokorrelation auf einstellige Werte gestaucht, sodass Quantisierungs-
+rauschen die Oktave entschied statt des Signals.
+
+**Korrektur einer eigenen Behauptung.** Die geplante automatische Oktav-Wahl war mit
+einer Offline-Messung begründet (plain(176)=13211 gegen plain(88)=402). Auf den
+Gerätedaten ist es **umgekehrt**: 9466 bei 89 BPM gegen **−1101** bei 179 — bei
+341 ms ist die Autokorrelation negativ. Ursache ist der schnelle Leaky-Mean im Gerät,
+der anders hochpassfiltert als der globale Mittelwert meiner Offline-Auswertung. Im
+Bassband dieses Tracks gibt es schlicht keine 176er-Periodizität; die Kicks liegen
+echt auf dem Halftime-Raster. Der Tracker misst korrekt, die Prämisse der Heuristik
+war falsch.
+
+**Deshalb: kein Automatismus, sondern ein Schalter.** `/audio_tune?tmul=0|1|2`
+(wie gemessen / ×2 / ÷2) plus ein Panel im AUDIO-Tab. Begründung im Code und im UI-
+Text: Jede Regel, die aus 89 automatisch 178 macht, macht aus 90er-Hip-Hop 180 — der
+User hatte genau das zu Recht ausgeschlossen. Der Override wird **ignoriert statt
+geklemmt**, wenn das Ergebnis aus `[BPM_MIN_LIMIT, BPM_MAX_LIMIT]` fiele; live
+verifiziert: bei gemessenen 134 lässt ×2 den Wert unverändert (268 wäre zu hoch),
+÷2 liefert 67.
+
+Der Tracker folgt dem Material nachweislich: im Verlauf des Tests wanderte er von 89
+auf 156 auf 178, als der Abschnitt Kicks auf dem schnellen Raster bekam.

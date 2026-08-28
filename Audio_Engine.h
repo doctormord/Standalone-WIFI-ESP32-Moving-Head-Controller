@@ -259,6 +259,13 @@ inline int32_t trackedScore = 0;    // winning harmonic score, for the AUDIO tab
 // octaves were, so the choice can be inspected instead of inferred.
 inline int32_t dbgLagMilli = 0, dbgPlainBase = 0, dbgPlainHalf = 0, dbgPlainDouble = 0;
 inline bool audioUseTracker = true;
+// Manual octave override for the tracker's result: 0 = as measured, 1 = double, 2 = halve.
+// Deliberately a user decision, not a heuristic. The tracker reports the pulse the bass
+// actually has, and for drum & bass that is genuinely the half-time grid -- measured on a
+// 176 BPM track, the autocorrelation at 341ms was NEGATIVE while 671ms scored ~1400. Any
+// automatic rule that turned 89 into 178 would equally turn 90 BPM hip-hop into 180, which
+// is the wrong guess in the other direction. So the octave is offered, not inferred.
+inline int tempoMulMode = 0;
 
 inline int64_t tempoAutocorr(int lag) {
   if (lag < 2 || lag > TEMPO_RING / 3) return 0;
@@ -696,7 +703,12 @@ void pollAudioEngine() {
   // Applied outside the beat-detected block on purpose: the tracker does not need an onset
   // to have just fired, it works off the rolling flux history.
   if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled) {
-    globalBPM = constrain(trackedBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+    int shown = trackedBPM;
+    // The override is ignored rather than clamped when it would leave the valid range --
+    // clamping would silently show a tempo that is neither the measurement nor its octave.
+    if (tempoMulMode == 1 && trackedBPM * 2 <= BPM_MAX_LIMIT) shown = trackedBPM * 2;
+    else if (tempoMulMode == 2 && trackedBPM / 2 >= BPM_MIN_LIMIT) shown = trackedBPM / 2;
+    globalBPM = constrain(shown, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
   }
   audioLastUs = micros() - pollT0;
   if (audioLastUs > audioMaxUs) audioMaxUs = audioLastUs;
