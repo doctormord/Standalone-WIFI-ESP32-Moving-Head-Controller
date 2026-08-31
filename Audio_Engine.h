@@ -269,6 +269,10 @@ inline int32_t fftMagPrev[FFT_N / 2];
 #define TEMPO_LAG_MIN     9   // ~208 BPM
 #define TEMPO_LAG_MAX    40   // ~47 BPM
 #define TEMPO_EVAL_MS  1000   // re-evaluate once a second; the ring changes slowly
+#define TEMPO_P_MIN   300     // 200 BPM
+#define TEMPO_P_MAX  1000     //  60 BPM
+#define TEMPO_P_STEP    4
+#define TEMPO_CAND_N ((TEMPO_P_MAX - TEMPO_P_MIN) / TEMPO_P_STEP + 1)
 
 inline int16_t tempoRing[TEMPO_RING];
 inline int tempoRingIdx = 0;
@@ -282,11 +286,41 @@ inline unsigned long tempoLastEval = 0;
 inline int32_t tempoHarmAvg[TEMPO_LAG_MAX + 2];
 inline int32_t tempoPlainAvg[TEMPO_LAG_MAX * 2 + 4];
 inline bool tempoAvgSeeded = false;
+// Onset TIMES, not intervals: the estimator below asks how well all onsets line up in phase
+// for a candidate period, which needs their absolute positions.
+#define IOI_RING 64
+inline uint32_t onsetRing[IOI_RING];
+// How far above its threshold each onset was, 16 == exactly at threshold. Weighting the phase
+// test by this is what removes the need to tune sensitivity per track: a weak off-beat hit still
+// counts, but it can no longer outvote the kicks. Measured on techno, the detector fired 2.67
+// times a second against a beat rate of 2.37, and that surplus formed a competing ~170 BPM grid
+// that the unweighted test kept locking onto.
+inline uint16_t onsetW[IOI_RING];
+inline int ioiIdx = 0, ioiCount = 0;
+inline void pushOnset(unsigned long ms, int32_t energy, int32_t threshold) {
+  onsetRing[ioiIdx] = (uint32_t)ms;
+  int32_t w = (threshold > 0) ? (energy * 16) / threshold : 16;
+  if (w < 1) w = 1; else if (w > 255) w = 255;
+  onsetW[ioiIdx] = (uint16_t)w;
+  ioiIdx = (ioiIdx + 1) % IOI_RING;
+  if (ioiCount < IOI_RING) ioiCount++;
+}
+
+// Quarter-wave sine in Q7, 256 steps. Integer only: 200+ candidate periods times 60 onsets is far
+// too many sinf() calls for a chip without an FPU.
+inline int8_t tempoSinTab[256];
+inline bool tempoSinReady = false;
+inline void tempoInitSin() {
+  for (int i = 0; i < 256; i++) tempoSinTab[i] = (int8_t)(sinf(2.0f * PI * i / 256.0f) * 127.0f);
+  tempoSinReady = true;
+}
+
 inline int trackedBPM = 0;          // 0 = no confident estimate yet
 inline int32_t trackedScore = 0;    // winning harmonic score, for the AUDIO tab
 // Octave-decision telemetry: which lag won and what the plain scores of the competing
 // octaves were, so the choice can be inspected instead of inferred.
 inline int32_t dbgLagMilli = 0, dbgPlainBase = 0, dbgPlainHalf = 0, dbgPlainDouble = 0;
+inline int tempoCandidate = 0, tempoAgree = 0;
 inline bool audioUseTracker = true;
 // Manual octave override for the tracker's result: 0 = as measured, 1 = double, 2 = halve.
 // Deliberately a user decision, not a heuristic. The tracker reports the pulse the bass
@@ -309,139 +343,85 @@ inline int64_t tempoAutocorr(int lag) {
 }
 
 inline void tempoTrackerEval() {
-  // Step 1 -- find the pulse FAMILY. Summing a lag with its 2x/3x/4x multiples is what
-  // separates a real pulse from a merely common spacing: a syncopated onset distance scores
-  // high on its own but collapses once its multiples are required to line up too. Measured on
-  // the same 176 BPM track: the dotted quarter (117 BPM) led the plain autocorrelation at
-  // 29286, and dropped to 5826 under harmonic summing, while the true pulse family rose to
-  // first place.
-  // Plain autocorrelation for every lag we may need, including the doubled ones the octave
-  // test below looks at, then the harmonic sum on top of it.
-  int32_t plain[TEMPO_LAG_MAX * 2 + 4];
-  for (int lag = 0; lag < TEMPO_LAG_MAX * 2 + 4; lag++) {
-    plain[lag] = (lag >= 2 && lag <= TEMPO_RING / 3) ? (int32_t)(tempoAutocorr(lag) >> 2) : 0;
-  }
-  for (int lag = TEMPO_LAG_MIN; lag <= TEMPO_LAG_MAX + 1; lag++) {
-    int32_t tot = plain[lag];
-    int cnt = 1;
-    for (int k = 2; k <= 4; k++) {
-      if (lag * k <= TEMPO_RING / 3) { tot += plain[lag * k]; cnt++; }
+  // Tempo from the ONSET TRAIN, by asking for each candidate period how tightly the onsets cluster
+  // in phase. This is a Fourier component evaluated over onset times rather than over audio, and
+  // it is phase-invariant, so it needs no assumption about where the downbeat sits.
+  //
+  // Two earlier attempts here failed, and both failures were informative:
+  //   * autocorrelation with harmonic summing locked onto the dotted quarter -- it read 98 for a
+  //     track tapped at 143, and every second multiple of a 1.5x period does line up, so the
+  //     relative collects genuine support;
+  //   * sweeping periods and scoring integer multiples of the intervals collapsed onto the
+  //     shortest period in the range, because a short period explains nearly any interval as some
+  //     multiple; the winning and runner-up scores came out 602 against 601.
+  //   * taking the median interval failed too: the detector also fires between beats, so the most
+  //     common gap (330ms) simply is not the beat (420ms).
+  // What the measurements did show is that the onset RATE is already right -- 2.39 per second
+  // against 2.38 expected -- so the information is in how the onsets distribute, which is exactly
+  // what a phase test reads.
+  if (ioiCount < 10) return;
+  if (!tempoSinReady) tempoInitSin();
+
+  uint32_t newest = onsetRing[(ioiIdx + IOI_RING - 1) % IOI_RING];
+  int32_t bestMag = 0; int bestP = 0;
+  int32_t magOf[TEMPO_CAND_N];
+
+  for (int ci = 0; ci < TEMPO_CAND_N; ci++) {
+    int P = TEMPO_P_MIN + ci * TEMPO_P_STEP;
+    int32_t re = 0, im = 0, wsum = 0, used = 0;
+    for (int i = 0; i < ioiCount; i++) {
+      uint32_t t = onsetRing[i];
+      uint32_t age = newest - t;
+      if (age > 10000) continue;                 // only the last 10s describe the current tempo
+      uint32_t ph = ((age % (uint32_t)P) * 256u) / (uint32_t)P;
+      int32_t w = (int32_t)onsetW[i];
+      re += (int32_t)tempoSinTab[(ph + 64) & 255] * w;
+      im += (int32_t)tempoSinTab[ph & 255] * w;
+      wsum += w;
+      used++;
     }
-    tot /= cnt;
-    if (!tempoAvgSeeded) tempoHarmAvg[lag] = tot;
-    else tempoHarmAvg[lag] += (tot - tempoHarmAvg[lag]) >> 2;   // ~10s of evidence
+    if (used < 8 || wsum <= 0) { magOf[ci] = 0; continue; }
+    // Normalised by the total weight, so neither a busier window nor a louder passage can
+    // outscore a quieter one -- only how well the onsets line up matters.
+    int32_t mag = (re / wsum) * (re / wsum) + (im / wsum) * (im / wsum);
+    magOf[ci] = mag;
+    if (mag > bestMag) { bestMag = mag; bestP = P; }
   }
-  for (int lag = 0; lag < TEMPO_LAG_MAX * 2 + 4; lag++) {
-    if (!tempoAvgSeeded) tempoPlainAvg[lag] = plain[lag];
-    else tempoPlainAvg[lag] += (plain[lag] - tempoPlainAvg[lag]) >> 2;
-  }
-  tempoAvgSeeded = true;
+  if (bestP == 0) return;
 
-  int bestLag = 0;
-  int64_t bestScore = 0;
-  for (int lag = TEMPO_LAG_MIN; lag <= TEMPO_LAG_MAX; lag++) {
-    if (tempoHarmAvg[lag] > bestScore) { bestScore = tempoHarmAvg[lag]; bestLag = lag; }
-  }
-  if (bestLag == 0 || bestScore <= 0) { trackedBPM = 0; trackedScore = 0; return; }
-
-  // Step 2 -- refine the peak. At 31 frames/s neighbouring lags are ~17 BPM apart up at 176,
-  // far too coarse to display. Parabolic interpolation through the peak and its neighbours
-  // recovers sub-frame resolution. Kept in integer maths: lag is carried in thousandths.
-  int64_t sPrev = tempoHarmAvg[bestLag - 1], sMid = bestScore, sNext = tempoHarmAvg[bestLag + 1];
-  int64_t den = sPrev - 2 * sMid + sNext;
-  int32_t lagMilli = bestLag * 1000;
-  if (den != 0) {
-    int64_t off = ((sPrev - sNext) * 500) / den;
-    if (off > 500) off = 500; else if (off < -500) off = -500;
-    lagMilli += (int32_t)off;
-  }
-  if (lagMilli < 1000) return;
-
-  // Refine the period from the HIGHEST usable harmonic instead of the base lag. Resolution is the
-  // problem at fast tempi: at 32ms per frame a 150 BPM beat is 12.5 frames, so neighbouring lags
-  // are ~16 BPM apart and interpolation alone reported 164 for a true 150 (measured live
-  // 2026-08-31). The same period measured at lag 25 has half that error, at lag 37 a third. So
-  // look for the correlation peak near k*L, refine it, and divide back down.
-  {
-    int32_t bestRefined = lagMilli;
-    for (int k = 2; k <= 4; k++) {
-      int centre = (int)(((int64_t)lagMilli * k + 500) / 1000);
-      if (centre < 3 || centre + 1 > TEMPO_RING / 3) break;
-      // Window widens with k: an error of e frames in the base estimate becomes k*e frames at the
-      // k-th harmonic, so a fixed +/-1 window cannot reach the peak it is looking for. That was the
-      // reason the first version of this changed nothing at all.
-      int pk = centre;
-      for (int c = centre - k; c <= centre + k; c++) {
-        if (c >= 2 && c + 1 <= TEMPO_RING / 3 && tempoPlainAvg[c] > tempoPlainAvg[pk]) pk = c;
-      }
-      // Only trust the harmonic if it is a real local maximum with meaningful strength --
-      // otherwise dividing noise down would look like precision it does not have.
-      if (tempoPlainAvg[pk] <= 0) continue;
-      if (!(tempoPlainAvg[pk] >= tempoPlainAvg[pk - 1] && tempoPlainAvg[pk] >= tempoPlainAvg[pk + 1])) continue;
-      int64_t a = tempoPlainAvg[pk - 1], b = tempoPlainAvg[pk], c2 = tempoPlainAvg[pk + 1];
-      int64_t den = a - 2 * b + c2;
-      int32_t refined = pk * 1000;
-      if (den != 0) {
-        int64_t off = ((a - c2) * 500) / den;
-        if (off > 500) off = 500; else if (off < -500) off = -500;
-        refined += (int32_t)off;
-      }
-      int32_t asBase = refined / k;
-      // Guard against latching onto a neighbouring peak: the harmonic estimate must still agree
-      // with the base estimate to within a quarter of a frame per multiple.
-      int32_t diff = asBase > lagMilli ? asBase - lagMilli : lagMilli - asBase;
-      // Tolerance has to exceed the base estimate's own uncertainty -- roughly one frame -- or
-      // the harmonic can never correct it. 0.25 frames, as first written, rejected every
-      // useful correction: a true 12.5 measured as 11.4 needs 1.1 frames of headroom.
-      if (diff <= 1200) bestRefined = asBase;
-    }
-    lagMilli = bestRefined;
+  // An onset train at period P also produces peaks at P/2, P/3 ... (the harmonics of 1/P), so the
+  // strongest peak can be a subdivision. Fold up to the longest period that still holds most of
+  // the strength -- that is the beat rather than its subdivisions.
+  for (int m = 2; m <= 3; m++) {
+    int cand = bestP * m;
+    if (cand > TEMPO_P_MAX) break;
+    int ci = (cand - TEMPO_P_MIN) / TEMPO_P_STEP;
+    if (ci < 0 || ci >= TEMPO_CAND_N) continue;
+    if (magOf[ci] * 100 >= bestMag * 75) { bestP = cand; bestMag = magOf[ci]; }
   }
 
-  // Step 3 -- pick the octave that the onsets actually support. The harmonic sum deliberately
-  // favours the slowest member of the family, which for drum & bass is the half-time feel (it
-  // found 88 for a 176 BPM track). Choosing among half / base / double by PLAIN autocorrelation
-  // asks which of them onsets really land on: on that track plain scored 13211 at 176 against
-  // 402 at 88, so 176 wins. For 90 BPM hip-hop, where kick and snare sit on the beat and the
-  // bass band holds little at half that period, the same test keeps 90 instead of doubling it.
-  // Evidence, not a preferred-tempo window -- a fixed window would wrongly double hip-hop.
-  const int32_t cands[3] = { lagMilli, lagMilli / 2, lagMilli * 2 };
-  int32_t bestCand = lagMilli;
-  int64_t bestPlain = -1;
-  for (int i = 0; i < 3; i++) {
-    int lag = (cands[i] + 500) / 1000;
-    if (lag < TEMPO_LAG_MIN || lag > TEMPO_LAG_MAX) continue;
-    int bpm = (int)(MS_PER_MINUTE / ((int32_t)lag * AUDIO_POLL_INTERVAL_MS));
-    if (bpm < BPM_MIN_LIMIT || bpm > BPM_MAX_LIMIT) continue;
-    int64_t p = tempoPlainAvg[lag];
-    if (p > bestPlain) { bestPlain = p; bestCand = cands[i]; }
-  }
-
-  dbgLagMilli = lagMilli;
-  { int l = (lagMilli + 500) / 1000;
-    dbgPlainBase = (l >= 0 && l < TEMPO_LAG_MAX * 2 + 4) ? tempoPlainAvg[l] : 0;
-    int lh = (lagMilli / 2 + 500) / 1000;
-    dbgPlainHalf = (lh >= 0 && lh < TEMPO_LAG_MAX * 2 + 4) ? tempoPlainAvg[lh] : 0;
-    int ld = (lagMilli * 2 + 500) / 1000;
-    dbgPlainDouble = (ld >= 0 && ld < TEMPO_LAG_MAX * 2 + 4) ? tempoPlainAvg[ld] : 0; }
-  int32_t periodMs = (bestCand * AUDIO_POLL_INTERVAL_MS) / 1000;
-  if (periodMs <= 0) return;
-  int bpm = (int)(MS_PER_MINUTE / periodMs);
+  int bpm = 60000 / bestP;
   if (bpm < BPM_MIN_LIMIT || bpm > BPM_MAX_LIMIT) return;
+
+  // Hysteresis: a different tempo must win twice running before it is adopted, because a tempo
+  // that flips changes the beat length underneath every synced effect and makes the phase jump.
+  if (trackedBPM > 0 && (bpm > trackedBPM + 2 || bpm < trackedBPM - 2)) {
+    if (tempoCandidate > bpm + 2 || tempoCandidate < bpm - 2) { tempoCandidate = bpm; tempoAgree = 1; return; }
+    if (++tempoAgree < 2) return;
+  }
+  tempoCandidate = bpm;
+  tempoAgree = 0;
   trackedBPM = bpm;
-  trackedScore = (int32_t)(bestScore > 0x7FFFFFFF ? 0x7FFFFFFF : bestScore);
+  trackedScore = bestMag;
+  dbgLagMilli = bestP;
+  dbgPlainBase = bestMag;
+  dbgPlainHalf = ioiCount;
 }
 
-// Called once per audio frame with the current bass flux.
+// Called once per audio frame. The flux ring is no longer used for tempo (see tempoTrackerEval),
+// only the periodic re-evaluation is driven from here.
 inline void tempoTrackerPush(int32_t flux, unsigned long now) {
-  tempoFluxMean += (flux - tempoFluxMean) >> 5;          // slow mean, so we correlate deviations
-  // >>2, not >>4: the earlier shift crushed the deviations so far that the autocorrelation
-  // came out as single-digit numbers, where quantisation noise decided the octave rather
-  // than the signal. Products stay well inside int32 at this scale.
-  int32_t v = (flux - tempoFluxMean) >> 2;
-  if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
-  tempoRing[tempoRingIdx] = (int16_t)v;
-  tempoRingIdx = (tempoRingIdx + 1) % TEMPO_RING;
+  (void)flux;
   if (now - tempoLastEval >= TEMPO_EVAL_MS) { tempoLastEval = now; tempoTrackerEval(); }
 }
 
@@ -640,6 +620,7 @@ void pollAudioEngine() {
 
     if (beatDetected) {
       unsigned long diff = now - lastBassTime;
+      pushOnset(now, bassEnergy, thBass);   // feeds the tempo estimator (see tempoTrackerEval)
       lastBassTime = now;
       triggerBass = true;
       guiBass = true;

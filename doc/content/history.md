@@ -4299,3 +4299,80 @@ nachgepatcht — das gehört sauber entworfen.
 
 **Praktische Empfehlung bis dahin: Kickbass + 1 Beat verwenden.** Das ist gemessen gut
 und hängt gar nicht am Tempo-Wert, weil es sich an echten Onsets verankert.
+
+### 2026-08-31 (4) — Tempo-Schätzung: drei Fehlversuche, und was die Messung am Ende zeigte
+
+Der User fragte zu Recht, wie einfache Systeme (Pioneer DJM-500) das lösen und ob unser
+Tracker nicht eine PLL sein müsste. Die Architektur *ist* eine PLL — Phase und Periode.
+Die Phasenregelung steht (siehe oben), die **Periodenschätzung** war das Problem.
+
+**Drei Verfahren wurden probiert, alle am Gerät gemessen, alle verworfen:**
+
+1. **Autokorrelation mit harmonischer Summierung.** Rastete auf der punktierten Viertel
+   ein: las 98 BPM für einen Track, den der User als 143 tappte (143 × ⅔ = 95). Harmonische
+   Summierung kann dieses 1,5-Verhältnis nicht verwerfen, weil jedes zweite Vielfache
+   aufgeht und es damit echten Rückhalt bekommt.
+2. **Perioden-Sweep mit Ganzzahl-Bewertung der Intervalle.** Kippte in die Gegenrichtung
+   und wählte die *kürzeste* Periode des Bereichs (200 BPM), weil eine kurze Periode fast
+   jedes Intervall als irgendein Vielfaches erklärt. Bester und zweitbester Score lagen bei
+   602 zu 601 — die Trennschärfe war praktisch null.
+3. **Median der Intervalle mit Faltung.** Scheiterte, weil der Detektor auch zwischen den
+   Beats feuert: der häufigste Abstand (330 ms) *ist* schlicht nicht der Beat (420 ms).
+
+**Aktuell im Gerät: Phasentest über die Onset-Zeitpunkte** (Fourier-Komponente über die
+Onset-Zeiten statt über Audio, phaseninvariant, Integer-Sinustabelle). Auf sauberem Techno
+liefert er zeitweise exakt richtige Werte — 140 BPM bei echten 142 —, schwankt aber über
+75 s zwischen 138 und 185 (Median 169).
+
+**Der eigentliche Befund kam aus dem kontrollierten Test.** Auf monotonem Techno mit
+142 BPM (= 423 ms) zeigte das Intervall-Histogramm einen Nebencluster bei 300–350 ms und
+eine Onset-Rate von **2,67/s statt 2,37/s** — der Detektor feuert häufiger als der Beat.
+Dieser Nebencluster bildet ein konkurrierendes Raster bei ~170 BPM, und genau darauf
+rastet der Schätzer immer wieder ein. Ein Sensitivity-Sweep bestätigte es direkt:
+
+| sens | Faktor | Onsets/s | Intervall-Median | tracked BPM |
+|---|---|---|---|---|
+| 30 | 1,55 | 2,55 | 401 ms | **148** |
+| 45 | 1,33 | 1,09 | 430 ms | 182 |
+
+Bei geringerer Empfindlichkeit kommt etwa ein Onset pro Kick, und der Tempo-Wert wandert
+von ~170 auf 148 bei echten 142. **Nicht der Schätzer ist das Problem, sondern die
+überzähligen Onsets** — und die optimale Empfindlichkeit ist materialabhängig (für den
+D&B-Track war 70 am besten, für Techno eher 30), taugt also nicht als fester Wert.
+
+**Designierter nächster Schritt (nicht mehr blind gepatcht):** Die Onsets im Phasentest
+**mit ihrer Flux-Stärke gewichten**, statt jeden Onset gleich zu zählen. Ein schwacher
+Zwischenschlag kann dann die Kicks nicht mehr überstimmen, und die Empfindlichkeit muss
+nicht mehr pro Genre passen. Das ist das Standardvorgehen und adressiert genau den
+gemessenen Mechanismus. Erst auf Techno verifizieren, dann gegen Breakbeat härten.
+
+**Methodische Lehre dieser Session:** Ich habe den Schätzer anfangs direkt an
+Drum & Bass mit synkopiertem Breakbeat entwickelt — dem schwierigsten denkbaren Fall — und
+dabei gegen ein bewegliches Ziel gemessen, weil die Musik zwischen den Messungen wechselte
+(176, 178, 150, 143, 142). Beides zusammen hat mehrere Iterationen gekostet, die bei einem
+kontrollierten Signal nicht nötig gewesen wären. Erst der einfache Fall, dann härten.
+
+**Praktisch nutzbar bis dahin:** Tempo per Tap setzen und Audio nur die Phase korrigieren
+lassen — die Phasenregelung ist gemessen gut (Kickbass 398 ms bei 390 ms Beat, Streuung
+von 187 auf 107 ms halbiert). So arbeiten Lichtpulte üblicherweise ohnehin.
+
+**Nachtrag zum Einwand des Users** („der Sweep kann nicht die Lösung sein, das ist pro
+Track anders"): völlig richtig, und so war er auch nicht gemeint — der Sweep war die
+*Diagnose*, die zeigen sollte, dass die überzähligen Onsets die Ursache sind und nicht der
+Schätzer. Die Konsequenz daraus ist eingebaut: der Phasentest **gewichtet die Onsets jetzt
+nach ihrer Stärke** (Abstand zur eigenen Schwelle, 16 = genau auf Schwelle, gedeckelt bei
+255) und normiert über die Gewichtssumme. Ein schwacher Zwischenschlag zählt damit weiter
+mit, kann die Kicks aber nicht mehr überstimmen — die Empfindlichkeit muss nicht mehr pro
+Genre passen. **Kompiliert, aber nicht getestet**: die Anlage war aus.
+
+**Zweiter Einwand des Users:** das alte Energiekonzept sei besser gewesen. Für das
+*Auslösen* ist das plausibel — ein Kick dominiert die Gesamtenergie, und ein
+Breitband-Transient ist robuster als ein schmales 31–156-Hz-Band, das auch auf Bassläufe
+anspricht. Für die *Tempo*-Erkennung sprach die Messung dagegen (Pegel: 14 Treffer/20 s bei
+1396 ms Median; Flux: 43 bei 349 ms gegen 337 ms Beat). **Wichtige Einschränkung:** dieser
+Vergleich lief mit dem alten Eingangspegel von 9,6 % Aussteuerung. Das alte Verfahren hat
+nie von den heutigen Fixes profitiert — Eingangsverstärkung, erweiterter
+Sensitivity-Bereich, eigene Schwellen pro Band. Beide Pfade sind weiterhin zur Laufzeit
+schaltbar (`?flux=0` = Pegel-Erkennung, `?fft=0` = ursprüngliches Breitband-Energiekonzept),
+der faire Vergleich steht also als erster Test der nächsten Sitzung an — ohne eine Zeile
+Code.
