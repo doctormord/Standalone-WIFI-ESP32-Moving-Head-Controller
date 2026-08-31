@@ -1,44 +1,45 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-28)
-> **Die Fixed-Point-FFT ist geflasht, gemessen und läuft.** Sie ersetzt die
-> bisherige „fake FFT" (drei Envelope-Follower ohne jede Frequenztrennung) durch
-> echte Bänder, damit Mid/High-Trigger nutzbar werden (Ziel: Strobe auf Hi-Hat).
-> Herleitung in `history.md` 2026-08-27, Messwerte 2026-08-28.
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-31)
+> **Alles gebaut und compile-geprüft, aber NICHT auf Hardware getestet — das Gerät
+> war nicht erreichbar, Flashen erst Montag.** Es braucht **Firmware *und*
+> Filesystem** (die UI hat sich geändert), also USB:
+> ```
+> pio run -t upload   --upload-port /dev/cu.usbmodem1101
+> pio run -t uploadfs --upload-port /dev/cu.usbmodem1101
+> ```
 >
-> **Gemessen am Gerät (OTA geflasht, Bewegung aktiv):**
+> ### Was neu ist
+> Das AUDIO-Panel war als Diagnosewerkzeug unbrauchbar (O-Ton User). Jetzt drin:
+> Spektrum-Anzeige aller 128 Bins mit farbig hinterlegten Bändern und
+> Grenzfrequenzen (neuer Endpunkt `/api/spectrum`), Mic-Eingangspegel mit
+> Clipping-Anzeige, umschaltbare Skalierung (pro Band / gemeinsam / absolut),
+> Beat-Marker für **alle drei** Bänder, eigene Schwellenlinie je Band, zur Laufzeit
+> verstellbare Bandgrenzen in Hz, und alle wirksamen Parameter als Controls.
 >
-> | | vorher | nachher |
-> |---|---|---|
-> | `loopMax` | Median 13, Max 14 ms | Median 13, Max 17 ms |
-> | Bewegungs-Aussetzer im Lasttest | 2 Ausreißer | **keine** |
-> | FFT pro Frame | — | **397 µs** |
-> | Audio-Poll gesamt | — | 463 µs / 32 ms = **~1,45 % CPU** |
-> | `updateEngines()` | — | 274 µs, **Spitze 2701 µs** |
+> **Sechs Regler waren wirkungslos** (`fa/fd/ma/md/sa/sd`): im Flux-Pfad werden die
+> Hüllkurven direkt gesetzt, die Attack/Decay-Shifts also übersprungen. Sie werden
+> jetzt ausgegraut und als INACTIVE markiert, sobald Flux aktiv ist.
 >
-> Frequenztrennung verifiziert (10 s Raumgeräusch): `lo` 112–1085, `mi` 72–319,
-> `hi` 15–179, Korrelationen **lo/mi 0,47 · lo/hi 0,32 · mi/hi 0,33**. Niedrige
-> Korrelation = die Bänder laufen unabhängig; beim alten Verfahren lagen sie
-> bauartbedingt nahe 1,0. Rückfallschalter in beide Richtungen getestet — im
-> Legacy-Modus zeigte sich prompt das alte Problem: `lo=1522` bei `mi=44, hi=57`.
-> Bandverstärkung `fg=4` passt (Werte weder nahe null noch am Anschlag).
+> **Audio-Tuning liegt jetzt in NVS** (19 Ints, 4 Bools) und übersteht den Reboot —
+> mit entprelltem Schreiben (1,5 s nach der letzten Änderung), damit Slider-Ziehen
+> nicht den Flash zermürbt.
 >
-> ### 👉 Offen: Feinabstimmung mit echter Musik
-> Im Test lief nur Raumgeräusch. Zwei Beobachtungen, die mit Musik gegenzuprüfen sind:
-> - **Mid hatte 0 Treffer** (Schwelle 301 bei Maximum 319) — bei Raumgeräusch
->   erwartbar. Falls Mid auch mit Musik stumm bleibt: `?mtd=` runter.
-> - **High hatte 9 Treffer aus reinem Rauschen.** Falls es in Stille zu oft feuert:
->   `curl "http://192.168.8.113/audio_tune?htd=3"` oder Noise-Floor `?nf=200`.
+> ### Testreihenfolge Montag
+> 1. Flashen, dann `curl -s http://192.168.8.113/api/spectrum | head -c 200` — kommen
+>    128 Bins?
+> 2. AUDIO-Tab öffnen, Musik an: bewegen sich die Balken, liegen die farbigen Bänder
+>    dort, wo man sie erwartet?
+> 3. Mic-Pegel beobachten — schlägt er an (CLIPPING rot)? Dann Eingang leiser.
+> 4. Skalierung auf „per band" lassen und prüfen, ob Mid/High jetzt sichtbar sind und
+>    ob deren Beat-Marker feuern.
+> 5. **Bass-Frage klären:** Bassband testweise bis ~220 Hz aufziehen (`bbh` hoch) und
+>    hören, ob Kicks besser kommen. Falls es mit `?flux=0` spürbar besser ist, liegt
+>    es an der Flux-Charakteristik und nicht an der Bandbreite — dann Bass wieder auf
+>    Pegel laufen lassen und Flux nur für Mid/High.
+> 6. Danach Werte einstellen, kurz warten, Gerät neu starten: alles muss erhalten sein.
 >
-> Notausgang bleibt: `?fft=0` schaltet ohne Reflash auf das alte Verfahren zurück.
->
-> ### 👉 Danach: Preset-Engine-Split (Layer)
-> Der vom User gewünschte nächste Schritt — Movement getrennt von Color/Dimmer
-> recallen. Design-Notiz in `handover.md` → „Preset-Engine-Split". **Braucht kein
-> neues NVS-Format**: alle 57 `SceneData`-Felder existieren bereits und sind per
-> Präfix gruppiert (`f*` Movement, `c*/sg*/rg*` Color/Gobo, `d*/gr*/pr*`
-> Modulatoren), es geht allein darum, welche Gruppe beim Recall angewendet wird.
-> Die Arbeit steckt in `executePreset`, das aktuell global resettet.
+> Danach ist der **Preset-Engine-Split (Layer)** dran.
 >
 > ## Vorherige Session (2026-08-26)
 > **Kein offener Blocker. Gerät läuft mit dem aktuellen Stand, alles ist auf

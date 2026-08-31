@@ -4107,3 +4107,70 @@ verifiziert: bei gemessenen 134 lässt ×2 den Wert unverändert (268 wäre zu h
 
 Der Tracker folgt dem Material nachweislich: im Verlauf des Tests wanderte er von 89
 auf 156 auf 178, als der Abschnitt Kicks auf dem schnellen Raster bekam.
+
+
+---
+
+## 2026-08-31 — AUDIO-Panel als echtes Diagnosewerkzeug, und Audio-Tuning endlich persistent
+
+**Anlass, Wort des Users:** „zum debuggen taugt das panel aktuell nicht so gut." Dazu die
+konkrete Beobachtung, dass die alte „fake FFT" den Bass subjektiv besser erkannt habe.
+
+### Der Bass-Eindruck hatte einen realen Kern — aber anders als vermutet
+
+Im Legacy-Pfad war „Bass" **gar kein Bassband**: `s = abs(raw_samples[i] >> 14)` ist die
+Breitband-Amplitude, und `envSlow` deren langsame Hüllkurve. Der alte Bass-Trigger feuerte
+also auf alles Laute — Snare, Synth, Vocals. Das wirkt lebendig, war aber Lautstärke- und
+keine Basserkennung. Das neue Band ist echte 31–156 Hz und damit deutlich selektiver.
+Gegen „schlechter" spricht die Messung vom 2026-08-28 (Pegel: 14 Treffer/20 s bei 1396 ms
+Median; Flux: 43 Treffer bei 349 ms).
+
+### Gefunden: sechs Regler im Panel waren wirkungslos
+
+Im aktiven Pfad (FFT + Flux) werden `envSlow/envMid/envFast` **direkt** aus dem Flux gesetzt,
+die Attack/Decay-Shifts also komplett übersprungen. Damit taten `fa`, `fd`, `ma`, `md`, `sa`,
+`sd` nichts — dieselbe Fehlerklasse wie die drei toten Movement-Kurven vom 2026-08-26:
+Bedienelemente, die etwas versprechen, das die Firmware nicht einlöst. Sie werden jetzt
+ausgegraut und als INACTIVE markiert, sobald der Detektor auf Flux steht, mit Begründung im
+Panel statt im Code.
+
+### Neu im Panel
+
+- **Spektrum-Anzeige:** alle 128 Bins über den neuen Endpunkt `/api/spectrum`, logarithmisch
+  skaliert mit langsam abfallendem Peak-Hold. Die drei Bänder liegen als eingefärbte Flächen
+  darüber, mit Grenzfrequenzen beschriftet — man sieht also direkt, welche Bins als Bass, Mid
+  und High gewertet werden. Eigener Endpunkt, weil 128 Zahlen `/api/audio_debug` etwa
+  verdoppeln würden und beide unterschiedlich schnell gepollt werden.
+- **Mic-Eingangspegel** mit Peak-Hold und **Clipping-Anzeige** (`pk`/`clip`). Das ist die eine
+  Zahl, die die skalierten Graphen prinzipiell nicht zeigen können: übersteuert der Eingang,
+  hilft keine Schwelleneinstellung mehr.
+- **Skalierung umschaltbar:** pro Band (neuer Default), gemeinsam, oder absolut. Die frühere
+  gemeinsame Normierung war der Grund, warum Mid und High flach am Boden lagen — sie tragen
+  schlicht viel weniger Energie — und warum Stille wie Musik aussah.
+- **Beat-Marker für alle drei Bänder** statt nur Bass: grün über die volle Höhe, Mid als kurzer
+  gelber Balken oben, High darunter in Cyan. Die Frage „feuert Mid überhaupt jemals?" war vorher
+  am Graphen nicht zu beantworten.
+- **Eigene Schwellenlinien je Band** (`th`, `thM`, `thH`), jede in der Farbe ihres Bandes.
+- **Bandgrenzen zur Laufzeit einstellbar** (`bbl/bbh/bml/bmh/bhl/bhh`, in FFT-Bins à 31,25 Hz,
+  mit Hz-Beschriftung). Motiv: viele Kicks tragen Energie deutlich über die voreingestellten
+  156 Hz hinaus, die bisher im Mid-Band landete.
+- **Alle wirksamen Parameter als Controls:** Sensitivity, Noise Floor, Bandverstärkung,
+  Schwellen-Nachführung (`dts`), Mid-/High-Trim, plus die Schalter FFT / Flux / Tracker / Oktave.
+
+### Audio-Tuning überlebt jetzt den Reboot
+
+Bis hierher war die gesamte Audio-Kette **runtime-only** — jeder Flash und jeder Stromausfall
+hat alles auf die Compile-Defaults zurückgesetzt, genau die Falle, die beim Live-FX-Zustand
+noch offen ist. 19 Ints und 4 Bools werden jetzt in NVS (`sys`) gespeichert und beim Boot in
+`setupAPI()` geladen.
+
+**Wichtig dabei: die Schreibvorgänge sind entprellt.** Ein Slider feuert pro Rastschritt einen
+Request; würde jeder davon NVS schreiben, wären das hunderte Flash-Erase-Zyklen pro
+Tuning-Session. Änderungen setzen nur ein Dirty-Flag, `flushAudioPrefs()` im Loop schreibt
+frühestens 1,5 s nach der letzten Änderung einmal. Beim Laden werden die Bandgrenzen zusätzlich
+geklemmt, damit ein defekter NVS-Wert kein invertiertes Band und keinen Zugriff außerhalb des
+Spektrums erzeugen kann.
+
+**Status: kompiliert und syntaxgeprüft, aber nicht auf Hardware getestet** — das Gerät war an
+diesem Tag nicht erreichbar, Flashen erst Montag. Firmware 92,5 % Flash, `data/` 783 KB von
+1408 KB.

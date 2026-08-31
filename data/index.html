@@ -1562,10 +1562,21 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 
   function AudioDebugTab({ accent, micOn, onMicToggle, hwSens, setHwSens }) {
     const canvasRef = useRef(null);
-    const bufRef = useRef({ lo: [], mi: [], hi: [], th: [], xb: [], xm: [], xh: [] });
-    const [live, setLive] = useState({ lo: 0, mi: 0, hi: 0, th: 0 });
+    const specRef = useRef(null);
+    const bufRef = useRef({ lo: [], mi: [], hi: [], th: [], thM: [], thH: [], xb: [], xm: [], xh: [] });
+    const specMaxRef = useRef(1);
+    const peakHoldRef = useRef({ v: 0, t: 0 });
+    const [live, setLive] = useState({ lo: 0, mi: 0, hi: 0, th: 0, thM: 0, thH: 0, pk: 0, clip: 0, tBPM: 0, tmul: 0 });
+    const [spec, setSpec] = useState(null);
     const [tune, setTune] = useState(null); // null until first poll seeds it from the device
     const [paused, setPaused] = useState(false);
+    // Auto-scaling across all three bands at once was actively hiding the problem: Mid and High
+    // carry far less energy than Low, so on one shared axis they sit flat on the floor and their
+    // thresholds are unreadable. Per-band scaling is the default; "fixed" keeps an absolute axis
+    // so that silence actually looks like silence instead of being normalised back up.
+    const [scaleMode, setScaleMode] = useState('band');
+    const BIN_HZ = 31.25;
+    const hz = (bin) => Math.round(bin * BIN_HZ);
 
     const draw = useCallback(() => {
       const cv = canvasRef.current; if (!cv) return;
@@ -1575,27 +1586,84 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       const buf = bufRef.current;
       const n = buf.lo.length;
       if (n < 2) return;
-      const maxVal = Math.max(60, ...buf.lo, ...buf.mi, ...buf.hi, ...buf.th);
       const stepX = w / (HISTORY_LEN - 1);
-      const yOf = (v) => h - 6 - (Math.min(v, maxVal) / maxVal) * (h - 12);
 
-      // Beat ticks first so the trace lines draw on top of them.
-      buf.xb.forEach((v, i) => { if (v) { const x = w - (n - i) * stepX; ctx.fillStyle = 'rgba(34,197,94,0.22)'; ctx.fillRect(x - 1, 0, 2, h); } });
+      const maxOf = (arrs) => Math.max(60, ...arrs.flat());
+      let sLo, sMi, sHi;
+      if (scaleMode === 'shared') { const m = maxOf([buf.lo, buf.mi, buf.hi, buf.th]); sLo = sMi = sHi = m; }
+      else if (scaleMode === 'fixed') { sLo = sMi = sHi = 20000; }
+      else { sLo = maxOf([buf.lo, buf.th]); sMi = maxOf([buf.mi, buf.thM]); sHi = maxOf([buf.hi, buf.thH]); }
+      const yOf = (v, s) => h - 6 - (Math.min(v, s) / s) * (h - 12);
 
-      const plot = (arr, color, lw, dash) => {
+      // Beat markers at three heights so it is visible WHICH band fired -- previously only the
+      // bass hit was drawn, so "does mid/high ever trigger?" could not be answered by looking.
+      const tick = (arr, color, y0, y1) => {
+        arr.forEach((v, i) => { if (v) { const x = w - (n - i) * stepX; ctx.fillStyle = color; ctx.fillRect(x - 1, y0, 2, y1 - y0); } });
+      };
+      tick(buf.xb, 'rgba(34,197,94,0.30)', 0, h);
+      tick(buf.xm, 'rgba(251,191,36,0.75)', 0, 10);
+      tick(buf.xh, 'rgba(34,211,238,0.75)', 12, 22);
+
+      const plot = (arr, color, lw, s, dash) => {
         ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.setLineDash(dash || []);
-        arr.forEach((v, i) => { const x = w - (n - i) * stepX; const y = yOf(v); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+        arr.forEach((v, i) => { const x = w - (n - i) * stepX; const y = yOf(v, s); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
         ctx.stroke(); ctx.setLineDash([]);
       };
-      // Threshold drawn dashed/bold and last (on top) -- this is the ONLY line the sensitivity
-      // slider moves (it shifts thBass, not the lo/mi/hi bands themselves), so it needs to read as
-      // clearly separate from the band traces or "does sensitivity do anything?" is a fair
-      // question just from looking at the graph. Reported live 2026-08-20.
-      plot(buf.hi, '#22d3ee', 1.6);
-      plot(buf.mi, '#fbbf24', 1.6);
-      plot(buf.lo, '#22c55e', 1.8);
-      plot(buf.th, '#f87171', 2.2, [6, 4]);
-    }, []);
+      // Each band's own threshold in its own colour: with independent per-band thresholds a single
+      // red line no longer tells you why Mid or High is or is not firing.
+      plot(buf.hi, '#22d3ee', 1.6, sHi);
+      plot(buf.mi, '#fbbf24', 1.6, sMi);
+      plot(buf.lo, '#22c55e', 1.8, sLo);
+      plot(buf.thH, 'rgba(34,211,238,0.55)', 1.2, sHi, [4, 4]);
+      plot(buf.thM, 'rgba(251,191,36,0.55)', 1.2, sMi, [4, 4]);
+      plot(buf.th, '#f87171', 2.2, sLo, [6, 4]);
+    }, [scaleMode]);
+
+    const drawSpec = useCallback((d) => {
+      const cv = specRef.current; if (!cv || !d) return;
+      const ctx = cv.getContext('2d');
+      const w = cv.width, h = cv.height;
+      ctx.clearRect(0, 0, w, h);
+      const bins = d.b || [];
+      if (!bins.length) return;
+      // Peak-hold with slow decay: a per-frame maximum would make the whole display jump on every
+      // transient, which is exactly the "normalised so you see nothing" problem again.
+      const frameMax = Math.max(1, ...bins);
+      specMaxRef.current = Math.max(frameMax, specMaxRef.current * 0.97);
+      const smax = specMaxRef.current;
+      const bw = w / bins.length;
+
+      const regions = [
+        [tune ? tune.bbl : 1, tune ? tune.bbh : 5, 'rgba(34,197,94,0.13)', '#22c55e', 'LOW'],
+        [tune ? tune.bml : 6, tune ? tune.bmh : 38, 'rgba(251,191,36,0.11)', '#fbbf24', 'MID'],
+        [tune ? tune.bhl : 80, tune ? tune.bhh : 127, 'rgba(34,211,238,0.11)', '#22d3ee', 'HIGH'],
+      ];
+      regions.forEach(([lo, hi, fill]) => {
+        ctx.fillStyle = fill;
+        ctx.fillRect(lo * bw, 0, (hi - lo + 1) * bw, h);
+      });
+
+      // Log magnitude: linear bars make everything above the loudest bin invisible.
+      const lmax = Math.log10(1 + smax);
+      for (let i = 0; i < bins.length; i++) {
+        const v = Math.log10(1 + bins[i]) / lmax;
+        const bh = Math.max(1, v * (h - 14));
+        let col = 'rgba(255,255,255,0.30)';
+        for (const [lo, hi, , stroke] of regions) if (i >= lo && i <= hi) col = stroke;
+        ctx.fillStyle = col;
+        ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 0.6), bh);
+      }
+      // Boundary labels, so the bands are readable as frequencies and not just as colours.
+      ctx.font = '9px monospace';
+      regions.forEach(([lo, hi, , stroke, name]) => {
+        ctx.strokeStyle = stroke; ctx.globalAlpha = 0.55; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(lo * bw, 0); ctx.lineTo(lo * bw, h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo((hi + 1) * bw, 0); ctx.lineTo((hi + 1) * bw, h); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = stroke;
+        ctx.fillText(name + ' ' + hz(lo) + '-' + hz(hi + 1) + 'Hz', lo * bw + 3, 10);
+      });
+    }, [tune]);
 
     useEffect(() => {
       let active = true;
@@ -1604,18 +1672,42 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         try {
           const r = await fetch('/api/audio_debug'); const d = await r.json();
           if (!active) return;
-          setLive({ lo: d.lo, mi: d.mi, hi: d.hi, th: d.th });
-          setTune((prev) => prev || { nf: d.nf, fa: d.fa, fd: d.fd, ma: d.ma, md: d.md, sa: d.sa, sd: d.sd, mtd: d.mtd, htd: d.htd });
+          setLive({ lo: d.lo, mi: d.mi, hi: d.hi, th: d.th, thM: d.thM, thH: d.thH,
+                    pk: d.pk, clip: d.clip, tBPM: d.tBPM, tmul: d.tmul });
+          const now = Date.now();
+          if (d.pk >= peakHoldRef.current.v || now - peakHoldRef.current.t > 1200) peakHoldRef.current = { v: d.pk, t: now };
+          setTune((prev) => prev || {
+            nf: d.nf, fa: d.fa, fd: d.fd, ma: d.ma, md: d.md, sa: d.sa, sd: d.sd,
+            mtd: d.mtd, htd: d.htd, dts: d.dts, fg: d.fg, tmul: d.tmul,
+            fft: d.fft, flux: d.flux, trk: d.trk,
+            bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh,
+          });
           const buf = bufRef.current;
-          buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi); buf.th.push(d.th);
+          buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi);
+          buf.th.push(d.th); buf.thM.push(d.thM); buf.thH.push(d.thH);
           buf.xb.push(d.xb); buf.xm.push(d.xm); buf.xh.push(d.xh);
-          if (buf.lo.length > HISTORY_LEN) { buf.lo.shift(); buf.mi.shift(); buf.hi.shift(); buf.th.shift(); buf.xb.shift(); buf.xm.shift(); buf.xh.shift(); }
+          Object.keys(buf).forEach((k) => { if (buf[k].length > HISTORY_LEN) buf[k].shift(); });
           draw();
         } catch (e) {}
       };
       poll(); const id = setInterval(poll, 66);
       return () => { active = false; clearInterval(id); };
     }, [paused, draw]);
+
+    useEffect(() => {
+      let active = true;
+      const poll = async () => {
+        if (paused) return;
+        try {
+          const r = await fetch('/api/spectrum'); const d = await r.json();
+          if (!active) return;
+          setSpec(d); drawSpec(d);
+        } catch (e) {}
+      };
+      // Slower than the band poll: 128 numbers per response, and the eye cannot use more.
+      poll(); const id = setInterval(poll, 100);
+      return () => { active = false; clearInterval(id); };
+    }, [paused, drawSpec]);
 
     // Every tune param round-trips through the device (not just local state) so the slider always
     // reflects what's actually running -- same "don't trust the optimistic value alone" discipline
@@ -1627,69 +1719,118 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 
     const shiftLabel = (v) => `÷${1 << v}`; // a bit-shift of v is a division by 2^v -- show the actual factor, not the raw shift count
     const row = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 };
+    const fluxOn = tune && tune.flux === 1;
+    const pk = live.pk || 0;
+    const pkPct = Math.min(100, (pk / 32767) * 100);
+    const holdPct = Math.min(100, (peakHoldRef.current.v / 32767) * 100);
+    const clipping = (live.clip || 0) > 0;
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
+
+        <Panel title="Mic input · level" accentDot={clipping ? '#ef4444' : accent}
+          right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: clipping ? '#fca5a5' : 'rgba(255,255,255,0.45)' }}>{clipping ? `CLIPPING (${live.clip})` : 'headroom ok'}</span>}>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 7, lineHeight: 1.45 }}>
+            Raw peak of the last frame, before any band split — the one number the graphs below cannot
+            show you, because they are scaled. If this pins at the top, everything downstream is
+            distorted no matter how the thresholds are set.
+          </div>
+          <div style={{ position: 'relative', height: 20, background: 'rgba(0,0,0,0.4)', borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pkPct}%`, background: clipping ? '#ef4444' : 'linear-gradient(90deg,#22c55e,#fbbf24)' }} />
+            <div style={{ position: 'absolute', left: `${holdPct}%`, top: 0, bottom: 0, width: 2, background: 'rgba(255,255,255,0.8)' }} />
+            <div style={{ position: 'absolute', right: 6, top: 3, fontSize: 10, fontFamily: '"JetBrains Mono", monospace', color: 'rgba(255,255,255,0.8)' }}>{pk} / 32767</div>
+          </div>
+        </Panel>
+
+        <Panel title="Spectrum · what the FFT actually sees" accentDot={accent}
+          right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{spec ? `${spec.n} bins · ${spec.hz}Hz each` : '…'}</span>}>
+          <canvas ref={specRef} width={640} height={150} style={{ width: '100%', height: 150, display: 'block', background: 'rgba(0,0,0,0.4)', borderRadius: 10 }} />
+          <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', marginTop: 6 }}>
+            Log scale with a slowly decaying peak hold. Coloured areas are the three detection bands —
+            move their edges below and watch which bins they cover.
+          </div>
+        </Panel>
+
         <Panel title="Live bands · low / mid / high" accentDot={accent}
-          right={<button onClick={() => setPaused((p) => !p)} style={{ padding: '5px 12px', background: paused ? 'rgba(220,38,38,0.18)' : 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, color: paused ? '#fca5a5' : 'rgba(255,255,255,0.6)', fontSize: 10, fontWeight: 700, letterSpacing: 1, cursor: 'pointer' }}>{paused ? 'PAUSED' : 'LIVE'}</button>}>
+          right={<div style={{ display: 'flex', gap: 6 }}>
+            <Dropdown value={scaleMode} onChange={(v) => setScaleMode(v)} options={[['band', 'Scale · per band'], ['shared', 'Scale · shared'], ['fixed', 'Scale · absolute']]} accent={accent} dense />
+            <button onClick={() => setPaused((p) => !p)} style={{ padding: '5px 12px', background: paused ? 'rgba(220,38,38,0.18)' : 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7, color: paused ? '#fca5a5' : 'rgba(255,255,255,0.6)', fontSize: 10, fontWeight: 700, letterSpacing: 1, cursor: 'pointer' }}>{paused ? 'PAUSED' : 'LIVE'}</button>
+          </div>}>
           <canvas ref={canvasRef} width={640} height={190} style={{ width: '100%', height: 190, display: 'block', background: 'rgba(0,0,0,0.35)', borderRadius: 10 }} />
           <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 11, fontFamily: '"JetBrains Mono", monospace', flexWrap: 'wrap' }}>
-            <span style={{ color: '#22c55e' }}>■ LOW {live.lo}</span>
-            <span style={{ color: '#fbbf24' }}>■ MID {live.mi}</span>
-            <span style={{ color: '#22d3ee' }}>■ HIGH {live.hi}</span>
-            <span style={{ color: 'rgba(248,113,113,0.8)' }}>■ THRESHOLD {live.th}</span>
-            <span style={{ color: 'rgba(255,255,255,0.75)' }}>♩ TEMPO {live.tBPM || '--'}</span>
-            <span style={{ color: 'rgba(34,197,94,0.6)', marginLeft: 'auto' }}>▌ beat detected</span>
+            <span style={{ color: '#22c55e' }}>■ LOW {live.lo} <span style={{ opacity: 0.55 }}>/ th {live.th}</span></span>
+            <span style={{ color: '#fbbf24' }}>■ MID {live.mi} <span style={{ opacity: 0.55 }}>/ th {live.thM}</span></span>
+            <span style={{ color: '#22d3ee' }}>■ HIGH {live.hi} <span style={{ opacity: 0.55 }}>/ th {live.thH}</span></span>
           </div>
-        </Panel>
-        <Panel title="Tempo tracker" accentDot={accent}>
-          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.5, marginBottom: 8 }}>
-            The tracker reports the pulse the bass actually has. For drum &amp; bass that is usually
-            the half-time grid, so a 176 BPM track legitimately measures 88 — the kicks really do sit
-            there. Use ×2 when you want the notated tempo instead. This is a choice, not a guess:
-            an automatic rule would turn 90 BPM hip-hop into 180 just as readily.
+          <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.4)', marginTop: 5 }}>
+            Beat markers: full-height green = bass hit, short amber bar on top = mid, cyan below it = high.
           </div>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8, fontFamily: '"JetBrains Mono", monospace', fontSize: 11 }}>
-            <span style={{ color: accent, fontWeight: 700 }}>measured {live.tBPM || '--'} BPM</span>
-            <span style={{ color: 'rgba(255,255,255,0.45)' }}>shown {live.tBPM ? (tune.tmul === 1 ? live.tBPM * 2 : tune.tmul === 2 ? Math.round(live.tBPM / 2) : live.tBPM) : '--'} BPM</span>
-          </div>
-          <Dropdown value={tune.tmul ?? 0} onChange={(v) => applyTune('tmul', parseInt(v))}
-            options={[[0, 'Octave · as measured'], [1, 'Octave · ×2 (double time)'], [2, 'Octave · ÷2 (half time)']]}
-            accent={accent} dense />
         </Panel>
 
-        <Panel title="Sensitivity" accentDot={accent}>
-          <LabeledSlider label="Mic sensitivity" value={hwSens} onChange={setHwSens} min={0} max={100} unit="%" accent={accent} />
-          <button onClick={onMicToggle} style={{ marginTop: 10, width: '100%', padding: '10px 0', background: micOn ? 'rgba(34,197,94,0.22)' : 'rgba(255,255,255,0.05)', border: `1px solid ${micOn ? 'rgba(34,197,94,0.5)' : 'rgba(255,255,255,0.08)'}`, borderRadius: 9, color: micOn ? '#86efac' : 'rgba(255,255,255,0.6)', fontWeight: 700, fontSize: 12, letterSpacing: 1, cursor: 'pointer' }}>{micOn ? '● MIC ON' : '○ MIC OFF'}</button>
-        </Panel>
+        {tune && (
+          <>
+            <Panel title="Detection chain" accentDot={accent}>
+              <div style={row}>
+                <Dropdown value={tune.fft} onChange={(v) => applyTune('fft', parseInt(v))} options={[[1, 'Analysis · real FFT'], [0, 'Analysis · legacy envelopes']]} accent={accent} dense />
+                <Dropdown value={tune.flux} onChange={(v) => applyTune('flux', parseInt(v))} options={[[1, 'Detector · spectral flux'], [0, 'Detector · band level']]} accent={accent} dense />
+                <Dropdown value={tune.trk} onChange={(v) => applyTune('trk', parseInt(v))} options={[[1, 'BPM · tempo tracker'], [0, 'BPM · interval median']]} accent={accent} dense />
+                <Dropdown value={tune.tmul} onChange={(v) => applyTune('tmul', parseInt(v))} options={[[0, 'Octave · as measured'], [1, 'Octave · ×2'], [2, 'Octave · ÷2']]} accent={accent} dense />
+              </div>
+              <div style={{ marginTop: 8, fontFamily: '"JetBrains Mono", monospace', fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+                tempo measured <b style={{ color: accent }}>{live.tBPM || '--'}</b> BPM
+                {live.tBPM ? ` → shown ${live.tmul === 1 ? live.tBPM * 2 : live.tmul === 2 ? Math.round(live.tBPM / 2) : live.tBPM}` : ''}
+              </div>
+            </Panel>
 
-        <Panel title="Fake-FFT tuning · envelope followers" accentDot={accent}>
-          {!tune ? (
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', padding: '8px 0' }}>Waiting for device…</div>
-          ) : (
-            <>
-              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', marginBottom: 10, lineHeight: 1.6 }}>
-                Each band is a leaky-integrator envelope (attack/decay), not a real frequency-domain
-                filter. Attack/decay are shown as their actual divisor (higher = slower to react).
-                Threshold divisors set how much smaller mid/high energy can be than the live bass
-                threshold and still count as a hit.
+            <Panel title="Band edges · FFT bins" accentDot={accent}>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.45 }}>
+                Many kick drums carry energy well above the default 156Hz bass edge. Widen LOW if kicks
+                are being missed, and watch the coloured area in the spectrum move.
               </div>
               <div style={row}>
-                <LabeledSlider label={`Low attack ${shiftLabel(tune.sa)}`} value={tune.sa} onChange={(v) => applyTune('sa', v)} min={0} max={8} accent={accent} compact />
-                <LabeledSlider label={`Low decay ${shiftLabel(tune.sd)}`} value={tune.sd} onChange={(v) => applyTune('sd', v)} min={0} max={8} accent={accent} compact />
-                <LabeledSlider label={`Mid attack ${shiftLabel(tune.ma)}`} value={tune.ma} onChange={(v) => applyTune('ma', v)} min={0} max={8} accent={accent} compact />
-                <LabeledSlider label={`Mid decay ${shiftLabel(tune.md)}`} value={tune.md} onChange={(v) => applyTune('md', v)} min={0} max={8} accent={accent} compact />
-                <LabeledSlider label={`High attack ${shiftLabel(tune.fa)}`} value={tune.fa} onChange={(v) => applyTune('fa', v)} min={0} max={8} accent={accent} compact />
-                <LabeledSlider label={`High decay ${shiftLabel(tune.fd)}`} value={tune.fd} onChange={(v) => applyTune('fd', v)} min={0} max={8} accent={accent} compact />
-                <LabeledSlider label={`Mid threshold ${shiftLabel(tune.mtd)}`} value={tune.mtd} onChange={(v) => applyTune('mtd', v)} min={0} max={6} accent={accent} compact />
-                <LabeledSlider label={`High threshold ${shiftLabel(tune.htd)}`} value={tune.htd} onChange={(v) => applyTune('htd', v)} min={0} max={6} accent={accent} compact />
+                <LabeledSlider label={`Low from ${hz(tune.bbl)}Hz`} value={tune.bbl} onChange={(v) => applyTune('bbl', v)} min={1} max={126} accent="#22c55e" compact />
+                <LabeledSlider label={`Low to ${hz(tune.bbh + 1)}Hz`} value={tune.bbh} onChange={(v) => applyTune('bbh', v)} min={1} max={127} accent="#22c55e" compact />
+                <LabeledSlider label={`Mid from ${hz(tune.bml)}Hz`} value={tune.bml} onChange={(v) => applyTune('bml', v)} min={1} max={126} accent="#fbbf24" compact />
+                <LabeledSlider label={`Mid to ${hz(tune.bmh + 1)}Hz`} value={tune.bmh} onChange={(v) => applyTune('bmh', v)} min={1} max={127} accent="#fbbf24" compact />
+                <LabeledSlider label={`High from ${hz(tune.bhl)}Hz`} value={tune.bhl} onChange={(v) => applyTune('bhl', v)} min={1} max={126} accent="#22d3ee" compact />
+                <LabeledSlider label={`High to ${hz(tune.bhh + 1)}Hz`} value={tune.bhh} onChange={(v) => applyTune('bhh', v)} min={1} max={127} accent="#22d3ee" compact />
               </div>
-              <div style={{ marginTop: 10 }}>
-                <LabeledSlider label="Noise floor" value={tune.nf} onChange={(v) => applyTune('nf', v)} min={0} max={500} accent={accent} compact />
+            </Panel>
+
+            <Panel title="Thresholds & gain" accentDot={accent}>
+              <div style={row}>
+                <LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact />
+                <LabeledSlider label="Noise floor" value={tune.nf} onChange={(v) => applyTune('nf', v)} min={0} max={2000} accent={accent} compact />
+                <LabeledSlider label={`Band gain ×${1 << tune.fg}`} value={tune.fg} onChange={(v) => applyTune('fg', v)} min={0} max={10} accent={accent} compact />
+                <LabeledSlider label={`Threshold follow ${shiftLabel(tune.dts)}`} value={tune.dts} onChange={(v) => applyTune('dts', v)} min={0} max={10} accent={accent} compact />
+                <LabeledSlider label={`Mid trim ${shiftLabel(tune.mtd)}`} value={tune.mtd} onChange={(v) => applyTune('mtd', v)} min={0} max={10} accent="#fbbf24" compact />
+                <LabeledSlider label={`High trim ${shiftLabel(tune.htd)}`} value={tune.htd} onChange={(v) => applyTune('htd', v)} min={0} max={10} accent="#22d3ee" compact />
               </div>
-            </>
-          )}
-        </Panel>
+            </Panel>
+
+            <Panel title="Envelope attack / decay" accentDot={fluxOn ? 'rgba(255,255,255,0.25)' : accent}
+              right={fluxOn ? <span style={{ fontSize: 10, color: '#fbbf24', fontWeight: 700, letterSpacing: 0.5 }}>INACTIVE</span> : null}>
+              <div style={{ fontSize: 11, color: fluxOn ? '#fbbf24' : 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.45 }}>
+                {fluxOn
+                  ? 'These do nothing while the detector is set to spectral flux: an onset is a single-frame spike, so the flux value goes to the detector unsmoothed and these envelopes are bypassed entirely. Switch the detector to “band level” above to use them.'
+                  : 'Attack and decay of the per-band envelope followers, used by the band-level detector and the legacy path.'}
+              </div>
+              <div style={{ ...row, opacity: fluxOn ? 0.35 : 1, pointerEvents: fluxOn ? 'none' : 'auto' }}>
+                <LabeledSlider label={`Low attack ${shiftLabel(tune.sa)}`} value={tune.sa} onChange={(v) => applyTune('sa', v)} min={0} max={10} accent="#22c55e" compact />
+                <LabeledSlider label={`Low decay ${shiftLabel(tune.sd)}`} value={tune.sd} onChange={(v) => applyTune('sd', v)} min={0} max={10} accent="#22c55e" compact />
+                <LabeledSlider label={`Mid attack ${shiftLabel(tune.ma)}`} value={tune.ma} onChange={(v) => applyTune('ma', v)} min={0} max={10} accent="#fbbf24" compact />
+                <LabeledSlider label={`Mid decay ${shiftLabel(tune.md)}`} value={tune.md} onChange={(v) => applyTune('md', v)} min={0} max={10} accent="#fbbf24" compact />
+                <LabeledSlider label={`High attack ${shiftLabel(tune.fa)}`} value={tune.fa} onChange={(v) => applyTune('fa', v)} min={0} max={10} accent="#22d3ee" compact />
+                <LabeledSlider label={`High decay ${shiftLabel(tune.fd)}`} value={tune.fd} onChange={(v) => applyTune('fd', v)} min={0} max={10} accent="#22d3ee" compact />
+              </div>
+            </Panel>
+
+            <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.35)', lineHeight: 1.5 }}>
+              All values here are stored on the device and restored after a reboot (written a moment
+              after you stop adjusting, so dragging a slider does not hammer the flash).
+            </div>
+          </>
+        )}
       </div>
     );
   }

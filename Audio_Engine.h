@@ -62,6 +62,28 @@
 // can adjust them live via /audio_tune without a reflash -- added 2026-08-20 after live movement
 // beat-sync debugging showed there was no way to see or tune this pipeline except by guessing.
 // Defaults match the previous #define values exactly.
+// Band edges as runtime values (defaults from the BIN_* defines above). Tunable because the
+// right split depends on the material: many kick drums carry usable energy up to ~200Hz,
+// which the default bass edge at 156Hz leaves in the Mid band. Changing them by ear beats
+// guessing at compile time, and needs no reflash.
+inline int tuneBinBassLo = BIN_BASS_LO, tuneBinBassHi = BIN_BASS_HI;
+inline int tuneBinMidLo  = BIN_MID_LO,  tuneBinMidHi  = BIN_MID_HI;
+inline int tuneBinHighLo = BIN_HIGH_LO, tuneBinHighHi = BIN_HIGH_HI;
+
+// Raw input telemetry, so the mic level (and whether it clips) is visible instead of guessed.
+// Without this the rolling graph's auto-scaling hides both silence and overload -- they look
+// identical once everything is normalised.
+inline int32_t micPeak = 0;       // 0..32767, peak magnitude of the last frame
+inline int micClipCount = 0;      // samples at/near full scale in the last frame
+
+// Audio tuning is persisted to NVS, but NOT on every change: dragging a slider fires a
+// request per step, and writing flash on each one would burn erase cycles for no reason.
+// Changes only set this flag; flushAudioPrefs() (WebAPI.h, called from loop) writes once
+// the values have been quiet for a moment.
+inline bool audioPrefsDirty = false;
+inline unsigned long audioPrefsDirtyAt = 0;
+inline void markAudioPrefsDirty() { audioPrefsDirty = true; audioPrefsDirtyAt = millis(); }
+
 inline int tuneNoiseFloor = 100;
 inline int tuneFastAttackShift = 1;
 inline int tuneFastDecayShift = 2;
@@ -473,12 +495,18 @@ void pollAudioEngine() {
       // were indistinguishable and "bass" was just the smoothed total level. That is why a
       // dedicated High trigger (e.g. strobe on hi-hats) could not work before.
       uint32_t t0 = micros();
+      int32_t peak = 0; int clips = 0;
       for (int i = 0; i < FFT_N; i++) {
         int32_t s = raw_samples[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT;
-        if (s > 32767) s = 32767; else if (s < -32768) s = -32768;   // clip, never wrap
+        if (s > 32767) { s = 32767; clips++; }
+        else if (s < -32768) { s = -32768; clips++; }
+        int32_t a = s < 0 ? -s : s;
+        if (a > peak) peak = a;
+        if (a >= 32000) clips++;              // at/near full scale counts as clipping
         fftRe[i] = (int16_t)(((int32_t)s * fftWindow[i]) >> 15);
         fftIm[i] = 0;
       }
+      micPeak = peak; micClipCount = clips;
       fftRun();
       fftLastUs = micros() - t0;
 
@@ -489,16 +517,16 @@ void pollAudioEngine() {
       // overflow int32 and wrap to a negative energy -- which reads as "silence" and would look
       // like the detector randomly dying on loud passages.
       const int32_t BAND_MAX = 200000;
-      int32_t bRaw = std::min(fftBand(BIN_BASS_LO, BIN_BASS_HI), BAND_MAX) << tuneFftGainShift;
-      int32_t mRaw = std::min(fftBand(BIN_MID_LO,  BIN_MID_HI),  BAND_MAX) << tuneFftGainShift;
-      int32_t hRaw = std::min(fftBand(BIN_HIGH_LO, BIN_HIGH_HI), BAND_MAX) << tuneFftGainShift;
+      int32_t bRaw = std::min(fftBand(tuneBinBassLo, tuneBinBassHi), BAND_MAX) << tuneFftGainShift;
+      int32_t mRaw = std::min(fftBand(tuneBinMidLo,  tuneBinMidHi),  BAND_MAX) << tuneFftGainShift;
+      int32_t hRaw = std::min(fftBand(tuneBinHighLo, tuneBinHighHi), BAND_MAX) << tuneFftGainShift;
 
       // Spectral flux of the same three ranges, computed before fftMagPrev is overwritten.
       // Kept as display values regardless of which detector is active, so the AUDIO tab can
       // show level and flux side by side.
-      lastBassFlux = std::min(fftFlux(BIN_BASS_LO, BIN_BASS_HI), BAND_MAX) << tuneFftGainShift;
-      lastMidFlux  = std::min(fftFlux(BIN_MID_LO,  BIN_MID_HI),  BAND_MAX) << tuneFftGainShift;
-      lastHighFlux = std::min(fftFlux(BIN_HIGH_LO, BIN_HIGH_HI), BAND_MAX) << tuneFftGainShift;
+      lastBassFlux = std::min(fftFlux(tuneBinBassLo, tuneBinBassHi), BAND_MAX) << tuneFftGainShift;
+      lastMidFlux  = std::min(fftFlux(tuneBinMidLo,  tuneBinMidHi),  BAND_MAX) << tuneFftGainShift;
+      lastHighFlux = std::min(fftFlux(tuneBinHighLo, tuneBinHighHi), BAND_MAX) << tuneFftGainShift;
       for (int i = 0; i < FFT_N / 2; i++) fftMagPrev[i] = fftMag[i];
       tempoTrackerPush(lastBassFlux, now);
 

@@ -15,7 +15,87 @@ bool isStaleWrite() {
   return server.hasArg("g") && (uint32_t)server.arg("g").toInt() < lastRecallGen;
 }
 
+
+// Audio tuning survives a reboot. Everything here was runtime-only until 2026-08-31, so every
+// flash or power cycle silently reset the whole audio chain to compile-time defaults -- the same
+// trap the live FX state still has (see backlog). Values are read once at boot and written back
+// debounced, never per slider step.
+#define AUDIO_PREFS_DEBOUNCE_MS 1500
+
+void saveAudioPrefs() {
+  prefs.begin("sys", false);
+    prefs.putInt("a_nf", tuneNoiseFloor);
+    prefs.putInt("a_fa", tuneFastAttackShift);
+    prefs.putInt("a_fd", tuneFastDecayShift);
+    prefs.putInt("a_ma", tuneMidAttackShift);
+    prefs.putInt("a_md", tuneMidDecayShift);
+    prefs.putInt("a_sa", tuneSlowAttackShift);
+    prefs.putInt("a_sd", tuneSlowDecayShift);
+    prefs.putInt("a_dts", tuneDynThreshSmoothShift);
+    prefs.putInt("a_mtd", tuneMidThreshDivShift);
+    prefs.putInt("a_htd", tuneHighThreshDivShift);
+    prefs.putInt("a_fg", tuneFftGainShift);
+    prefs.putInt("a_tmul", tempoMulMode);
+    prefs.putInt("a_bbl", tuneBinBassLo);
+    prefs.putInt("a_bbh", tuneBinBassHi);
+    prefs.putInt("a_bml", tuneBinMidLo);
+    prefs.putInt("a_bmh", tuneBinMidHi);
+    prefs.putInt("a_bhl", tuneBinHighLo);
+    prefs.putInt("a_bhh", tuneBinHighHi);
+    prefs.putInt("a_sens", hwAudioSensitivity);
+    prefs.putBool("a_fft", audioUseFFT);
+    prefs.putBool("a_flux", audioUseFlux);
+    prefs.putBool("a_trk", audioUseTracker);
+    prefs.putBool("a_en", hwAudioEnabled);
+  prefs.end();
+}
+
+void loadAudioPrefs() {
+  prefs.begin("sys", true);   // read-only: never creates the namespace as a side effect
+    tuneNoiseFloor = prefs.getInt("a_nf", tuneNoiseFloor);
+    tuneFastAttackShift = prefs.getInt("a_fa", tuneFastAttackShift);
+    tuneFastDecayShift = prefs.getInt("a_fd", tuneFastDecayShift);
+    tuneMidAttackShift = prefs.getInt("a_ma", tuneMidAttackShift);
+    tuneMidDecayShift = prefs.getInt("a_md", tuneMidDecayShift);
+    tuneSlowAttackShift = prefs.getInt("a_sa", tuneSlowAttackShift);
+    tuneSlowDecayShift = prefs.getInt("a_sd", tuneSlowDecayShift);
+    tuneDynThreshSmoothShift = prefs.getInt("a_dts", tuneDynThreshSmoothShift);
+    tuneMidThreshDivShift = prefs.getInt("a_mtd", tuneMidThreshDivShift);
+    tuneHighThreshDivShift = prefs.getInt("a_htd", tuneHighThreshDivShift);
+    tuneFftGainShift = prefs.getInt("a_fg", tuneFftGainShift);
+    tempoMulMode = prefs.getInt("a_tmul", tempoMulMode);
+    tuneBinBassLo = prefs.getInt("a_bbl", tuneBinBassLo);
+    tuneBinBassHi = prefs.getInt("a_bbh", tuneBinBassHi);
+    tuneBinMidLo = prefs.getInt("a_bml", tuneBinMidLo);
+    tuneBinMidHi = prefs.getInt("a_bmh", tuneBinMidHi);
+    tuneBinHighLo = prefs.getInt("a_bhl", tuneBinHighLo);
+    tuneBinHighHi = prefs.getInt("a_bhh", tuneBinHighHi);
+    hwAudioSensitivity = prefs.getInt("a_sens", hwAudioSensitivity);
+    audioUseFFT = prefs.getBool("a_fft", audioUseFFT);
+    audioUseFlux = prefs.getBool("a_flux", audioUseFlux);
+    audioUseTracker = prefs.getBool("a_trk", audioUseTracker);
+    hwAudioEnabled = prefs.getBool("a_en", hwAudioEnabled);
+  prefs.end();
+  // Defensive: a corrupt or hand-edited NVS value must not be able to make a band inverted or
+  // point past the spectrum, which would read out of bounds in fftBand()/fftFlux().
+  tuneBinBassLo = constrain(tuneBinBassLo, 1, 126); tuneBinBassHi = constrain(tuneBinBassHi, tuneBinBassLo, 127);
+  tuneBinMidLo  = constrain(tuneBinMidLo,  1, 126); tuneBinMidHi  = constrain(tuneBinMidHi,  tuneBinMidLo,  127);
+  tuneBinHighLo = constrain(tuneBinHighLo, 1, 126); tuneBinHighHi = constrain(tuneBinHighHi, tuneBinHighLo, 127);
+  hwAudioSensitivity = constrain(hwAudioSensitivity, 0, 100);
+  tempoMulMode = constrain(tempoMulMode, 0, 2);
+}
+
+// Called every loop; writes at most once per settling period.
+void flushAudioPrefs() {
+  if (!audioPrefsDirty) return;
+  if (millis() - audioPrefsDirtyAt < AUDIO_PREFS_DEBOUNCE_MS) return;
+  audioPrefsDirty = false;
+  saveAudioPrefs();
+}
+
 void setupAPI() {
+  loadAudioPrefs();
+
   
   if (!LittleFS.exists("/index.html")) {
     server.on("/", HTTP_GET, []() {
@@ -391,7 +471,7 @@ void setupAPI() {
   server.on("/autofade", []() { fadeDuration = constrain(server.arg("t").toInt(), 1, 3600000); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "text/plain", String(bumpGen("autofade"))); });
   server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "text/plain", String(bumpGen("unmute"))); });
   server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "text/plain", String(bumpGen("trans"))); });
-  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); server.send(200, "text/plain", String(bumpGen("hwaudio"))); });
+  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); markAudioPrefsDirty(); server.send(200, "text/plain", String(bumpGen("hwaudio"))); });
 
   // Live band-energy telemetry for the AUDIO DEBUG tab's scrolling graph. Polled fast (frontend
   // targets ~15Hz) so build the response with one snprintf into a fixed buffer instead of this
@@ -400,7 +480,7 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    char buf[1024];
+    char buf[1280];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
@@ -409,7 +489,8 @@ void setupAPI() {
       "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
       "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
       "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
-      "\"trk\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d}",
+      "\"trk\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
+      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -420,7 +501,9 @@ void setupAPI() {
       (long)lastBassLevel, (long)lastMidLevel, (long)lastHighLevel,
       (long)lastBassFlux, (long)lastMidFlux, (long)lastHighFlux,
       audioUseTracker ? 1 : 0, trackedBPM, (long)trackedScore,
-      (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode);
+      (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode,
+      (long)micPeak, micClipCount,
+      tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -430,6 +513,23 @@ void setupAPI() {
 
   // Shift amounts are clamped 0-10: >=32 (word width) is undefined behavior for a right-shift, and
   // this project's int32_t band energies stay well inside that range in practice anyway.
+  // Raw FFT bins for the AUDIO tab's spectrum display. Its own route rather than more fields on
+  // /api/audio_debug: 128 numbers roughly double that response, and the two are polled at
+  // different rates. Values are the unscaled magnitudes -- the client decides on log scaling,
+  // which keeps the display honest about how much energy is really there.
+  server.on("/api/spectrum", []() {
+    char buf[1100];
+    int n = snprintf(buf, sizeof(buf), "{\"n\":%d,\"hz\":%d,\"pk\":%ld,\"clip\":%d,\"b\":[",
+                     FFT_N / 2, SAMPLING_FREQUENCY / FFT_N, (long)micPeak, micClipCount);
+    for (int i = 0; i < FFT_N / 2 && n < (int)sizeof(buf) - 12; i++) {
+      int32_t v = fftMag[i];
+      if (v > 99999) v = 99999;
+      n += snprintf(buf + n, sizeof(buf) - n, "%s%ld", i ? "," : "", (long)v);
+    }
+    snprintf(buf + n, sizeof(buf) - n, "]}");
+    server.send(200, "application/json", buf);
+  });
+
   server.on("/audio_tune", []() {
     if (server.hasArg("nf"))  tuneNoiseFloor        = constrain(server.arg("nf").toInt(), 0, 2000);
     if (server.hasArg("fa"))  tuneFastAttackShift    = constrain(server.arg("fa").toInt(), 0, 10);
@@ -451,6 +551,15 @@ void setupAPI() {
     if (server.hasArg("flux")) audioUseFlux = (server.arg("flux") == "1");
     if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
     if (server.hasArg("tmul")) tempoMulMode = constrain(server.arg("tmul").toInt(), 0, 2);
+    // Band edges in FFT bins (bin = 31.25Hz). Clamped so a band can never invert or reach
+    // past the spectrum; bin 0 is DC and always excluded.
+    if (server.hasArg("bbl")) tuneBinBassLo = constrain(server.arg("bbl").toInt(), 1, 126);
+    if (server.hasArg("bbh")) tuneBinBassHi = constrain(server.arg("bbh").toInt(), tuneBinBassLo, 127);
+    if (server.hasArg("bml")) tuneBinMidLo  = constrain(server.arg("bml").toInt(), 1, 126);
+    if (server.hasArg("bmh")) tuneBinMidHi  = constrain(server.arg("bmh").toInt(), tuneBinMidLo, 127);
+    if (server.hasArg("bhl")) tuneBinHighLo = constrain(server.arg("bhl").toInt(), 1, 126);
+    if (server.hasArg("bhh")) tuneBinHighHi = constrain(server.arg("bhh").toInt(), tuneBinHighLo, 127);
+    markAudioPrefsDirty();
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     server.send(200, "OK");

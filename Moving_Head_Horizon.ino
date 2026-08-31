@@ -587,6 +587,7 @@ void loop() {
 
   server.handleClient();
   ArduinoOTA.handle();
+  flushAudioPrefs();   // debounced NVS write of the audio tuning, see WebAPI.h
   artnet.read();
   pollAudioEngine();
   // Timed alongside pollAudioEngine() (see Audio_Engine.h) so the actual CPU split between the
