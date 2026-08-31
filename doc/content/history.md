@@ -4247,3 +4247,55 @@ der Modulator weiter mit `speed` als Periodendauer, der Beat setzt nur `phase = 
 durchläuft also **nur 20 % seines Bereichs**. Für Audio-getriggerte Modulatoren muss
 `speed` ungefähr der Beatlänge entsprechen (400 ms bei 150 BPM), sonst sieht es aus, als
 täte der Effekt nichts.
+
+### 2026-08-31 (3) — Audio-Trigger: Sync-Teiler wirkte nie, und die Beat-Uhr erbte den Jitter
+
+Weitere Meldungen desselben Tests, alle mit laufender Musik gegengemessen.
+
+**Der Sync-Teiler galt bei Audio-Triggern überhaupt nicht.** Der User hatte
+„Kickbass + 1 Beat" eingestellt — richtig gedacht, aber die Firmware wertete `sync` nur
+bei `trigger == 1` aus. Bei Audio-Triggern lief der Modulator mit `speed` als
+Periodendauer, der Kick setzte lediglich `phase = 0`. Verschärfend: die UI blendet den
+Speed-Regler bei jedem Nicht-Manuell-Trigger aus (`{trigger === 0 ? <slider> : <sync>}`),
+der wirksame Wert war also gar nicht erreichbar und stand aus einem Preset auf 2000 ms.
+Bei Kicks alle 400 ms erreichte die Phase damit nur 0,2 — der Dimmer durchlief ein
+Fünftel seines Bereichs, was als „flackert mit gedimmten Zwischenstufen" ankam. Dieselbe
+Fehlerklasse wie die toten Kurven und die toten Regler: ein Bedienelement, das etwas
+verspricht, das die Firmware nicht einlöst. Audio-Trigger ankern jetzt an den Beat-Zähler
+und laufen über `syncBeats[sync]`.
+
+**Erster Versuch davon war falsch** und wurde sofort vom User widerlegt: bei „4 Beats"
+flashte gar nichts mehr, weder auf Kick noch auf Hi-Hat. Grund: ich verankerte bei
+*jedem* Treffer neu, wodurch ein Zyklus über mehrere Beats nie über 1/n hinauskam. Jetzt
+wird nur neu verankert, wenn der Zyklus zu ≥90 % durchgelaufen ist.
+
+**Die Beat-Uhr selbst erbte den Detektor-Jitter.** `beatsElapsedTotal` ist
+`beatCount + (now − lastBeatTime)/interval`, und der Audio-Pfad setzte `lastBeatTime`
+bei *jedem* erkannten Onset hart auf `now`. Bei ~180 ms Streuung sprang damit die Phase
+jedes BPM-synchronen Effekts — deshalb feuerte auch „Global BPM" wahllos. Ersetzt durch
+eine **Phasenregelung**: Periode kommt vom Tracker, ein Onset korrigiert die Phase nur,
+wenn er nahe der Vorhersage liegt (±30 %), und dann nur um ein Viertel des Fehlers.
+Weit daneben liegende Onsets triggern weiterhin FX, ziehen aber die Uhr nicht mehr mit.
+Eine Klemme verhindert, dass `lastBeatTime` in die Zukunft rutscht — das würde im `.ino`
+wegen der vorzeichenlosen Differenz sofort überlaufen.
+
+**Messergebnis Kickbass (18 s, Beat 390 ms):** Abstand-Median 355 → **398 ms**, Streuung
+187 → **107 ms**. Der Kick-Trigger trifft das Raster jetzt.
+
+### ⚠️ Weiterhin offen: der Tempo-Tracker rastet auf der punktierten Viertel ein
+
+Global BPM bleibt unbrauchbar, aber **nicht** wegen der Phasenregelung: über 40 s gemessen
+steht `trackedBPM` fast durchgehend auf **98**, mit gelegentlichen Sprüngen auf 147 —
+und 147/98 = **exakt 1,5**. Der Tracker lockt also auf das 3:2-Verhältnis statt auf den
+Beat. Weil `globalBPM` dabei zwischen beiden Werten springt, ändert sich die Beatlänge im
+laufenden Betrieb und die Phase springt mit; das erklärt die 61 % Rasterabweichung im
+Global-BPM-Test.
+
+Die harmonische Summe verwirft die punktierte Viertel nur, wenn deren Vielfache *nicht*
+aufgehen — bei 3:2 geht aber jedes zweite auf (1,5 · 2 = 3 Beats), sie bekommt also
+Rückhalt. Der nächste Schritt ist daher eine Verhältniswahl, die **nur ganzzahlige**
+Beat-Vielfache belohnt, plus Hysterese gegen das Umspringen. Bewusst nicht mehr blind
+nachgepatcht — das gehört sauber entworfen.
+
+**Praktische Empfehlung bis dahin: Kickbass + 1 Beat verwenden.** Das ist gemessen gut
+und hängt gar nicht am Tempo-Wert, weil es sich an echten Onsets verankert.

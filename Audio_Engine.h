@@ -718,15 +718,45 @@ void pollAudioEngine() {
           }
         }
       }
-      lastBeatTime = now;
-      // Pair every real-beat lastBeatTime reset with a beatCount increment (see .ino's internal
-      // metronome, which does the same for virtual ticks). Without this, a detected beat resets
-      // lastBeatTime but not beatCount, and since audio detection keeps winning the race against
-      // the metronome's own tick, beatCount nearly freezes while beatsElapsedTotal's fractional
-      // part keeps snapping back toward 0 every beat -- multi-beat sync stayed stuck cycling
-      // within a single beat and visibly jerked backward on every detection ("juggling").
-      beatCount++;
-      masterSyncTime = now;
+      // Phase-locked correction instead of snapping the clock to every onset.
+      //
+      // beatsElapsedTotal (see the .ino) is beatCount plus (now - lastBeatTime)/interval, so
+      // whatever moves lastBeatTime moves the phase of every BPM-synced effect. Setting it to
+      // `now` on each detected onset handed the detector's jitter straight to that clock: with
+      // onsets scattering ~180ms around a 400ms beat, the phase jumped on every hit and even the
+      // "Global BPM" trigger fired irregularly. Reported live 2026-08-31 as "global bpm feuert
+      // auch wahllos".
+      //
+      // The tempo tracker already supplies a stable period, so an onset only has to correct the
+      // PHASE, and only when it lands near where a beat was expected. Absorbing a quarter of the
+      // error per beat locks on within a few beats while ignoring individual stray hits.
+      {
+        unsigned long interval = (globalBPM > 0) ? (unsigned long)(MS_PER_MINUTE / globalBPM) : 500UL;
+        long sinceLast = (long)(now - lastBeatTime);
+        long err = sinceLast - (long)interval;
+
+        if (sinceLast > (long)(interval * 7 / 4)) {
+          // Grid lost -- playback just started, or beats were missed for a while. Re-establish it
+          // outright rather than crawling back a quarter of a huge error at a time.
+          lastBeatTime = now;
+          beatCount++;
+          masterSyncTime = now;
+        } else if (labs(err) <= (long)(interval * 3 / 10)) {
+          // Close to the prediction: advance exactly one beat and take a quarter of the error.
+          long adj = (long)interval + err / 4;
+          if (adj < 0) adj = 0;
+          unsigned long newLast = lastBeatTime + (unsigned long)adj;
+          // Never move the clock into the future: (now - lastBeatTime) is unsigned in the .ino,
+          // so a lastBeatTime past `now` would underflow to a huge value and fire the internal
+          // metronome immediately, every loop.
+          if (newLast > now) newLast = now;
+          lastBeatTime = newLast;
+          beatCount++;
+          masterSyncTime = lastBeatTime;
+        }
+        // Otherwise: an off-grid onset. It still counts as an FX trigger above -- that is what an
+        // audio trigger is for -- but it must not be allowed to drag the tempo grid with it.
+      }
       // Deliberately NOT setting manualTap here (that used to happen on every real beat, not just
       // an actual tap-tempo button press). manualTap's handler in the .ino unconditionally does
       // `beatCount = 0`, meant for a literal user tap re-establishing the downbeat -- firing it on

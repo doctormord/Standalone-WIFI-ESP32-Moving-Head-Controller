@@ -380,7 +380,9 @@ void updateEngines(unsigned long now) {
   // call. Resetting the shared clock instead re-aligns every trigger==1 FX to this beat at once.
   if (manualTap) { beatCount = 0; lastBeatTime = now; if (dimFX.trigger != 1) dimFX.phase = 0.0; if (gRotFX.trigger != 1) gRotFX.phase = 0.0; if (pRotFX.trigger != 1) pRotFX.phase = 0.0; if (moveFX.trigger != 1) moveFX.modPhase = 0.0; masterSyncTime = now; manualTap = false; }
   auto checkAudioTrg = [&](int trg) { return (trg == 2 && triggerBass) || (trg == 3 && triggerMid) || (trg == 4 && triggerHigh); };
-  if (checkAudioTrg(dimFX.trigger)) dimFX.phase = 0.0; if (checkAudioTrg(gRotFX.trigger)) gRotFX.phase = 0.0; if (checkAudioTrg(pRotFX.trigger)) pRotFX.phase = 0.0; if (checkAudioTrg(moveFX.trigger)) moveFX.modPhase = 0.0;
+  // Report the hit instead of zeroing the phase directly: the engines now anchor their cycle
+  // to the beat count at that moment, so the Sync divisor applies to audio triggers as well.
+  if (checkAudioTrg(dimFX.trigger)) dimFX.audioHit(); if (checkAudioTrg(gRotFX.trigger)) gRotFX.audioHit(); if (checkAudioTrg(pRotFX.trigger)) pRotFX.audioHit(); if (checkAudioTrg(moveFX.trigger)) moveFX.audioHit();
 
   // Continuous "how many real beats have elapsed" reference for trigger==1 (BPM sync) on any FX
   // with a multi-beat divisor -- see Modulator::process()/MovementEngine::process() for why this

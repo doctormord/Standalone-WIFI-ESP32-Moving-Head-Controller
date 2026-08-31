@@ -79,6 +79,14 @@ public:
     int trigger = 0;
     int sync = 3;
     float phase = 0.0f;
+    // Beat position of the last audio hit, so an audio-triggered LFO can run on the beat clock
+    // like the BPM-sync mode does instead of on its own free-running speed. Set via audioHit(),
+    // which only raises a flag -- the anchor itself is taken inside process(), where the current
+    // beat count is actually available.
+    float audioAnchorBeats = 0.0f;
+    bool audioHitPending = false;
+    bool audioAnchored = false;
+    void audioHit() { audioHitPending = true; }
     
     unsigned long lastUpdate = 0; 
 
@@ -95,7 +103,33 @@ public:
         lastUpdate = now;
         if(dt <= 0 || dt > 1.0f) dt = 0.02f;
 
-        if (trigger == 0 || trigger >= 2) {
+        if (trigger >= 2) {
+            // Audio triggers now honour the Sync divisor, which they previously ignored entirely:
+            // the LFO ran at `speed` and the detected hit merely reset the phase to 0. Setting
+            // "Kickbass + 1 Beat" therefore did nothing that the label promised -- with speed at
+            // 2000ms and kicks every 400ms the phase only ever reached 0.2, so the dimmer traversed
+            // a fifth of its range and looked like it was not working. Reported live 2026-08-31.
+            // Anchoring to the beat count at the last hit makes one cycle last exactly
+            // syncBeats[sync] beats and restart on each hit, which is what the two controls read as.
+            int safeSync = constrain(sync, 0, 6);
+            float span = syncBeats[safeSync];
+            if (audioHitPending) {
+                audioHitPending = false;
+                float elapsed = beatsElapsedTotal - audioAnchorBeats;
+                // Re-lock only once the cycle has actually run its course. Re-anchoring on EVERY
+                // hit truncates any divisor longer than one beat: with 4 beats and a kick on every
+                // beat the phase never got past 0.25, so a sawtooth-shaped effect never left the
+                // bottom of its range and looked completely dead. Reported live 2026-08-31, on
+                // both the kick and the hi-hat trigger -- same code path.
+                if (!audioAnchored || elapsed < 0.0f || elapsed >= span * 0.9f) {
+                    audioAnchorBeats = beatsElapsedTotal;
+                    audioAnchored = true;
+                }
+            }
+            float cyclePos = (beatsElapsedTotal - audioAnchorBeats) / span;
+            if (cyclePos < 0.0f) cyclePos = 0.0f;
+            phase = cyclePos - floorf(cyclePos);
+        } else if (trigger == 0) {
             // speed is the full LFO cycle duration in ms (matches the UI slider's ms range).
             float periodMs = speed < 1.0f ? 1.0f : speed;
             phase += (dt * 1000.0f) / periodMs;
@@ -138,6 +172,10 @@ public:
     int trigger = 0;
     int sync = 3;
     float modPhase = 0.0f;
+    float audioAnchorBeats = 0.0f;
+    bool audioHitPending = false;
+    bool audioAnchored = false;
+    void audioHit() { audioHitPending = true; }
 
     float currentSize = 1.0f;
     float currentSpeed = 1.0f;
@@ -154,7 +192,23 @@ public:
         lastUpdate = now;
         if(dt <= 0 || dt > 1.0f) dt = 0.02f;
 
-        if (trigger == 0 || trigger >= 2) {
+        if (trigger >= 2) {
+            // Same fix as Modulator above: the Sync divisor applies to audio triggers too, instead
+            // of the pattern free-running at modSp while the hit merely reset the phase.
+            int safeSync = constrain(sync, 0, 7);
+            float span = syncBeats[safeSync];
+            if (audioHitPending) {
+                audioHitPending = false;
+                float elapsed = beatsElapsedTotal - audioAnchorBeats;
+                if (!audioAnchored || elapsed < 0.0f || elapsed >= span * 0.9f) {
+                    audioAnchorBeats = beatsElapsedTotal;
+                    audioAnchored = true;
+                }
+            }
+            float cyclePos = (beatsElapsedTotal - audioAnchorBeats) / span;
+            if (cyclePos < 0.0f) cyclePos = 0.0f;
+            modPhase = cyclePos - floorf(cyclePos);
+        } else if (trigger == 0) {
             // modSp is presented in the UI identically to Modulator::speed (a 0-10000ms slider,
             // see TriggerBlock's "Modulation speed" / "Manual speed" labels sharing the same
             // min/max/unit) but was being treated as an arbitrary rate multiplier here instead of
