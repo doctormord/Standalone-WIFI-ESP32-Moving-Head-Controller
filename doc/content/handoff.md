@@ -1,45 +1,64 @@
 # Horizon Light Controller — Project Handoff & Status
 
-> ## ⏭️ NEXT CHAT STARTS HERE (2026-08-31)
-> **Alles gebaut und compile-geprüft, aber NICHT auf Hardware getestet — das Gerät
-> war nicht erreichbar, Flashen erst Montag.** Es braucht **Firmware *und*
-> Filesystem** (die UI hat sich geändert), also USB:
+> ## ⏭️ NEXT CHAT STARTS HERE (2026-09-01)
+> **Zuerst flashen: nur die Firmware, `data/` ist unverändert — OTA reicht.**
 > ```
-> pio run -t upload   --upload-port /dev/cu.usbmodem1101
-> pio run -t uploadfs --upload-port /dev/cu.usbmodem1101
+> python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
+>         -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin -r
 > ```
+> Auf dem Gerät läuft der Stand *vor* der Onset-Gewichtung; die UI ist aktuell.
 >
-> ### Was neu ist
-> Das AUDIO-Panel war als Diagnosewerkzeug unbrauchbar (O-Ton User). Jetzt drin:
-> Spektrum-Anzeige aller 128 Bins mit farbig hinterlegten Bändern und
-> Grenzfrequenzen (neuer Endpunkt `/api/spectrum`), Mic-Eingangspegel mit
-> Clipping-Anzeige, umschaltbare Skalierung (pro Band / gemeinsam / absolut),
-> Beat-Marker für **alle drei** Bänder, eigene Schwellenlinie je Band, zur Laufzeit
-> verstellbare Bandgrenzen in Hz, und alle wirksamen Parameter als Controls.
+> ### Ausgangslage
+> Gelöst und gemessen: Eingangsverstärkung (`ig`, ×8 ohne Clipping), erweiterter
+> Sensitivity-Bereich (Faktor bis 0,5), Sync-Teiler wirkt bei Audio-Triggern,
+> Mehr-Beat-Zyklen laufen, Beat-Uhr ist phasengeregelt. Kick-Trigger trifft das
+> Raster: 398 ms bei 390 ms Beat, Streuung von 187 auf 107 ms halbiert.
 >
-> **Sechs Regler waren wirkungslos** (`fa/fd/ma/md/sa/sd`): im Flux-Pfad werden die
-> Hüllkurven direkt gesetzt, die Attack/Decay-Shifts also übersprungen. Sie werden
-> jetzt ausgegraut und als INACTIVE markiert, sobald Flux aktiv ist.
+> **Offen ist allein die Tempo-*Schätzung*.** Drei Verfahren sind gemessen
+> gescheitert (Details in `history.md` 2026-08-31 (4)). Der gemessene Mechanismus:
+> der Detektor feuert 2,67×/s bei einer Beat-Rate von 2,37×/s, und dieser Überschuss
+> bildet ein konkurrierendes ~170-BPM-Raster.
 >
-> **Audio-Tuning liegt jetzt in NVS** (19 Ints, 4 Bools) und übersteht den Reboot —
-> mit entprelltem Schreiben (1,5 s nach der letzten Änderung), damit Slider-Ziehen
-> nicht den Flash zermürbt.
+> ### Plan für morgen, in dieser Reihenfolge
 >
-> ### Testreihenfolge Montag
-> 1. Flashen, dann `curl -s http://192.168.8.113/api/spectrum | head -c 200` — kommen
->    128 Bins?
-> 2. AUDIO-Tab öffnen, Musik an: bewegen sich die Balken, liegen die farbigen Bänder
->    dort, wo man sie erwartet?
-> 3. Mic-Pegel beobachten — schlägt er an (CLIPPING rot)? Dann Eingang leiser.
-> 4. Skalierung auf „per band" lassen und prüfen, ob Mid/High jetzt sichtbar sind und
->    ob deren Beat-Marker feuern.
-> 5. **Bass-Frage klären:** Bassband testweise bis ~220 Hz aufziehen (`bbh` hoch) und
->    hören, ob Kicks besser kommen. Falls es mit `?flux=0` spürbar besser ist, liegt
->    es an der Flux-Charakteristik und nicht an der Bandbreite — dann Bass wieder auf
->    Pegel laufen lassen und Flux nur für Mid/High.
-> 6. Danach Werte einstellen, kurz warten, Gerät neu starten: alles muss erhalten sein.
+> **1. Referenz herstellen.** Monotonen Techno mit bekanntem, konstantem BPM
+> auflegen und laufen lassen (gestern: 142). Nicht mit Drum & Bass anfangen — das
+> ist der schwierigste Fall, und an ihm zu entwickeln hat gestern mehrere
+> Iterationen gekostet. Erst den einfachen Fall festnageln, dann härten.
 >
-> Danach ist der **Preset-Engine-Split (Layer)** dran.
+> **2. Gewichtete Schätzung messen** (neu, kompiliert aber ungetestet). Die Onsets
+> gehen jetzt mit ihrer Stärke gewichtet in den Phasentest, damit schwache
+> Zwischenschläge die Kicks nicht überstimmen. Erwartung: der Wert bleibt in der
+> Nähe des echten Tempos, statt zwischen 138 und 185 zu springen. Prüfen mit
+> `tBPM` aus `/api/audio_debug` über 60–90 s.
+>
+> **3. Den fairen A/B-Vergleich fahren — ohne eine Zeile Code.** Der User hat
+> eingewandt, das alte Energiekonzept sei besser gewesen, und das ist plausibel:
+> ein Kick dominiert die Gesamtenergie, ein Breitband-Transient ist robuster als
+> ein schmales 31–156-Hz-Band. Der frühere Vergleich lief aber mit 9,6 %
+> Aussteuerung — das alte Verfahren hat nie von Eingangsverstärkung und
+> erweitertem Sensitivity-Bereich profitiert. Beide Pfade sind zur Laufzeit
+> schaltbar:
+> - `curl "…/audio_tune?flux=0"` → Pegel-Erkennung im Band
+> - `curl "…/audio_tune?fft=0"` → ursprüngliches Breitband-Energiekonzept
+> - `curl "…/audio_tune?flux=1&fft=1"` → aktueller Stand
+>
+> Jeweils Onset-Rate (Ziel: eine pro Beat), Intervall-Median und `tBPM` vergleichen.
+>
+> **4. Falls die Schätzung weiter zickt: Tempo tappen.** Das ist kein Rückzug,
+> sondern das übliche Vorgehen bei Lichtpulten — Tempo per Tap setzen, Audio
+> korrigiert nur die Phase, und genau die funktioniert nachweislich. Damit ist der
+> Live-Betrieb unabhängig von der Schätzung nutzbar.
+>
+> ### Nützliche Werte
+> Audio-Tuning liegt in NVS und übersteht den Reboot. Startpunkt: `ig=3` (×8),
+> `sens` materialabhängig (Techno eher 30, D&B eher 70 — genau diese Abhängigkeit
+> soll die neue Gewichtung beseitigen). Alles im AUDIO-Tab sichtbar: Spektrum mit
+> Bandbereichen, Eingangspegel mit Clip-Anzeige, Beat-Marker je Band.
+>
+> ### Danach
+> Der **Preset-Engine-Split (Layer)** ist weiterhin der nächste Feature-Schritt und
+> braucht kein neues NVS-Format — siehe `handover.md`.
 >
 > ## Vorherige Session (2026-08-26)
 > **Kein offener Blocker. Gerät läuft mit dem aktuellen Stand, alles ist auf
