@@ -4376,3 +4376,77 @@ Sensitivity-Bereich, eigene Schwellen pro Band. Beide Pfade sind weiterhin zur L
 schaltbar (`?flux=0` = Pegel-Erkennung, `?fft=0` = ursprüngliches Breitband-Energiekonzept),
 der faire Vergleich steht also als erster Test der nächsten Sitzung an — ohne eine Zeile
 Code.
+
+---
+
+## 2026-09-01 — Gemischter Ansatz: Detektor pro Band, adaptive Schwelle, 16 kHz, GUI-Umbau
+
+Der User schlug vor, für den Bass die Bin-Pegel zu summieren (also Energie) und mit
+einstellbarer Attack/Release-Zeit zu einem Envelope-Detektor zu machen, und fragte, ob das
+für Höhen und Mitten ebenso gehe. Die Antwort: für Bass ja, für Mitten nein — und genau
+daraus folgt ein **gemischter Ansatz**.
+
+- **Bass → Energie.** Der Kick dominiert das Band, sein Pegel *ist* das Ereignis. Eine
+  Hüllkurve darauf ist exakt das, was klassische Hardware macht.
+- **Mitten → Flux.** Vocals, Flächen und Bass-Obertöne liegen *dauerhaft* im Band, ein
+  Pegeldetektor sieht dort immer „viel". Nur der Anstieg der Snare unterscheidet sie.
+- **Höhen → wählbar.** Becken klingen aus (Flux), geschlossene Hi-Hats sind kurz (Energie).
+
+Umgesetzt als `tuneDetBass/Mid/High`, per API (`?db= ?dm= ?dh=`) und in der GUI wählbar.
+`?flux=` bleibt als Sammelschalter erhalten. Damit sind auch die Attack/Decay-Regler wieder
+sinnvoll: sie gelten für jedes Band, das auf Energie steht.
+
+### Die Sensitivity ist nicht mehr materialabhängig
+
+Der berechtigte Einwand des Users war, dass ein Regler, den man pro Track nachzieht, keine
+Lösung ist. Die Schwelle war `Mittelwert × Faktor` — und genau deshalb genrespezifisch: in
+gleichförmiger Musik liegt der Mittelwert dicht an den Spitzen (nichts löst aus), in
+dynamischer weit darunter (alles löst aus). Deshalb kam als bester Wert 30 für Techno und
+70 für D&B heraus.
+
+Jetzt: **Schwelle = Mittelwert + k × mittlere absolute Abweichung**, wobei die Sensitivity
+k setzt. Das ist der Varianzterm aus Patins klassischem Energie-Beatdetektor, nur mit MAD
+statt Varianz (kein Quadrieren, keine Skalierungsprobleme). Die Schwelle skaliert damit
+selbsttätig mit der Dynamik des Materials.
+
+### 16 kHz statt 8 kHz
+
+Auf die Frage nach Luft über 4 kHz: die gab es nicht — 4 kHz war Nyquist. Jetzt 16 kHz mit
+N=512. Die **Bin-Breite bleibt bei 31,25 Hz**, alle konfigurierten Bandgrenzen behalten also
+ihre Bedeutung; nur der höchste Bin wandert von 127 auf 255 und der nutzbare Bereich auf
+8 kHz. Das ist der Bereich, in dem Hi-Hats und Becken tatsächlich liegen — vorher war das
+High-Band an seiner nützlichsten Stelle abgeschnitten. Kosten: ~900 µs statt 400 µs pro
+Frame, weiterhin unter 3 % CPU. Nebenbei läuft das Mikrofon damit näher an seinem
+spezifizierten Taktbereich.
+
+Bass-Untergrenze zusätzlich von Bin 1 auf Bin 2 (62 Hz) gesetzt: Bin 1 ist Rumpelbereich,
+und der DJM-500 filtert laut Service-Manual etwa 50–150 Hz.
+
+### Was die DJM-500-Analyse bestätigt hat
+
+Der User lieferte die Architektur des 1995er Mixers: Mono-Summierung, analoger Bandpass
+~50–150 Hz, Hüllkurvendetektor mit **gleitendem Mittelwert als Schwelle**, Komparator →
+Puls, dann im Mikrocontroller ein **Pulse-Window von 150–200 ms** gegen Doppeltrigger,
+Periodenmessung und **Interpolation über ganzzahlige Vielfache** bei ausgelassenen Kicks.
+
+Das deckt sich bis ins Detail mit dem, was hier entstanden ist — und bestätigt vor allem,
+dass kein FFT und kein Flux nötig ist, um einen Kick zu finden. Unser Pulse-Window liegt bei
+280 ms (`MIN_BEAT_INTERVAL_MS`), also deutlich träger als die 150–200 ms des DJM; das ist ein
+Kandidat für den nächsten Test.
+
+### GUI
+
+- **Sync-Fehler behoben:** `setTune((prev) => prev || …)` seedete genau einmal. Alles, was
+  über die API gesetzt wurde (oder aus einem zweiten Browserfenster kam), erreichte die
+  Bedienelemente nie — das Panel zeigte Werte, die gar nicht liefen. Jetzt werden die
+  Gerätewerte bei jedem Poll übernommen, außer für Regler, die man gerade angefasst hat
+  (1,5 s Schonfrist, dieselbe Disziplin wie im Rest der App).
+- **Weniger Scrollen:** die Bedienelemente liegen in vier Klappbereichen, und alle Werte mit
+  festem Raster sind jetzt Dropdowns mit sprechenden Labels („Bass attack · fast (÷4)")
+  statt Regler. Ein Dropdown braucht eine Zeile statt drei und sagt mehr aus.
+- **Erklärter Signalweg:** der Bereich „Detection chain" beschreibt in zwei Sätzen, was
+  Analysis, Detector, Tempo und Octave jeweils tun und warum Bass und Mitten
+  unterschiedliche Detektoren brauchen — vorher waren es vier unkommentierte Schalter.
+
+**Status: kompiliert und syntaxgeprüft, nicht auf Hardware getestet** — die Anlage war aus.
+Firmware 92,8 % Flash, RAM 18,3 %.

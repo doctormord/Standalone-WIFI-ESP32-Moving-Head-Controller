@@ -1569,13 +1569,15 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     const [live, setLive] = useState({ lo: 0, mi: 0, hi: 0, th: 0, thM: 0, thH: 0, pk: 0, clip: 0, tBPM: 0, tmul: 0 });
     const [spec, setSpec] = useState(null);
     const [tune, setTune] = useState(null); // null until first poll seeds it from the device
+    const [nbin, setNbin] = useState(128);
+    const pendingRef = useRef({});
     const [paused, setPaused] = useState(false);
     // Auto-scaling across all three bands at once was actively hiding the problem: Mid and High
     // carry far less energy than Low, so on one shared axis they sit flat on the floor and their
     // thresholds are unreadable. Per-band scaling is the default; "fixed" keeps an absolute axis
     // so that silence actually looks like silence instead of being normalised back up.
     const [scaleMode, setScaleMode] = useState('band');
-    const BIN_HZ = 31.25;
+    const BIN_HZ = 31.25;   // unchanged by the move to 16kHz: N doubled with the sample rate
     const hz = (bin) => Math.round(bin * BIN_HZ);
 
     const draw = useCallback(() => {
@@ -1636,7 +1638,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       const regions = [
         [tune ? tune.bbl : 1, tune ? tune.bbh : 5, 'rgba(34,197,94,0.13)', '#22c55e', 'LOW'],
         [tune ? tune.bml : 6, tune ? tune.bmh : 38, 'rgba(251,191,36,0.11)', '#fbbf24', 'MID'],
-        [tune ? tune.bhl : 80, tune ? tune.bhh : 127, 'rgba(34,211,238,0.11)', '#22d3ee', 'HIGH'],
+        [tune ? tune.bhl : 80, tune ? tune.bhh : 200, 'rgba(34,211,238,0.11)', '#22d3ee', 'HIGH'],
       ];
       regions.forEach(([lo, hi, fill]) => {
         ctx.fillStyle = fill;
@@ -1676,12 +1678,29 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                     pk: d.pk, clip: d.clip, tBPM: d.tBPM, tmul: d.tmul });
           const now = Date.now();
           if (d.pk >= peakHoldRef.current.v || now - peakHoldRef.current.t > 1200) peakHoldRef.current = { v: d.pk, t: now };
-          setTune((prev) => prev || {
+          // Merge the device's values on EVERY poll, not just the first. Seeding once meant any
+          // change made through the API (or from a second browser) never reached these controls,
+          // so the panel could sit there showing values that were not the ones running. Keys the
+          // user has just touched are held back briefly, so a slider does not fight the poll --
+          // the same optimistic-write-versus-poll discipline the rest of the app uses.
+          const fresh = {
             nf: d.nf, fa: d.fa, fd: d.fd, ma: d.ma, md: d.md, sa: d.sa, sd: d.sd,
             mtd: d.mtd, htd: d.htd, dts: d.dts, fg: d.fg, tmul: d.tmul,
             fft: d.fft, flux: d.flux, trk: d.trk,
             bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh, ig: d.ig,
+            db: d.db, dm: d.dm, dh: d.dh,
+          };
+          const now2 = Date.now();
+          setTune((prev) => {
+            if (!prev) return fresh;
+            const merged = { ...prev };
+            Object.keys(fresh).forEach((k) => {
+              const held = pendingRef.current[k];
+              if (!held || now2 - held > 1500) merged[k] = fresh[k];
+            });
+            return merged;
           });
+          if (d.nbin) setNbin(d.nbin);
           const buf = bufRef.current;
           buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi);
           buf.th.push(d.th); buf.thM.push(d.thM); buf.thH.push(d.thH);
@@ -1713,12 +1732,17 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     // reflects what's actually running -- same "don't trust the optimistic value alone" discipline
     // as the rest of this app's outbound sync.
     const applyTune = (key, val) => {
+      pendingRef.current[key] = Date.now();   // hold the poll off this key for a moment
       setTune((t) => ({ ...t, [key]: val }));
       fetch(`/audio_tune?${key}=${val}`).catch(() => {});
     };
 
-    const shiftLabel = (v) => `÷${1 << v}`; // a bit-shift of v is a division by 2^v -- show the actual factor, not the raw shift count
-    const row = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 };
+    // Fixed-value controls are dropdowns rather than sliders: they take a fraction of the vertical
+    // space, and a labelled choice ("fast (÷4)") says more than a slider position ever did.
+    const shiftOpts = (name) => Array.from({ length: 11 }, (_, v) =>
+      [v, `${name} · ${v === 0 ? 'instant' : v <= 2 ? `fast (÷${1 << v})` : v <= 5 ? `medium (÷${1 << v})` : `slow (÷${1 << v})`}`]);
+    const gainOpts = (max) => Array.from({ length: max + 1 }, (_, v) => [v, `Input gain · ×${1 << v}`]);
+    const bandGainOpts = () => Array.from({ length: 11 }, (_, v) => [v, `Band gain · ×${1 << v}`]);
     const fluxOn = tune && tune.flux === 1;
     const pk = live.pk || 0;
     const pkPct = Math.min(100, (pk / 32767) * 100);
@@ -1769,66 +1793,89 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 
         {tune && (
           <>
-            <Panel title="Detection chain" accentDot={accent}>
-              <div style={row}>
-                <Dropdown value={tune.fft} onChange={(v) => applyTune('fft', parseInt(v))} options={[[1, 'Analysis · real FFT'], [0, 'Analysis · legacy envelopes']]} accent={accent} dense />
-                <Dropdown value={tune.flux} onChange={(v) => applyTune('flux', parseInt(v))} options={[[1, 'Detector · spectral flux'], [0, 'Detector · band level']]} accent={accent} dense />
-                <Dropdown value={tune.trk} onChange={(v) => applyTune('trk', parseInt(v))} options={[[1, 'BPM · tempo tracker'], [0, 'BPM · interval median']]} accent={accent} dense />
+            <Accordion title="Detection chain" defaultOpen accent={accent}>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.5, marginBottom: 10 }}>
+                Read top to bottom. <b>Analysis</b> decides whether the three bands are real
+                frequency bands or the old single wideband signal. <b>Detector</b> is then chosen per
+                band: <i>energy</i> follows the level through an attack/decay envelope — right for
+                bass, where the kick dominates the band; <i>flux</i> reacts only to a rise — needed
+                for mids, where vocals and pads sit in the band continuously and only the snare's
+                attack stands out. <b>Tempo</b> and <b>Octave</b> only affect the BPM readout, not
+                the triggers.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
+                <Dropdown value={tune.fft} onChange={(v) => applyTune('fft', parseInt(v))} options={[[1, 'Analysis · frequency bands'], [0, 'Analysis · legacy wideband']]} accent={accent} dense />
+                <Dropdown value={tune.db} onChange={(v) => applyTune('db', parseInt(v))} options={[[0, 'Bass · energy'], [1, 'Bass · flux']]} accent="#22c55e" dense />
+                <Dropdown value={tune.dm} onChange={(v) => applyTune('dm', parseInt(v))} options={[[0, 'Mid · energy'], [1, 'Mid · flux']]} accent="#fbbf24" dense />
+                <Dropdown value={tune.dh} onChange={(v) => applyTune('dh', parseInt(v))} options={[[0, 'High · energy'], [1, 'High · flux']]} accent="#22d3ee" dense />
+                <Dropdown value={tune.trk} onChange={(v) => applyTune('trk', parseInt(v))} options={[[1, 'Tempo · auto tracker'], [0, 'Tempo · interval median']]} accent={accent} dense />
                 <Dropdown value={tune.tmul} onChange={(v) => applyTune('tmul', parseInt(v))} options={[[0, 'Octave · as measured'], [1, 'Octave · ×2'], [2, 'Octave · ÷2']]} accent={accent} dense />
               </div>
-              <div style={{ marginTop: 8, fontFamily: '"JetBrains Mono", monospace', fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+              <div style={{ marginTop: 9, fontFamily: '"JetBrains Mono", monospace', fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
                 tempo measured <b style={{ color: accent }}>{live.tBPM || '--'}</b> BPM
                 {live.tBPM ? ` → shown ${live.tmul === 1 ? live.tBPM * 2 : live.tmul === 2 ? Math.round(live.tBPM / 2) : live.tBPM}` : ''}
               </div>
-            </Panel>
+            </Accordion>
 
-            <Panel title="Band edges · FFT bins" accentDot={accent}>
+            <Accordion title="Level & thresholds" accent={accent}>
+              <LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact />
+              <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', margin: '2px 0 10px' }}>
+                Sets how far above a band's own fluctuation an event has to rise. It is no longer a
+                multiple of the average, so one setting should hold across steady and dynamic music.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
+                <Dropdown value={tune.ig} onChange={(v) => applyTune('ig', parseInt(v))} options={gainOpts(5)} accent={accent} dense />
+                <Dropdown value={tune.fg} onChange={(v) => applyTune('fg', parseInt(v))} options={bandGainOpts()} accent={accent} dense />
+                <Dropdown value={tune.nf} onChange={(v) => applyTune('nf', parseInt(v))} options={[[0, 'Noise floor · 0'], [50, 'Noise floor · 50'], [100, 'Noise floor · 100'], [200, 'Noise floor · 200'], [400, 'Noise floor · 400'], [800, 'Noise floor · 800'], [1500, 'Noise floor · 1500']]} accent={accent} dense />
+                <Dropdown value={tune.dts} onChange={(v) => applyTune('dts', parseInt(v))} options={shiftOpts('Threshold follow')} accent={accent} dense />
+                <Dropdown value={tune.mtd} onChange={(v) => applyTune('mtd', parseInt(v))} options={shiftOpts('Mid trim')} accent="#fbbf24" dense />
+                <Dropdown value={tune.htd} onChange={(v) => applyTune('htd', parseInt(v))} options={shiftOpts('High trim')} accent="#22d3ee" dense />
+              </div>
+            </Accordion>
+
+            <Accordion title="Band edges" accent={accent}
+              badge={`${hz(tune.bbl)}–${hz(tune.bbh + 1)} · ${hz(tune.bml)}–${hz(tune.bmh + 1)} · ${hz(tune.bhl)}–${hz(tune.bhh + 1)} Hz`}>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.45 }}>
-                Many kick drums carry energy well above the default 156Hz bass edge. Widen LOW if kicks
-                are being missed, and watch the coloured area in the spectrum move.
+                Widen LOW if kicks are being missed — many carry energy above the default edge. The
+                coloured areas in the spectrum above move with these. Bin width is {BIN_HZ} Hz;
+                the top bin is {nbin - 1} ({hz(nbin)} Hz).
               </div>
-              <div style={row}>
-                <LabeledSlider label={`Low from ${hz(tune.bbl)}Hz`} value={tune.bbl} onChange={(v) => applyTune('bbl', v)} min={1} max={126} accent="#22c55e" compact />
-                <LabeledSlider label={`Low to ${hz(tune.bbh + 1)}Hz`} value={tune.bbh} onChange={(v) => applyTune('bbh', v)} min={1} max={127} accent="#22c55e" compact />
-                <LabeledSlider label={`Mid from ${hz(tune.bml)}Hz`} value={tune.bml} onChange={(v) => applyTune('bml', v)} min={1} max={126} accent="#fbbf24" compact />
-                <LabeledSlider label={`Mid to ${hz(tune.bmh + 1)}Hz`} value={tune.bmh} onChange={(v) => applyTune('bmh', v)} min={1} max={127} accent="#fbbf24" compact />
-                <LabeledSlider label={`High from ${hz(tune.bhl)}Hz`} value={tune.bhl} onChange={(v) => applyTune('bhl', v)} min={1} max={126} accent="#22d3ee" compact />
-                <LabeledSlider label={`High to ${hz(tune.bhh + 1)}Hz`} value={tune.bhh} onChange={(v) => applyTune('bhh', v)} min={1} max={127} accent="#22d3ee" compact />
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
+                <LabeledSlider label={`Low from ${hz(tune.bbl)}Hz`} value={tune.bbl} onChange={(v) => applyTune('bbl', v)} min={1} max={nbin - 2} accent="#22c55e" compact />
+                <LabeledSlider label={`Low to ${hz(tune.bbh + 1)}Hz`} value={tune.bbh} onChange={(v) => applyTune('bbh', v)} min={1} max={nbin - 1} accent="#22c55e" compact />
+                <LabeledSlider label={`Mid from ${hz(tune.bml)}Hz`} value={tune.bml} onChange={(v) => applyTune('bml', v)} min={1} max={nbin - 2} accent="#fbbf24" compact />
+                <LabeledSlider label={`Mid to ${hz(tune.bmh + 1)}Hz`} value={tune.bmh} onChange={(v) => applyTune('bmh', v)} min={1} max={nbin - 1} accent="#fbbf24" compact />
+                <LabeledSlider label={`High from ${hz(tune.bhl)}Hz`} value={tune.bhl} onChange={(v) => applyTune('bhl', v)} min={1} max={nbin - 2} accent="#22d3ee" compact />
+                <LabeledSlider label={`High to ${hz(tune.bhh + 1)}Hz`} value={tune.bhh} onChange={(v) => applyTune('bhh', v)} min={1} max={nbin - 1} accent="#22d3ee" compact />
               </div>
-            </Panel>
+            </Accordion>
 
-            <Panel title="Thresholds & gain" accentDot={accent}>
-              <div style={row}>
-                <LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact />
-                <LabeledSlider label={`Input gain ×${1 << (tune.ig || 0)}`} value={tune.ig || 0} onChange={(v) => applyTune('ig', v)} min={0} max={5} accent={accent} compact />
-                <LabeledSlider label="Noise floor" value={tune.nf} onChange={(v) => applyTune('nf', v)} min={0} max={2000} accent={accent} compact />
-                <LabeledSlider label={`Band gain ×${1 << tune.fg}`} value={tune.fg} onChange={(v) => applyTune('fg', v)} min={0} max={10} accent={accent} compact />
-                <LabeledSlider label={`Threshold follow ${shiftLabel(tune.dts)}`} value={tune.dts} onChange={(v) => applyTune('dts', v)} min={0} max={10} accent={accent} compact />
-                <LabeledSlider label={`Mid trim ${shiftLabel(tune.mtd)}`} value={tune.mtd} onChange={(v) => applyTune('mtd', v)} min={0} max={10} accent="#fbbf24" compact />
-                <LabeledSlider label={`High trim ${shiftLabel(tune.htd)}`} value={tune.htd} onChange={(v) => applyTune('htd', v)} min={0} max={10} accent="#22d3ee" compact />
+            <Accordion title="Envelope attack / decay" accent={accent}
+              badge={(tune.db && tune.dm && tune.dh) ? 'all bands on flux — unused' : 'used by bands set to energy'}>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.45 }}>
+                These shape the envelope follower and therefore apply only to bands set to
+                <b> energy</b>. A band on <b>flux</b> bypasses them entirely, because an onset is a
+                single-frame spike and smoothing it away is the opposite of what the detector needs.
               </div>
-            </Panel>
-
-            <Panel title="Envelope attack / decay" accentDot={fluxOn ? 'rgba(255,255,255,0.25)' : accent}
-              right={fluxOn ? <span style={{ fontSize: 10, color: '#fbbf24', fontWeight: 700, letterSpacing: 0.5 }}>INACTIVE</span> : null}>
-              <div style={{ fontSize: 11, color: fluxOn ? '#fbbf24' : 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.45 }}>
-                {fluxOn
-                  ? 'These do nothing while the detector is set to spectral flux: an onset is a single-frame spike, so the flux value goes to the detector unsmoothed and these envelopes are bypassed entirely. Switch the detector to “band level” above to use them.'
-                  : 'Attack and decay of the per-band envelope followers, used by the band-level detector and the legacy path.'}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
+                <div style={{ opacity: tune.db ? 0.3 : 1, pointerEvents: tune.db ? 'none' : 'auto', display: 'grid', gap: 8 }}>
+                  <Dropdown value={tune.sa} onChange={(v) => applyTune('sa', parseInt(v))} options={shiftOpts('Bass attack')} accent="#22c55e" dense />
+                  <Dropdown value={tune.sd} onChange={(v) => applyTune('sd', parseInt(v))} options={shiftOpts('Bass decay')} accent="#22c55e" dense />
+                </div>
+                <div style={{ opacity: tune.dm ? 0.3 : 1, pointerEvents: tune.dm ? 'none' : 'auto', display: 'grid', gap: 8 }}>
+                  <Dropdown value={tune.ma} onChange={(v) => applyTune('ma', parseInt(v))} options={shiftOpts('Mid attack')} accent="#fbbf24" dense />
+                  <Dropdown value={tune.md} onChange={(v) => applyTune('md', parseInt(v))} options={shiftOpts('Mid decay')} accent="#fbbf24" dense />
+                </div>
+                <div style={{ opacity: tune.dh ? 0.3 : 1, pointerEvents: tune.dh ? 'none' : 'auto', display: 'grid', gap: 8 }}>
+                  <Dropdown value={tune.fa} onChange={(v) => applyTune('fa', parseInt(v))} options={shiftOpts('High attack')} accent="#22d3ee" dense />
+                  <Dropdown value={tune.fd} onChange={(v) => applyTune('fd', parseInt(v))} options={shiftOpts('High decay')} accent="#22d3ee" dense />
+                </div>
               </div>
-              <div style={{ ...row, opacity: fluxOn ? 0.35 : 1, pointerEvents: fluxOn ? 'none' : 'auto' }}>
-                <LabeledSlider label={`Low attack ${shiftLabel(tune.sa)}`} value={tune.sa} onChange={(v) => applyTune('sa', v)} min={0} max={10} accent="#22c55e" compact />
-                <LabeledSlider label={`Low decay ${shiftLabel(tune.sd)}`} value={tune.sd} onChange={(v) => applyTune('sd', v)} min={0} max={10} accent="#22c55e" compact />
-                <LabeledSlider label={`Mid attack ${shiftLabel(tune.ma)}`} value={tune.ma} onChange={(v) => applyTune('ma', v)} min={0} max={10} accent="#fbbf24" compact />
-                <LabeledSlider label={`Mid decay ${shiftLabel(tune.md)}`} value={tune.md} onChange={(v) => applyTune('md', v)} min={0} max={10} accent="#fbbf24" compact />
-                <LabeledSlider label={`High attack ${shiftLabel(tune.fa)}`} value={tune.fa} onChange={(v) => applyTune('fa', v)} min={0} max={10} accent="#22d3ee" compact />
-                <LabeledSlider label={`High decay ${shiftLabel(tune.fd)}`} value={tune.fd} onChange={(v) => applyTune('fd', v)} min={0} max={10} accent="#22d3ee" compact />
-              </div>
-            </Panel>
+            </Accordion>
 
             <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.35)', lineHeight: 1.5 }}>
-              All values here are stored on the device and restored after a reboot (written a moment
-              after you stop adjusting, so dragging a slider does not hammer the flash).
+              Everything here is stored on the device and restored after a reboot, written a moment
+              after you stop adjusting. Changes made through the API appear here within a second.
             </div>
           </>
         )}

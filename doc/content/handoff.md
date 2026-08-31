@@ -1,64 +1,39 @@
 # Horizon Light Controller — Project Handoff & Status
 
 > ## ⏭️ NEXT CHAT STARTS HERE (2026-09-01)
-> **Zuerst flashen: nur die Firmware, `data/` ist unverändert — OTA reicht.**
+> **Firmware UND Filesystem flashen — beides hat sich geändert, also USB:**
 > ```
-> python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
->         -i 192.168.8.113 -p 3232 -f .pio/build/supermini/firmware.bin -r
+> pio run -t upload   --upload-port /dev/cu.usbmodem1101
+> pio run -t uploadfs --upload-port /dev/cu.usbmodem1101
 > ```
-> Auf dem Gerät läuft der Stand *vor* der Onset-Gewichtung; die UI ist aktuell.
+> Alles kompiliert und syntaxgeprüft, aber **nichts davon lief je auf Hardware** — die
+> Anlage war aus. Details in `history.md` 2026-09-01.
 >
-> ### Ausgangslage
-> Gelöst und gemessen: Eingangsverstärkung (`ig`, ×8 ohne Clipping), erweiterter
-> Sensitivity-Bereich (Faktor bis 0,5), Sync-Teiler wirkt bei Audio-Triggern,
-> Mehr-Beat-Zyklen laufen, Beat-Uhr ist phasengeregelt. Kick-Trigger trifft das
-> Raster: 398 ms bei 390 ms Beat, Streuung von 187 auf 107 ms halbiert.
+> ### Was neu ist
+> - **Detektor pro Band wählbar** (Energie mit Hüllkurve / Flux), Vorgabe Bass=Energie,
+>   Mitten=Flux, Höhen=Flux. In der GUI unter „Detection chain", per API `?db= ?dm= ?dh=`.
+> - **Schwelle = Mittelwert + k × MAD** statt Mittelwert × Faktor. Die Sensitivity setzt k
+>   und sollte damit nicht mehr pro Genre nachgezogen werden müssen — das ist der Punkt,
+>   den es zu prüfen gilt.
+> - **16 kHz / N=512**: nutzbar bis 8 kHz statt 4 kHz, Bin-Breite unverändert 31,25 Hz.
+>   Bass beginnt jetzt bei Bin 2 (62 Hz), High reicht bis Bin 200 (6250 Hz).
+> - **GUI**: Sync-Fehler behoben (API-Änderungen erscheinen jetzt in den Bedienelementen),
+>   vier Klappbereiche statt einer langen Liste, Dropdowns statt Regler bei festen Werten.
 >
-> **Offen ist allein die Tempo-*Schätzung*.** Drei Verfahren sind gemessen
-> gescheitert (Details in `history.md` 2026-08-31 (4)). Der gemessene Mechanismus:
-> der Detektor feuert 2,67×/s bei einer Beat-Rate von 2,37×/s, und dieser Überschuss
-> bildet ein konkurrierendes ~170-BPM-Raster.
->
-> ### Plan für morgen, in dieser Reihenfolge
->
-> **1. Referenz herstellen.** Monotonen Techno mit bekanntem, konstantem BPM
-> auflegen und laufen lassen (gestern: 142). Nicht mit Drum & Bass anfangen — das
-> ist der schwierigste Fall, und an ihm zu entwickeln hat gestern mehrere
-> Iterationen gekostet. Erst den einfachen Fall festnageln, dann härten.
->
-> **2. Gewichtete Schätzung messen** (neu, kompiliert aber ungetestet). Die Onsets
-> gehen jetzt mit ihrer Stärke gewichtet in den Phasentest, damit schwache
-> Zwischenschläge die Kicks nicht überstimmen. Erwartung: der Wert bleibt in der
-> Nähe des echten Tempos, statt zwischen 138 und 185 zu springen. Prüfen mit
-> `tBPM` aus `/api/audio_debug` über 60–90 s.
->
-> **3. Den fairen A/B-Vergleich fahren — ohne eine Zeile Code.** Der User hat
-> eingewandt, das alte Energiekonzept sei besser gewesen, und das ist plausibel:
-> ein Kick dominiert die Gesamtenergie, ein Breitband-Transient ist robuster als
-> ein schmales 31–156-Hz-Band. Der frühere Vergleich lief aber mit 9,6 %
-> Aussteuerung — das alte Verfahren hat nie von Eingangsverstärkung und
-> erweitertem Sensitivity-Bereich profitiert. Beide Pfade sind zur Laufzeit
-> schaltbar:
-> - `curl "…/audio_tune?flux=0"` → Pegel-Erkennung im Band
-> - `curl "…/audio_tune?fft=0"` → ursprüngliches Breitband-Energiekonzept
-> - `curl "…/audio_tune?flux=1&fft=1"` → aktueller Stand
->
-> Jeweils Onset-Rate (Ziel: eine pro Beat), Intervall-Median und `tBPM` vergleichen.
->
-> **4. Falls die Schätzung weiter zickt: Tempo tappen.** Das ist kein Rückzug,
-> sondern das übliche Vorgehen bei Lichtpulten — Tempo per Tap setzen, Audio
-> korrigiert nur die Phase, und genau die funktioniert nachweislich. Damit ist der
-> Live-Betrieb unabhängig von der Schätzung nutzbar.
->
-> ### Nützliche Werte
-> Audio-Tuning liegt in NVS und übersteht den Reboot. Startpunkt: `ig=3` (×8),
-> `sens` materialabhängig (Techno eher 30, D&B eher 70 — genau diese Abhängigkeit
-> soll die neue Gewichtung beseitigen). Alles im AUDIO-Tab sichtbar: Spektrum mit
-> Bandbereichen, Eingangspegel mit Clip-Anzeige, Beat-Marker je Band.
+> ### Testreihenfolge
+> 1. Flashen, AUDIO-Tab öffnen, **Cmd+Shift+R**. Spektrum sollte jetzt bis 8 kHz reichen.
+> 2. Musik an, Eingangspegel prüfen (`ig`), auf Clipping achten.
+> 3. **Kernfrage: hält eine Sensitivity über verschiedene Genres?** Erst Techno, dann D&B,
+>    ohne `sens` anzufassen. Früher war 30 gegen 70 nötig — wenn das jetzt entfällt, hat
+>    die MAD-Schwelle ihren Zweck erfüllt.
+> 4. Detektor-Varianten vergleichen: Bass auf Energie vs. Flux, Mitten auf Flux vs. Energie.
+>    Erwartung laut Theorie: Bass=Energie klar besser, Mitten=Flux klar besser.
+> 5. Tempo-Wert beobachten (`tBPM`). Falls er weiter springt: `MIN_BEAT_INTERVAL_MS` von
+>    280 ms Richtung 150–200 ms senken — der DJM-500 nutzt dieses Fenster, wir sind träger.
+> 6. Zum Schluss Werte einstellen, Gerät neu starten, prüfen dass alles erhalten ist.
 >
 > ### Danach
-> Der **Preset-Engine-Split (Layer)** ist weiterhin der nächste Feature-Schritt und
-> braucht kein neues NVS-Format — siehe `handover.md`.
+> **Preset-Engine-Split (Layer)** — braucht kein neues NVS-Format, siehe `handover.md`.
 >
 > ## Vorherige Session (2026-08-26)
 > **Kein offener Blocker. Gerät läuft mit dem aktuellen Stand, alles ist auf

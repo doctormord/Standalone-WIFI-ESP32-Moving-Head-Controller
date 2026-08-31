@@ -36,6 +36,9 @@ void saveAudioPrefs() {
     prefs.putInt("a_htd", tuneHighThreshDivShift);
     prefs.putInt("a_fg", tuneFftGainShift);
     prefs.putInt("a_ig", tuneInputGainShift);
+    prefs.putInt("a_db", tuneDetBass);
+    prefs.putInt("a_dm", tuneDetMid);
+    prefs.putInt("a_dh", tuneDetHigh);
     prefs.putInt("a_tmul", tempoMulMode);
     prefs.putInt("a_bbl", tuneBinBassLo);
     prefs.putInt("a_bbh", tuneBinBassHi);
@@ -65,6 +68,9 @@ void loadAudioPrefs() {
     tuneHighThreshDivShift = prefs.getInt("a_htd", tuneHighThreshDivShift);
     tuneFftGainShift = prefs.getInt("a_fg", tuneFftGainShift);
     tuneInputGainShift = prefs.getInt("a_ig", tuneInputGainShift);
+    tuneDetBass = prefs.getInt("a_db", tuneDetBass);
+    tuneDetMid  = prefs.getInt("a_dm", tuneDetMid);
+    tuneDetHigh = prefs.getInt("a_dh", tuneDetHigh);
     tempoMulMode = prefs.getInt("a_tmul", tempoMulMode);
     tuneBinBassLo = prefs.getInt("a_bbl", tuneBinBassLo);
     tuneBinBassHi = prefs.getInt("a_bbh", tuneBinBassHi);
@@ -80,10 +86,14 @@ void loadAudioPrefs() {
   prefs.end();
   // Defensive: a corrupt or hand-edited NVS value must not be able to make a band inverted or
   // point past the spectrum, which would read out of bounds in fftBand()/fftFlux().
-  tuneBinBassLo = constrain(tuneBinBassLo, 1, 126); tuneBinBassHi = constrain(tuneBinBassHi, tuneBinBassLo, 127);
-  tuneBinMidLo  = constrain(tuneBinMidLo,  1, 126); tuneBinMidHi  = constrain(tuneBinMidHi,  tuneBinMidLo,  127);
-  tuneBinHighLo = constrain(tuneBinHighLo, 1, 126); tuneBinHighHi = constrain(tuneBinHighHi, tuneBinHighLo, 127);
+  const int LAST_BIN = FFT_N / 2 - 1;
+  tuneBinBassLo = constrain(tuneBinBassLo, 1, LAST_BIN - 1); tuneBinBassHi = constrain(tuneBinBassHi, tuneBinBassLo, LAST_BIN);
+  tuneBinMidLo  = constrain(tuneBinMidLo,  1, LAST_BIN - 1); tuneBinMidHi  = constrain(tuneBinMidHi,  tuneBinMidLo,  LAST_BIN);
+  tuneBinHighLo = constrain(tuneBinHighLo, 1, LAST_BIN - 1); tuneBinHighHi = constrain(tuneBinHighHi, tuneBinHighLo, LAST_BIN);
   hwAudioSensitivity = constrain(hwAudioSensitivity, 0, 100);
+  tuneDetBass = constrain(tuneDetBass, 0, 1);
+  tuneDetMid  = constrain(tuneDetMid, 0, 1);
+  tuneDetHigh = constrain(tuneDetHigh, 0, 1);
   tempoMulMode = constrain(tempoMulMode, 0, 2);
 }
 
@@ -482,7 +492,7 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    char buf[1280];
+    static char buf[1500];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
@@ -492,7 +502,7 @@ void setupAPI() {
       "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
       "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
       "\"trk\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
-      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d}",
+      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d,\"db\":%d,\"dm\":%d,\"dh\":%d,\"nbin\":%d}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -505,7 +515,8 @@ void setupAPI() {
       audioUseTracker ? 1 : 0, trackedBPM, (long)trackedScore,
       (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode,
       (long)micPeak, micClipCount,
-      tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift);
+      tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift,
+      tuneDetBass, tuneDetMid, tuneDetHigh, FFT_N / 2);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -520,7 +531,9 @@ void setupAPI() {
   // different rates. Values are the unscaled magnitudes -- the client decides on log scaling,
   // which keeps the display honest about how much energy is really there.
   server.on("/api/spectrum", []() {
-    char buf[1100];
+    // 256 bins since the move to 16kHz/N=512. Sized for the worst case rather than the
+    // typical one: a truncated array would still parse as valid-looking JSON up to the cut.
+    static char buf[2600];
     int n = snprintf(buf, sizeof(buf), "{\"n\":%d,\"hz\":%d,\"pk\":%ld,\"clip\":%d,\"b\":[",
                      FFT_N / 2, SAMPLING_FREQUENCY / FFT_N, (long)micPeak, micClipCount);
     for (int i = 0; i < FFT_N / 2 && n < (int)sizeof(buf) - 12; i++) {
@@ -550,17 +563,24 @@ void setupAPI() {
     // flux=0 reverts to level-based detection; dts is how fast the dynamic threshold chases
     // the signal -- the single most relevant knob for sustained-bass material, and it was
     // not reachable from outside at all until now.
-    if (server.hasArg("flux")) audioUseFlux = (server.arg("flux") == "1");
+    if (server.hasArg("flux")) {
+      audioUseFlux = (server.arg("flux") == "1");
+      tuneDetBass = tuneDetMid = tuneDetHigh = audioUseFlux ? 1 : 0;   // legacy: all three at once
+    }
+    // Per-band detector: 0 = band energy with envelope follower, 1 = spectral flux.
+    if (server.hasArg("db")) tuneDetBass = constrain(server.arg("db").toInt(), 0, 1);
+    if (server.hasArg("dm")) tuneDetMid  = constrain(server.arg("dm").toInt(), 0, 1);
+    if (server.hasArg("dh")) tuneDetHigh = constrain(server.arg("dh").toInt(), 0, 1);
     if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
     if (server.hasArg("tmul")) tempoMulMode = constrain(server.arg("tmul").toInt(), 0, 2);
     // Band edges in FFT bins (bin = 31.25Hz). Clamped so a band can never invert or reach
     // past the spectrum; bin 0 is DC and always excluded.
-    if (server.hasArg("bbl")) tuneBinBassLo = constrain(server.arg("bbl").toInt(), 1, 126);
-    if (server.hasArg("bbh")) tuneBinBassHi = constrain(server.arg("bbh").toInt(), tuneBinBassLo, 127);
-    if (server.hasArg("bml")) tuneBinMidLo  = constrain(server.arg("bml").toInt(), 1, 126);
-    if (server.hasArg("bmh")) tuneBinMidHi  = constrain(server.arg("bmh").toInt(), tuneBinMidLo, 127);
-    if (server.hasArg("bhl")) tuneBinHighLo = constrain(server.arg("bhl").toInt(), 1, 126);
-    if (server.hasArg("bhh")) tuneBinHighHi = constrain(server.arg("bhh").toInt(), tuneBinHighLo, 127);
+    if (server.hasArg("bbl")) tuneBinBassLo = constrain(server.arg("bbl").toInt(), 1, FFT_N / 2 - 2);
+    if (server.hasArg("bbh")) tuneBinBassHi = constrain(server.arg("bbh").toInt(), tuneBinBassLo, FFT_N / 2 - 1);
+    if (server.hasArg("bml")) tuneBinMidLo  = constrain(server.arg("bml").toInt(), 1, FFT_N / 2 - 2);
+    if (server.hasArg("bmh")) tuneBinMidHi  = constrain(server.arg("bmh").toInt(), tuneBinMidLo, FFT_N / 2 - 1);
+    if (server.hasArg("bhl")) tuneBinHighLo = constrain(server.arg("bhl").toInt(), 1, FFT_N / 2 - 2);
+    if (server.hasArg("bhh")) tuneBinHighHi = constrain(server.arg("bhh").toInt(), tuneBinHighLo, FFT_N / 2 - 1);
     markAudioPrefsDirty();
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);

@@ -16,11 +16,16 @@
 // energy for the High trigger. Dropping to ~2kHz (as considered once) would resolve bass a little
 // better but would delete the High band entirely, and these I2S mics are already being clocked
 // below their usual spec range at 8kHz.
-#define SAMPLING_FREQUENCY 8000
+// 16kHz, raised from 8000 on 2026-09-01. Nyquist moves from 4kHz to 8kHz, which is where hi-hat
+// and cymbal energy actually lives -- at 8kHz sampling the High band was clipped at its most
+// useful point. N doubles with it, so the bin width stays 31.25Hz and every configured band edge
+// keeps its meaning; only the highest usable bin moves from 127 to 255. Also puts the mic nearer
+// its specified clock range. Costs about 900us per frame instead of 400us, still under 3% CPU.
+#define SAMPLING_FREQUENCY 16000
 // One FFT frame. 256 @ 8kHz = 32ms of audio and 31.25Hz per bin -- fine enough to separate kick
 // from snare from hi-hat, short enough that a frame still fits inside one poll interval.
-#define FFT_N 256
-#define FFT_LOG2N 8
+#define FFT_N 512
+#define FFT_LOG2N 9
 #define SAMPLES FFT_N
 // Poll cadence deliberately equals the frame duration (256/8000 = 32ms), so samples are consumed
 // at exactly the rate the I2S peripheral produces them. At the old 40ms the DMA ring would slowly
@@ -29,7 +34,7 @@
 // 4 x 256 samples = 1024 samples (~128ms) of slack, so an occasional long loop iteration cannot
 // cost us a frame. The old 2 x 128 held exactly 256 samples -- one frame, with nothing to spare.
 #define DMA_BUF_COUNT 4
-#define DMA_BUF_LEN 256
+#define DMA_BUF_LEN 512
 // Zero, deliberately: i2s_read must NEVER block the main loop. A blocking read here would stall
 // DMX output and movement -- the exact failure mode an earlier FFT attempt produced. If a full
 // frame is not buffered yet we simply skip this poll and pick it up 32ms later; the DMA ring
@@ -38,12 +43,15 @@
 #define BYTES_PER_SAMPLE_32BIT 4
 
 // Band edges as FFT bin indices (bin width = 8000/256 = 31.25Hz). Bin 0 (DC) is always skipped.
-#define BIN_BASS_LO 1     //   31 Hz
+// Bin 1 (31Hz) is rumble rather than kick, and the 1995 DJM-500 -- whose beat detector is a
+// bandpass, envelope follower and adaptive comparator, i.e. exactly this shape in analogue --
+// used roughly 50-150Hz. Starting at bin 2 matches that and drops the sub-rumble.
+#define BIN_BASS_LO 2     //   62 Hz
 #define BIN_BASS_HI 5     //  156 Hz  -- kick drum fundamental
 #define BIN_MID_LO  6     //  187 Hz
 #define BIN_MID_HI  38    // 1187 Hz  -- snare body, vocals, most instruments
 #define BIN_HIGH_LO 80    // 2500 Hz
-#define BIN_HIGH_HI 127   // 3968 Hz  -- hi-hat / cymbal
+#define BIN_HIGH_HI 200   // 6250 Hz  -- hi-hat / cymbal, now that 16kHz sampling reaches it
 
 // =========================================================
 // --- AUDIO PROCESSING & ENVELOPES ---
@@ -480,7 +488,25 @@ inline bool audioUseFFT = true;
 // Spectral-flux onset detection instead of absolute level (/audio_tune?flux=0 to compare).
 // Default on: with sustained-bass material (drum & bass) the level detector measurably
 // cannot find the pulse -- see fftFlux() for the numbers.
-inline bool audioUseFlux = true;
+inline bool audioUseFlux = true;   // legacy global (?flux=) -- sets all three bands at once
+// Detector per band: 0 = band energy with envelope follower, 1 = spectral flux.
+// They are genuinely different tools and the right choice differs per band:
+//   Bass  -- energy. The kick dominates the band, so its level IS the event, and an envelope
+//            follower on it is what classic hardware beat detectors do.
+//   Mid   -- flux. Vocals, pads and bass harmonics sit in this band CONTINUOUSLY, so a level
+//            detector always sees "a lot"; only the snare's rise distinguishes it.
+//   High  -- either. Cymbals sustain (favours flux), closed hats are short (energy is fine).
+inline int tuneDetBass = 0;
+inline int tuneDetMid  = 1;
+inline int tuneDetHigh = 1;
+
+// Mean absolute deviation per band, for a variance-adaptive threshold. A fixed multiple of the
+// mean cannot work across material: in steady music the mean sits close to the peaks and nothing
+// crosses, in dynamic music everything does -- which is why the best sensitivity came out at 30
+// for techno and 70 for drum & bass. Scaling the threshold by how much the band actually
+// fluctuates removes that dependency, and is what Patin's classic energy beat detector does with
+// the variance. MAD is used rather than variance because it needs no squaring and no rescaling.
+inline int32_t dynMadBass = 0, dynMadMid = 0, dynMadHigh = 0;
 // Display-only copies so the AUDIO tab can show level and flux side by side.
 inline int32_t lastBassLevel = 0, lastMidLevel = 0, lastHighLevel = 0;
 inline int32_t lastBassFlux = 0, lastMidFlux = 0, lastHighFlux = 0;
@@ -558,19 +584,22 @@ void pollAudioEngine() {
       for (int i = 0; i < FFT_N / 2; i++) fftMagPrev[i] = fftMag[i];
       tempoTrackerPush(lastBassFlux, now);
 
-      if (audioUseFlux) {
-        // Raw flux goes into the detector unsmoothed, on purpose. An onset IS a single-frame
-        // spike; running it through the attack/decay envelope would smear exactly the peak the
-        // detector is looking for. The dynamic threshold below still averages over time, so a
-        // spike is judged against the recent typical flux rather than against nothing.
-        envSlow = lastBassFlux;
-        envMid  = lastMidFlux;
-        envFast = lastHighFlux;
-      } else {
+      // Per band: flux goes in unsmoothed (an onset IS a single-frame spike, and the envelope
+      // would smear exactly the peak we are looking for), while energy runs through the
+      // attack/decay follower -- which is what makes those sliders meaningful again for any band
+      // set to energy.
+      if (tuneDetBass) envSlow = lastBassFlux;
+      else {
         if (bRaw > envSlow) envSlow += (bRaw - envSlow) >> tuneSlowAttackShift;
         else envSlow -= (envSlow - bRaw) >> tuneSlowDecayShift;
-        if (mRaw > envMid)  envMid  += (mRaw - envMid)  >> tuneMidAttackShift;
-        else envMid  -= (envMid - mRaw)  >> tuneMidDecayShift;
+      }
+      if (tuneDetMid) envMid = lastMidFlux;
+      else {
+        if (mRaw > envMid) envMid += (mRaw - envMid) >> tuneMidAttackShift;
+        else envMid -= (envMid - mRaw) >> tuneMidDecayShift;
+      }
+      if (tuneDetHigh) envFast = lastHighFlux;
+      else {
         if (hRaw > envFast) envFast += (hRaw - envFast) >> tuneFastAttackShift;
         else envFast -= (envFast - hRaw) >> tuneFastDecayShift;
       }
@@ -595,25 +624,21 @@ void pollAudioEngine() {
     // Bands are now independent, so mid/high are read directly instead of being derived as
     // differences between envelope speeds (that construction is what once made midEnergy
     // structurally ~0 -- see the tuneMidAttackShift comment above).
-    int32_t bassEnergy, midEnergy, highEnergy;
-    if (audioUseFFT) {
-      bassEnergy = envSlow;
-      midEnergy  = envMid;
-      highEnergy = envFast;
-    } else {
-      bassEnergy = envSlow;
+    int32_t bassEnergy = envSlow, midEnergy = envMid, highEnergy = envFast;
+    if (!audioUseFFT) {
+      // Legacy broadband path: the three envelopes are all fed from the same wideband sample
+      // magnitude, so mid and high only mean anything as differences between them.
       midEnergy  = std::max((int32_t)0, (int32_t)(envMid - envSlow));
       highEnergy = std::max((int32_t)0, (int32_t)(envFast - envMid));
     }
 
+    // Threshold = running mean + k x mean-absolute-deviation. Sensitivity now sets k rather than
+    // a multiple of the mean, so the same setting works whether the music is steady or dynamic.
+    int32_t kSens = ((100 - hwAudioSensitivity) * 32) / 100 + 4;   // sens 0 -> 36, sens 100 -> 4
     dynThreshold += (envSlow - dynThreshold) >> tuneDynThreshSmoothShift;
-    // Range widened from [1.0 .. 2.0] to [0.5 .. 2.0]. The old mapping could never put the
-    // threshold BELOW the running mean, so with sparse onsets -- where the mean sits close to
-    // the peaks -- kicks stayed under it no matter how the slider was set. Measured live at
-    // 150 BPM: threshold median 840 against a bass band median of 384, with sens already at its
-    // most sensitive setting. Anything under 1.0 was simply not reachable.
-    float sens = 2.0f - (hwAudioSensitivity * 0.015f);
-    int32_t thBass = (dynThreshold * sens) + tuneNoiseFloor;
+    { int32_t dv = envSlow - dynThreshold; if (dv < 0) dv = -dv;
+      dynMadBass += (dv - dynMadBass) >> tuneDynThreshSmoothShift; }
+    int32_t thBass = dynThreshold + (dynMadBass * kSens) / 8 + tuneNoiseFloor;
     lastBassEnergy = bassEnergy; lastMidEnergy = midEnergy; lastHighEnergy = highEnergy; lastThBass = thBass;
 
     bool beatDetected = (bassEnergy > thBass && (now - lastBassTime) > MIN_BEAT_INTERVAL_MS);
@@ -772,9 +797,13 @@ void pollAudioEngine() {
     if (audioUseFFT) {
       dynThresholdMid  += (envMid  - dynThresholdMid)  >> tuneDynThreshSmoothShift;
       dynThresholdHigh += (envFast - dynThresholdHigh) >> tuneDynThreshSmoothShift;
-      thMid  = (int32_t)(dynThresholdMid  * sens) + tuneNoiseFloor;
-      thHigh = (int32_t)(dynThresholdHigh * sens) + tuneNoiseFloor;
-      // The existing divisor tunables stay usable as a per-band sensitivity trim.
+      { int32_t dv = envMid - dynThresholdMid; if (dv < 0) dv = -dv;
+        dynMadMid += (dv - dynMadMid) >> tuneDynThreshSmoothShift; }
+      { int32_t dv = envFast - dynThresholdHigh; if (dv < 0) dv = -dv;
+        dynMadHigh += (dv - dynMadHigh) >> tuneDynThreshSmoothShift; }
+      thMid  = dynThresholdMid  + (dynMadMid  * kSens) / 8 + tuneNoiseFloor;
+      thHigh = dynThresholdHigh + (dynMadHigh * kSens) / 8 + tuneNoiseFloor;
+      // The divisor tunables stay usable as a per-band trim on top of that.
       thMid  >>= (tuneMidThreshDivShift  > 0 ? tuneMidThreshDivShift  - 1 : 0);
       thHigh >>= (tuneHighThreshDivShift > 0 ? tuneHighThreshDivShift - 1 : 0);
     } else {
