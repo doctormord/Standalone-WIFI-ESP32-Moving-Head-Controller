@@ -12,27 +12,24 @@
 #define I2S_SD   6
 #define I2S_PORT I2S_NUM_0
 
-// 8kHz stays: it puts the Nyquist limit at 4kHz, which still carries plenty of hi-hat/cymbal
-// energy for the High trigger. Dropping to ~2kHz (as considered once) would resolve bass a little
-// better but would delete the High band entirely, and these I2S mics are already being clocked
-// below their usual spec range at 8kHz.
-// 16kHz, raised from 8000 on 2026-09-01. Nyquist moves from 4kHz to 8kHz, which is where hi-hat
+// 16kHz, raised from 8000 on 2026-09-01. (Lowering it to ~2kHz was considered earlier and
+// rejected for the opposite reason: it would have deleted the High band entirely.) Nyquist moves from 4kHz to 8kHz, which is where hi-hat
 // and cymbal energy actually lives -- at 8kHz sampling the High band was clipped at its most
 // useful point. N doubles with it, so the bin width stays 31.25Hz and every configured band edge
 // keeps its meaning; only the highest usable bin moves from 127 to 255. Also puts the mic nearer
 // its specified clock range. Costs about 900us per frame instead of 400us, still under 3% CPU.
 #define SAMPLING_FREQUENCY 16000
-// One FFT frame. 256 @ 8kHz = 32ms of audio and 31.25Hz per bin -- fine enough to separate kick
+// One FFT frame. 512 @ 16kHz = 32ms of audio and 31.25Hz per bin -- fine enough to separate kick
 // from snare from hi-hat, short enough that a frame still fits inside one poll interval.
 #define FFT_N 512
 #define FFT_LOG2N 9
 #define SAMPLES FFT_N
-// Poll cadence deliberately equals the frame duration (256/8000 = 32ms), so samples are consumed
+// Poll cadence deliberately equals the frame duration (512/16000 = 32ms), so samples are consumed
 // at exactly the rate the I2S peripheral produces them. At the old 40ms the DMA ring would slowly
 // fill and then drop blocks, which shows up as sporadically missed beats rather than as an error.
 #define AUDIO_POLL_INTERVAL_MS 32
-// 4 x 256 samples = 1024 samples (~128ms) of slack, so an occasional long loop iteration cannot
-// cost us a frame. The old 2 x 128 held exactly 256 samples -- one frame, with nothing to spare.
+// 4 x 512 samples = 2048 samples (~128ms) of slack, so an occasional long loop iteration cannot
+// cost us a frame. The original 2 x 128 held exactly one frame, with nothing to spare.
 #define DMA_BUF_COUNT 4
 #define DMA_BUF_LEN 512
 // Zero, deliberately: i2s_read must NEVER block the main loop. A blocking read here would stall
@@ -42,7 +39,7 @@
 #define I2S_READ_TIMEOUT_MS 0
 #define BYTES_PER_SAMPLE_32BIT 4
 
-// Band edges as FFT bin indices (bin width = 8000/256 = 31.25Hz). Bin 0 (DC) is always skipped.
+// Band edges as FFT bin indices (bin width = 16000/512 = 31.25Hz). Bin 0 (DC) is always skipped.
 // Bin 1 (31Hz) is rumble rather than kick, and the 1995 DJM-500 -- whose beat detector is a
 // bandpass, envelope follower and adaptive comparator, i.e. exactly this shape in analogue --
 // used roughly 50-150Hz. Starting at bin 2 matches that and drops the sub-rumble.
@@ -63,13 +60,6 @@
 // passages -- harmless there because it only ever takes abs() of it, fatal for an FFT.
 #define SAMPLE_DOWNSCALE_SHIFT_FFT 16
 
-// Attack/Decay speeds (bit-shifts: 1=/2, 2=/4, 3=/8, 4=/16), the mid/high threshold divisors, and
-// the noise floor together are this project's "fake FFT" -- three leaky-integrator envelope
-// followers at different attack/decay speeds standing in for a real frequency-domain split (see
-// bassEnergy/midEnergy/highEnergy below). Runtime-tunable (not #define) so the new AUDIO DEBUG tab
-// can adjust them live via /audio_tune without a reflash -- added 2026-08-20 after live movement
-// beat-sync debugging showed there was no way to see or tune this pipeline except by guessing.
-// Defaults match the previous #define values exactly.
 // Band edges as runtime values (defaults from the BIN_* defines above). Tunable because the
 // right split depends on the material: many kick drums carry usable energy up to ~200Hz,
 // which the default bass edge at 156Hz leaves in the Mid band. Changing them by ear beats
@@ -99,6 +89,10 @@ inline void markAudioPrefsDirty() { audioPrefsDirty = true; audioPrefsDirtyAt = 
 // The clip counter above is the guard rail: turn this up until CLIPPING shows, then back off.
 inline int tuneInputGainShift = 0;   // 0..5 -> x1 .. x32
 
+// Attack/Decay speeds as bit-shifts (1 = /2, 2 = /4 ...), the mid/high threshold trims and the
+// noise floor. Runtime-tunable rather than #define so the AUDIO tab can adjust them live via
+// /audio_tune without a reflash. These envelope followers were once the whole detector -- the
+// project's "fake FFT" -- and now shape only the bands set to energy detection.
 inline int tuneNoiseFloor = 100;
 inline int tuneFastAttackShift = 1;
 inline int tuneFastDecayShift = 2;
