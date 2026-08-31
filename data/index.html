@@ -1680,7 +1680,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             nf: d.nf, fa: d.fa, fd: d.fd, ma: d.ma, md: d.md, sa: d.sa, sd: d.sd,
             mtd: d.mtd, htd: d.htd, dts: d.dts, fg: d.fg, tmul: d.tmul,
             fft: d.fft, flux: d.flux, trk: d.trk,
-            bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh,
+            bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh, ig: d.ig,
           });
           const buf = bufRef.current;
           buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi);
@@ -1731,7 +1731,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         <Panel title="Mic input · level" accentDot={clipping ? '#ef4444' : accent}
           right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: clipping ? '#fca5a5' : 'rgba(255,255,255,0.45)' }}>{clipping ? `CLIPPING (${live.clip})` : 'headroom ok'}</span>}>
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 7, lineHeight: 1.45 }}>
-            Raw peak of the last frame, before any band split — the one number the graphs below cannot
+            Raw peak of the last frame, after input gain and before any band split — the one number the graphs below cannot
             show you, because they are scaled. If this pins at the top, everything downstream is
             distorted no matter how the thresholds are set.
           </div>
@@ -1800,6 +1800,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             <Panel title="Thresholds & gain" accentDot={accent}>
               <div style={row}>
                 <LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact />
+                <LabeledSlider label={`Input gain ×${1 << (tune.ig || 0)}`} value={tune.ig || 0} onChange={(v) => applyTune('ig', v)} min={0} max={5} accent={accent} compact />
                 <LabeledSlider label="Noise floor" value={tune.nf} onChange={(v) => applyTune('nf', v)} min={0} max={2000} accent={accent} compact />
                 <LabeledSlider label={`Band gain ×${1 << tune.fg}`} value={tune.fg} onChange={(v) => applyTune('fg', v)} min={0} max={10} accent={accent} compact />
                 <LabeledSlider label={`Threshold follow ${shiftLabel(tune.dts)}`} value={tune.dts} onChange={(v) => applyTune('dts', v)} min={0} max={10} accent={accent} compact />

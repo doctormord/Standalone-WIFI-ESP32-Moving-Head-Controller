@@ -4201,3 +4201,49 @@ von `{tune && (…)}`; gegengeprüft, bevor geflasht wurde.
   per OTA neu gestartet — nach dem Boot waren **alle fünf Werte unverändert vorhanden**.
   Anschließend auf die Standardwerte zurückgesetzt.
 - Presets „Sky Moover"/„yellow three" haben beide Flash-Vorgänge überstanden.
+
+### 2026-08-31 (2) — „Dimmer FX trifft den Beat nicht": drei Ursachen, live gemessen
+
+Meldung des Users bei laufender Musik mit **150 BPM**: Dimmer-FX trifft den Beat nicht,
+mit Global-BPM etwas besser, auf Kickdrum unbrauchbar. Zusatzinfo: lauter geht nicht,
+das Mikrofon sitzt bereits 10 cm vom Lautsprecher.
+
+**Ursache 1 — Eingangspegel viel zu niedrig, Schwelle über dem Signal.** Gemessen:
+Mic-Peak median 1231 / max 3136 von 32767, also **9,6 % Aussteuerung**. Bassband median
+384 gegen Schwelle median 840 — die Schwelle lag also die meiste Zeit *über* dem Signal,
+nur die lautesten Kicks kamen durch. Da physisch kein Pegel mehr zu holen war, jetzt
+**digitale Eingangsverstärkung** (`ig`, 0–5 = ×1…×32), angewendet vor der FFT. Live
+eingemessen: ×8 ist die höchste Stufe ohne Clipping (Peak max 24688, 0 Clips), das
+Bassband steigt damit von 384 auf ~4960 und liegt sauber über der Schwelle.
+
+**Ursache 2 — Sensitivity konnte die Schwelle nie unter den Mittelwert bringen.** Die
+Abbildung war `2,0 − sens/100`, erreichte also bestenfalls Faktor 1,0. Bei sparsamen
+Onsets liegt der laufende Mittelwert aber dicht an den Peaks. Jetzt `2,0 − sens×0,015`,
+Bereich also 2,0…0,5. Der im Sweep beste Wert liegt bei **Faktor 0,95** — vorher schlicht
+nicht einstellbar:
+
+| sens | Faktor | Abstand (Median) | vs. 400 ms Beat |
+|---|---|---|---|
+| 55 | 1,18 | 418 ms | 1,05 |
+| **70** | **0,95** | **404 ms** | **1,01** |
+| 85 | 0,73 | 361 ms | 0,90 |
+| 100 | 0,50 | 342 ms | 0,86 |
+
+**Ursache 3 — der Tempo-Tracker meldete 164 statt 150.** 9 % Fehler, bei BPM-Sync also
+ein ganzer Beat Versatz pro 4 Sekunden. Grund war die Lag-Auflösung: bei 32 ms pro Frame
+ist ein 400-ms-Beat 12,5 Frames, benachbarte Lags liegen **~16 BPM** auseinander. Fix:
+die Periode wird jetzt aus der höchsten brauchbaren **Oberwelle** bestimmt (Peak bei k·L
+suchen, verfeinern, herunterteilen) — bei Lag 25 ist der Fehler halb so groß, bei 37 ein
+Drittel. Ergebnis: **acht Messungen hintereinander exakt 150**.
+
+Die erste Fassung dieses Fixes änderte gar nichts, wegen zweier eigener Denkfehler: das
+Suchfenster war mit ±1 Frame zu eng (liegt die Basis 1,1 Frames daneben, ist der Peak bei
+k=2 schon 2,2 Frames entfernt), und die Plausibilitätstoleranz von 0,25 Frames verwarf
+genau die Korrektur, um die es ging. Fenster wächst jetzt mit k, Toleranz 1,2 Frames.
+
+**Kein Bug, aber eine Falle für den Bediener:** Bei Audio-Trigger (`trigger >= 2`) läuft
+der Modulator weiter mit `speed` als Periodendauer, der Beat setzt nur `phase = 0`. Mit
+`speed = 2000 ms` und Kicks alle 400 ms erreicht die Phase pro Beat nur 0,2 — der Dimmer
+durchläuft also **nur 20 % seines Bereichs**. Für Audio-getriggerte Modulatoren muss
+`speed` ungefähr der Beatlänge entsprechen (400 ms bei 150 BPM), sonst sieht es aus, als
+täte der Effekt nichts.

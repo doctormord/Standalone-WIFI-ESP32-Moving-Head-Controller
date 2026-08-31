@@ -84,6 +84,13 @@ inline bool audioPrefsDirty = false;
 inline unsigned long audioPrefsDirtyAt = 0;
 inline void markAudioPrefsDirty() { audioPrefsDirty = true; audioPrefsDirtyAt = millis(); }
 
+// Digital input gain, applied to the FFT input only. Measured 2026-08-31 with the mic 10cm
+// from the speaker: peak was 1231 median / 3136 max out of 32767, i.e. under 10% of the
+// available range, which throws away more than three bits before the transform even starts.
+// Physical level could not be raised further, so the resolution is recovered here instead.
+// The clip counter above is the guard rail: turn this up until CLIPPING shows, then back off.
+inline int tuneInputGainShift = 0;   // 0..5 -> x1 .. x32
+
 inline int tuneNoiseFloor = 100;
 inline int tuneFastAttackShift = 1;
 inline int tuneFastDecayShift = 2;
@@ -350,6 +357,47 @@ inline void tempoTrackerEval() {
   }
   if (lagMilli < 1000) return;
 
+  // Refine the period from the HIGHEST usable harmonic instead of the base lag. Resolution is the
+  // problem at fast tempi: at 32ms per frame a 150 BPM beat is 12.5 frames, so neighbouring lags
+  // are ~16 BPM apart and interpolation alone reported 164 for a true 150 (measured live
+  // 2026-08-31). The same period measured at lag 25 has half that error, at lag 37 a third. So
+  // look for the correlation peak near k*L, refine it, and divide back down.
+  {
+    int32_t bestRefined = lagMilli;
+    for (int k = 2; k <= 4; k++) {
+      int centre = (int)(((int64_t)lagMilli * k + 500) / 1000);
+      if (centre < 3 || centre + 1 > TEMPO_RING / 3) break;
+      // Window widens with k: an error of e frames in the base estimate becomes k*e frames at the
+      // k-th harmonic, so a fixed +/-1 window cannot reach the peak it is looking for. That was the
+      // reason the first version of this changed nothing at all.
+      int pk = centre;
+      for (int c = centre - k; c <= centre + k; c++) {
+        if (c >= 2 && c + 1 <= TEMPO_RING / 3 && tempoPlainAvg[c] > tempoPlainAvg[pk]) pk = c;
+      }
+      // Only trust the harmonic if it is a real local maximum with meaningful strength --
+      // otherwise dividing noise down would look like precision it does not have.
+      if (tempoPlainAvg[pk] <= 0) continue;
+      if (!(tempoPlainAvg[pk] >= tempoPlainAvg[pk - 1] && tempoPlainAvg[pk] >= tempoPlainAvg[pk + 1])) continue;
+      int64_t a = tempoPlainAvg[pk - 1], b = tempoPlainAvg[pk], c2 = tempoPlainAvg[pk + 1];
+      int64_t den = a - 2 * b + c2;
+      int32_t refined = pk * 1000;
+      if (den != 0) {
+        int64_t off = ((a - c2) * 500) / den;
+        if (off > 500) off = 500; else if (off < -500) off = -500;
+        refined += (int32_t)off;
+      }
+      int32_t asBase = refined / k;
+      // Guard against latching onto a neighbouring peak: the harmonic estimate must still agree
+      // with the base estimate to within a quarter of a frame per multiple.
+      int32_t diff = asBase > lagMilli ? asBase - lagMilli : lagMilli - asBase;
+      // Tolerance has to exceed the base estimate's own uncertainty -- roughly one frame -- or
+      // the harmonic can never correct it. 0.25 frames, as first written, rejected every
+      // useful correction: a true 12.5 measured as 11.4 needs 1.1 frames of headroom.
+      if (diff <= 1200) bestRefined = asBase;
+    }
+    lagMilli = bestRefined;
+  }
+
   // Step 3 -- pick the octave that the onsets actually support. The harmonic sum deliberately
   // favours the slowest member of the family, which for drum & bass is the half-time feel (it
   // found 88 for a 176 BPM track). Choosing among half / base / double by PLAIN autocorrelation
@@ -497,7 +545,7 @@ void pollAudioEngine() {
       uint32_t t0 = micros();
       int32_t peak = 0; int clips = 0;
       for (int i = 0; i < FFT_N; i++) {
-        int32_t s = raw_samples[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT;
+        int32_t s = (raw_samples[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << tuneInputGainShift;
         if (s > 32767) { s = 32767; clips++; }
         else if (s < -32768) { s = -32768; clips++; }
         int32_t a = s < 0 ? -s : s;
@@ -579,7 +627,12 @@ void pollAudioEngine() {
     }
 
     dynThreshold += (envSlow - dynThreshold) >> tuneDynThreshSmoothShift;
-    float sens = 2.0f - (hwAudioSensitivity * 0.01f);
+    // Range widened from [1.0 .. 2.0] to [0.5 .. 2.0]. The old mapping could never put the
+    // threshold BELOW the running mean, so with sparse onsets -- where the mean sits close to
+    // the peaks -- kicks stayed under it no matter how the slider was set. Measured live at
+    // 150 BPM: threshold median 840 against a bass band median of 384, with sens already at its
+    // most sensitive setting. Anything under 1.0 was simply not reachable.
+    float sens = 2.0f - (hwAudioSensitivity * 0.015f);
     int32_t thBass = (dynThreshold * sens) + tuneNoiseFloor;
     lastBassEnergy = bassEnergy; lastMidEnergy = midEnergy; lastHighEnergy = highEnergy; lastThBass = thBass;
 

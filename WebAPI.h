@@ -35,6 +35,7 @@ void saveAudioPrefs() {
     prefs.putInt("a_mtd", tuneMidThreshDivShift);
     prefs.putInt("a_htd", tuneHighThreshDivShift);
     prefs.putInt("a_fg", tuneFftGainShift);
+    prefs.putInt("a_ig", tuneInputGainShift);
     prefs.putInt("a_tmul", tempoMulMode);
     prefs.putInt("a_bbl", tuneBinBassLo);
     prefs.putInt("a_bbh", tuneBinBassHi);
@@ -63,6 +64,7 @@ void loadAudioPrefs() {
     tuneMidThreshDivShift = prefs.getInt("a_mtd", tuneMidThreshDivShift);
     tuneHighThreshDivShift = prefs.getInt("a_htd", tuneHighThreshDivShift);
     tuneFftGainShift = prefs.getInt("a_fg", tuneFftGainShift);
+    tuneInputGainShift = prefs.getInt("a_ig", tuneInputGainShift);
     tempoMulMode = prefs.getInt("a_tmul", tempoMulMode);
     tuneBinBassLo = prefs.getInt("a_bbl", tuneBinBassLo);
     tuneBinBassHi = prefs.getInt("a_bbh", tuneBinBassHi);
@@ -490,7 +492,7 @@ void setupAPI() {
       "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
       "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
       "\"trk\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
-      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d}",
+      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -503,7 +505,7 @@ void setupAPI() {
       audioUseTracker ? 1 : 0, trackedBPM, (long)trackedScore,
       (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode,
       (long)micPeak, micClipCount,
-      tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi);
+      tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -562,6 +564,7 @@ void setupAPI() {
     markAudioPrefsDirty();
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
+    if (server.hasArg("ig"))  tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5);
     server.send(200, "OK");
   });
 
