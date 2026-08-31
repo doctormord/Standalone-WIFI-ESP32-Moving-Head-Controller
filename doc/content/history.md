@@ -4174,3 +4174,30 @@ Spektrums erzeugen kann.
 **Status: kompiliert und syntaxgeprüft, aber nicht auf Hardware getestet** — das Gerät war an
 diesem Tag nicht erreichbar, Flashen erst Montag. Firmware 92,5 % Flash, `data/` 783 KB von
 1408 KB.
+
+### Nachtrag 2026-08-31: Absturz des AUDIO-Tabs (selbst verursacht) und Verifikation am Gerät
+
+**Meldung:** „wenn ich audio tab abrufe kommt nichts im browser."
+
+**Ursache war ein Fehler aus dem Commit vom 2026-08-28** (Tempo-Panel): der Panel-Block
+stand **außerhalb** der `tune`-Absicherung und griff direkt auf `tune.tmul` zu. `tune` ist
+beim ersten Render `null` (wird erst vom ersten `/api/audio_debug`-Poll gefüllt), also warf
+die Komponente sofort einen TypeError und React brach den gesamten Renderbaum ab — leere
+Seite, zuverlässig bei jedem Aufruf. Der Fehler blieb bis hierher unentdeckt, weil die
+Tempo-Arbeit danach ausschließlich per `curl` verifiziert wurde und niemand den Tab im
+Browser geöffnet hat. **Lehre: eine UI-Änderung ist nicht verifiziert, solange sie nur über
+die API geprüft wurde.**
+
+Die neu gebaute Fassung hat den Fehler nicht — sämtliche `tune.*`-Zugriffe liegen innerhalb
+von `{tune && (…)}`; gegengeprüft, bevor geflasht wurde.
+
+**Am Gerät verifiziert (Firmware + Filesystem per USB):**
+
+- `/api/spectrum` liefert 128 Bins à 31 Hz; mit eingeschaltetem Mikrofon tragen 78 davon
+  Energie — die Kette bis zur Anzeige steht.
+- Bandgrenzen und Mic-Pegel erscheinen korrekt in `/api/audio_debug`.
+- **NVS-Persistenz mit echtem Neustart geprüft**, nicht angenommen: Testwerte gesetzt
+  (`bbh=7`, `nf=250`, `fg=5`, `sens=70`, Mikrofon an), 3 s gewartet (Entprellung 1,5 s),
+  per OTA neu gestartet — nach dem Boot waren **alle fünf Werte unverändert vorhanden**.
+  Anschließend auf die Standardwerte zurückgesetzt.
+- Presets „Sky Moover"/„yellow three" haben beide Flash-Vorgänge überstanden.
