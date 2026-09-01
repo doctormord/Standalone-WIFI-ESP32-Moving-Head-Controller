@@ -399,6 +399,42 @@ int main(int argc, char** argv) {
       printf("  %-5s  %-15s  %6zu  %5.2f   %5.0f ms  %6.1f    %5.0f%%\n",
              o.name, o.range, o.on.size(), o.on.size()/secs, med, 60000.0/med, dev/med*100);
     }
+    // Where do Mid and High actually land relative to the kick? "On the offbeat" and "on every
+    // eighth" produce the same interval but very different lighting, so measure the phase rather
+    // than infer it: for each onset, how far after the previous bass onset it sits, as a
+    // fraction of the bass interval.
+    {
+      std::vector<double>& bass = obs[0].on;
+      std::vector<double> bg;
+      for (size_t i = 1; i < bass.size(); i++) {
+        double d = bass[i] - bass[i-1];
+        if (d > 40 && d < 2000) bg.push_back(d);
+      }
+      if (bg.size() >= 4 && bass.size() >= 4) {
+        std::sort(bg.begin(), bg.end());
+        double beat = bg[bg.size()/2];
+        printf("\n  Phasenlage zum Kick (Beat = %.0f ms), in Achteln des Beats:\n", beat);
+        printf("  %-6s", "Band");
+        for (int k = 0; k < 8; k++) printf("%6.2f", k / 8.0);
+        printf("\n");
+        for (int bi = 1; bi < 3; bi++) {
+          int bins[8] = {0};
+          for (double o : obs[bi].on) {
+            // nearest preceding bass onset
+            double prev = -1;
+            for (double b : bass) { if (b <= o + 20) prev = b; else break; }
+            if (prev < 0) continue;
+            double ph = (o - prev) / beat;
+            ph -= floor(ph);
+            bins[(int)(ph * 8) % 8]++;
+          }
+          int tot = 0; for (int k = 0; k < 8; k++) tot += bins[k];
+          printf("  %-6s", obs[bi].name);
+          for (int k = 0; k < 8; k++) printf("%5.0f%%", tot ? 100.0 * bins[k] / tot : 0.0);
+          printf("\n");
+        }
+      }
+    }
     printf("\n  globalBPM %d\n", globalBPM);
     return 0;
   }
