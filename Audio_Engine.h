@@ -394,6 +394,13 @@ inline void sdUpdateStats() {
   sdMinLevel = sdFloor * 2;
 }
 inline uint32_t sdSampleClock = 0;
+// Does the sample clock keep up with real time? sdSampleClock only advances for audio we actually
+// processed, so any sample the DMA ring drops makes it run slow -- and since beat intervals are
+// measured on it, a slow clock reports every tempo too high. This is the number that says whether
+// the collection path is losing audio: positive means the sample clock is behind the wall clock,
+// in parts per thousand. It should sit at essentially zero.
+inline uint32_t sdClkStartWall = 0, sdClkStartSample = 0;
+inline int      sdClkDriftPpt = 0;
 inline uint32_t sdLastOnsetMs = 0;
 inline bool     sdArmed = true;
 inline int32_t  sdLastEnv = 0, sdLastThr = 0;   // for the AUDIO tab
@@ -829,19 +836,31 @@ void pollAudioEngine() {
 
   if (!hwAudioEnabled) return;
 
-  static unsigned long lastAudioPoll = 0;
   unsigned long now = millis();
-  
-  if (now - lastAudioPoll < AUDIO_POLL_INTERVAL_MS) return; 
-  lastAudioPoll = now;
   uint32_t pollT0 = micros();
 
+  // Drain the I2S ring on EVERY call and accumulate until a full frame is assembled, rather than
+  // asking for 512 samples once every 32ms.
+  //
+  // 512 samples at 16kHz is exactly 32.000ms, and the old gate was `>= 32ms`, so with millis()
+  // granularity and loop jitter the average collection interval was necessarily a little SLOWER
+  // than the microphone produces. The DMA ring (4 x 512 = 128ms) therefore backed up until the
+  // driver began dropping new samples. Worse, i2s_read has already removed a partial frame from
+  // the ring by the time we see it is short, so the old early-return threw those samples away.
+  //
+  // Both losses corrupt time itself here: sdSampleClock counts only samples we processed, so
+  // missing audio makes the clock run slow, which makes every beat interval measure SHORT and
+  // every tempo read HIGH. Measured across this session, wall-clock onsets sat at 452ms while
+  // the device reported 427ms -- a ratio of 1.059, i.e. about 6% of the audio never arrived.
+  // That is the whole of the systematic error we kept blaming on the estimator.
+  static int rawFill = 0;
   size_t bytes_read = 0;
-  if (i2s_read(I2S_PORT, raw_samples, sizeof(int32_t) * SAMPLES, &bytes_read, pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS)) == ESP_OK && bytes_read > 0) {
-    int count = bytes_read / BYTES_PER_SAMPLE_32BIT;
-    // A partial frame is skipped outright rather than fed through the legacy maths, which would
-      // emit a wrongly-scaled energy for that frame and show up as a spurious trigger.
-    if (audioUseFFT && count < FFT_N) return;
+  if (i2s_read(I2S_PORT, raw_samples + rawFill, sizeof(int32_t) * (SAMPLES - rawFill),
+               &bytes_read, pdMS_TO_TICKS(I2S_READ_TIMEOUT_MS)) == ESP_OK && bytes_read > 0) {
+    rawFill += bytes_read / BYTES_PER_SAMPLE_32BIT;
+    if (rawFill < SAMPLES) return;   // keep what we have; the rest arrives on a later call
+    rawFill = 0;
+    int count = SAMPLES;
 
     if (audioUseFFT) {
       // --- Real frequency separation ---------------------------------------------------
@@ -866,6 +885,16 @@ void pollAudioEngine() {
       }
       micPeak = peak; micClipCount = clips;
       // Continuous-time onset detection on the same block the FFT just consumed.
+      // Clock health, measured over a long window so it reflects steady-state loss, not jitter.
+      if (sdClkStartWall == 0 || (uint32_t)(now - sdClkStartWall) > 60000UL) {
+        sdClkStartWall = (uint32_t)now; sdClkStartSample = sdSampleClock;
+      } else {
+        uint32_t wallEl = (uint32_t)now - sdClkStartWall;
+        if (wallEl > 3000UL) {
+          uint32_t sampEl = (uint32_t)(((uint64_t)(sdSampleClock - sdClkStartSample) * 1000ULL) / SAMPLING_FREQUENCY);
+          sdClkDriftPpt = (int)(((int64_t)wallEl - (int64_t)sampEl) * 1000LL / (int64_t)wallEl);
+        }
+      }
       sdUpdateStats();   // block-level: window median, peak, spread -> this block's threshold
       sdOnsetMs = sdEnabled ? sdProcessBlock(raw_samples, FFT_N, tuneInputGainShift) : 0;
       fftRun();

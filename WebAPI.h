@@ -235,7 +235,11 @@ void setupAPI() {
     json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs)
             + ",\"audUs\":" + String(audioLastUs) + ",\"audMax\":" + String(audioMaxUs)
             + ",\"fftUs\":" + String(fftLastUs)
-            + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs);
+            + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs)
+            // Mic level and clipping ride along on the telemetry poll every client already
+            // runs, so the header can warn about a badly set input on any tab without
+            // anyone having to open the AUDIO one -- and without a second request.
+            + ",\"pk\":" + String((long)micPeak) + ",\"clip\":" + String(micClipCount);
     json += ",\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "]}";
     server.send(200, "application/json", json);
     guiBass = false; guiMid = false; guiHigh = false;
@@ -537,7 +541,7 @@ void setupAPI() {
       "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
       "\"sdEnv\":%ld,\"sdThr\":%ld,"
       "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
-      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d}",
+      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -555,7 +559,7 @@ void setupAPI() {
       sdEnabled ? 1 : 0, sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
       (long)sdLastEnv, (long)sdLastThr,
       (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
-      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct);
+      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdClkDriftPpt);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
