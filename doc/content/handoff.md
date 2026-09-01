@@ -27,6 +27,24 @@ Gerät hat alte Werte in NVS, die die neuen Standardwerte überschreiben. Nach d
 
 `hwAudioEnabled` steht nach einem Reboot auf 0 — Audio muss explizit eingeschaltet werden.
 
+## Vor dem Gerät: der Simulator
+
+`sim/` fährt den echten Detektorcode nativ gegen synthetische Musik mit **exakt bekannter**
+Beat-Position. Bauen und laufen lassen:
+
+    cd sim && c++ -std=c++17 -O2 -I fake -I .. -o simbeat sim.cpp
+    ./simbeat --mode tempo --sens 60        # 90..174 BPM
+    ./simbeat --mode level --auto           # 50-facher Pegelbereich
+
+Aktueller Stand dort: F = 0,988 bei 130 BPM, Treffergenauigkeit 100 %, Zeitfehler 6,9 ms,
+Tempo über 90–174 BPM auf 2 BPM genau, null verworfene Samples, null Uhrenabweichung.
+Der Simulator hat drei echte Fehler gefunden, die sonst erst am Gerät aufgefallen wären —
+darunter eine dauerhafte Stummschaltung nach dem ersten Onset.
+
+**Er ersetzt die Hardware nicht.** Kein Mikrofon, kein Raum, keine PA-Kompression, und die
+Kick/Bass-Balance des Kunsttracks ist erfunden. Ein Ergebnis dort ist notwendig, nicht
+hinreichend.
+
 ## Prüfplan, in dieser Reihenfolge
 
 **0. Zuerst die Uhr prüfen — das ist der wichtigste Test.** `drift` auf `/api/audio_debug` ist
