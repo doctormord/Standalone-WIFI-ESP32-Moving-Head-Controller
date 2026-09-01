@@ -875,6 +875,8 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     const micPk = raw.pk || 0, micClip = raw.clip || 0;
     const micPct = Math.round((micPk / 32767) * 100);
     const micState = !micOn ? { show: false }
+      : (raw.rclip || 0) > 0 ? { show: true, color: '#f87171', label: 'MIC SAT',
+          title: 'The microphone itself is saturating - the signal arrives already flat-topped, so turning the input gain down cannot recover it. Move the mic away from the speaker.' }
       : micClip > 0 ? { show: true, color: '#f87171', label: `CLIP ${micPct}%`, title: raw.ag ? `Mic input is clipping (${micClip} saturated samples in the last frame). Auto range will bring it down within a second.` : `Mic input is clipping (${micClip} saturated samples in the last frame). Lower the input gain on the AUDIO tab, or set it to AUTO.` }
       : micPct < 8 ? { show: true, color: '#fbbf24', label: `MIC ${micPct}%`, title: 'Mic level is very low - raise the input gain on the AUDIO tab, or beat detection will have nothing to work with.' }
       : { show: true, color: '#4ade80', label: `MIC ${micPct}%${raw.ag ? ' A' : ''}`, title: raw.ag ? 'Mic level has headroom and is not clipping; input range is being set automatically.' : 'Mic level has headroom and is not clipping.' };

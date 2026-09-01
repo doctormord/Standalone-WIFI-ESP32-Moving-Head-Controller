@@ -250,7 +250,7 @@ void setupAPI() {
             // runs, so the header can warn about a badly set input on any tab without
             // anyone having to open the AUDIO one -- and without a second request.
             + ",\"pk\":" + String((long)micPeak) + ",\"clip\":" + String(micClipCount)
-            + ",\"ag\":" + String(autoGain ? 1 : 0);
+            + ",\"ag\":" + String(autoGain ? 1 : 0) + ",\"rclip\":" + String(micRawClipCount);
     json += ",\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "]}";
     server.send(200, "application/json", json);
     guiBass = false; guiMid = false; guiHigh = false;
@@ -553,7 +553,7 @@ void setupAPI() {
       "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
       "\"sdEnv\":%ld,\"sdThr\":%ld,"
       "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
-      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d",
+      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d,\"rclip\":%d",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -572,7 +572,7 @@ void setupAPI() {
       (long)sdLastEnv, (long)sdLastThr,
       (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
       tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdClkDriftPpt,
-      autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs);
+      autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs, micRawClipCount);
     // The spectrum rides along on request rather than living at its own URL. This server handles
     // requests one at a time from the main loop, so the per-request overhead dominates for small
     // payloads: the AUDIO tab used to poll two endpoints and spent more time on round trips than

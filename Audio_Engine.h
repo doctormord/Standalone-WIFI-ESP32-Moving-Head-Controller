@@ -72,7 +72,8 @@ inline int tuneBinHighLo = BIN_HIGH_LO, tuneBinHighHi = BIN_HIGH_HI;
 // Without this the rolling graph's auto-scaling hides both silence and overload -- they look
 // identical once everything is normalised.
 inline int32_t micPeak = 0;       // peak magnitude of the last frame, pre-clamp -- may exceed 32767 when overdriven
-inline int micClipCount = 0;      // samples at/near full scale in the last frame
+inline int micClipCount = 0;      // samples at/near full scale after our gain, in the last frame
+inline int micRawClipCount = 0;   // samples already saturated at the microphone -- gain cannot fix these
 
 // Audio tuning is persisted to NVS, but NOT on every change: dragging a slider fires a
 // request per step, and writing flash on each one would burn erase cycles for no reason.
@@ -417,6 +418,9 @@ inline void updateAutoGain(uint32_t now) {
   int32_t hi = (full * agHighPct) / 100, lo = (full * agLowPct) / 100;
   int delta = 0;
 
+  // Turning the gain down cannot undo saturation that happened at the converter, so do not keep
+  // stepping down chasing it -- that would only make a signal that is already flat-topped quieter.
+  if (micRawClipCount > 0) { agHighSince = agLowSince = 0; return; }
   if (agPeakWin > hi) {
     if (agHighSince == 0) agHighSince = now;
     else if ((uint32_t)(now - agHighSince) > (uint32_t)agDownDelayMs) {
@@ -967,8 +971,16 @@ void pollAudioEngine() {
       // were indistinguishable and "bass" was just the smoothed total level. That is why a
       // dedicated High trigger (e.g. strobe on hi-hats) could not work before.
       uint32_t t0 = micros();
-      int32_t peak = 0; int clips = 0;
+      int32_t peak = 0; int clips = 0; int rawClips = 0;
       for (int i = 0; i < FFT_N; i++) {
+        // Saturation at the microphone is a different failure from our own gain being too high,
+        // and only one of them is fixable from here. `s` below is an int32 computation that does
+        // not saturate, so however far past full scale it lands is measurable and the input range
+        // can be corrected by exactly that much. But if the acoustic level exceeded the converter
+        // itself, raw_samples arrives already flat-topped: the overshoot is unknowable, and
+        // lowering the gain cannot undo it because the damage is upstream. Count that separately
+        // so it can be reported as what it is -- move the mic, do not turn anything down.
+        if (raw_samples[i] > 2104533975 || raw_samples[i] < -2104533975) rawClips++;
         int32_t s = (raw_samples[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << tuneInputGainShift;
         // Measure the level BEFORE clamping. Taking it afterwards pins the meter to full scale
         // as soon as one sample in the frame saturates, and it then cannot move again however
@@ -981,7 +993,7 @@ void pollAudioEngine() {
         fftRe[i] = (int16_t)(((int32_t)s * fftWindow[i]) >> 15);
         fftIm[i] = 0;
       }
-      micPeak = peak; micClipCount = clips;
+      micPeak = peak; micClipCount = clips; micRawClipCount = rawClips;
       // Continuous-time onset detection on the same block the FFT just consumed.
       // Clock health, measured over a long window so it reflects steady-state loss, not jitter.
       if (sdClkStartWall == 0 || (uint32_t)(now - sdClkStartWall) > 60000UL) {
