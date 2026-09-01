@@ -4670,3 +4670,59 @@ Minuten, der Track läuft weiter, und damit ist keine einzige dieser Zahlen bela
 die guten nicht. **Vor der nächsten Detektor-Einmessung muss eine feste Referenzaufnahme
 stehen** (Loop oder Metronom bei bekanntem Tempo), sonst wiederholt sich das ein drittes Mal.
 Das stand bereits als Vorsatz in Commit 7328427 und wurde übersprungen.
+
+### 2026-09-01 (6) — Der Komparator hatte nie eine Referenz
+
+Der User, zu Recht ungehalten: „du fummelst da einfach dauernd an was rum. und es wird nichr
+besser … was kann so schwer daran sein einfach unten im bass iwas mit komparator zu bauen …
+schwellwert rollend mit durchstechendem energy muss ein bass/kick sein … bpm rolling mittelung
+über 2-3s … range 60-200bpm."
+
+Genau das ist jetzt gebaut. Beim Durchrechnen seiner Beschreibung fielen **drei Fehler** auf,
+die erklären, warum keine der Einmessungen der letzten Tage etwas bedeuten konnte.
+
+**1. Die rollende Schwelle existierte nicht.** `sdRef += (sdEnv - sdRef) >> sdRefShift` ist eine
+Integer-Schiebung: ist die Differenz kleiner als `2^sdRefShift`, ergibt sie exakt 0 und die
+Referenz steht still. Bei Schiebung 14 ist die Totzone 16384 — die Referenz blieb bei null
+kleben, die Schwelle wurde damit konstant 8, und die Wiederscharfschaltung `sdEnv < sdRef`
+verlangte, dass ein Betrag unter null fällt: **nach dem allerersten Onset konnte der Detektor
+nie wieder scharf werden.** Das war die gemessene Rate von 0,00/s bei `brf=14`. Bei schneller
+Referenz blieb umgekehrt nur die Sperre als ratenbestimmende Größe übrig — daher der Median
+„Sperre plus 40 ms" bei jeder Einstellung. Referenz wird jetzt mit 8 Bit Zusatzgenauigkeit
+geführt.
+
+**2. Es gab gar keine Hüllkurve.** Der Release stand auf `sdRel = 7`, kommentiert als „~50ms".
+2⁷ Samples bei 16 kHz sind **8 ms**. Bei 8 ms folgt der Wert der gleichgerichteten
+Bandpassschwingung selbst, und die schwingt mit 40–160 Hz über jede Schwelle. Jetzt ~128 ms.
+
+**3. Das Band war zu breit.** 80–320 Hz ließ Basslinie und untere Mitten durch, von denen jede
+Überschreitung ein Fehl-Beat wurde. Jetzt 40–160 Hz, wie beim DJM.
+
+Dazu ein Fehler im neu gebauten Schätzer selbst: das Intervall wurde mit dem präzisen
+Sample-Uhr-Zeitstempel gefüllt, das Zeitfenster aber gegen `millis()` geprüft. Zwei Uhren — die
+Sample-Uhr läuft nach, also galt jedes Intervall sofort als abgelaufen und es kamen nie drei
+zusammen. Getrennt: Abstand auf der präzisen Uhr, Verfall auf der Wanduhr.
+
+**Fünf Schätzer sind rausgeflogen** (geglättete Median-Historie, Autokorrelation mit
+Harmonischen-Summierung, Intervall-Histogramm, Onset-Phasen-DFT, Hysterese). Zwei davon
+schrieben `globalBPM` unabhängig aus derselben Funktion, es gewann der zuletzt laufende. Jetzt
+genau ein Schreiber und genau ein Verfahren: Abstände messen, alles außerhalb 60–200 BPM
+verwerfen, Median über ein Zeitfenster. Das Verwerfen am Eingang ist es, was jede Oktav- und
+Faltungslogik dahinter überflüssig macht.
+
+**Messung mit allem drin:** 1,92 Onsets/s, Median 456 ms = 131,5 BPM gegen wahre 133 — und
+**kein einziger Abstand unter 200 ms** bei einer Sperre von 120 ms, die Sperre bestimmt die Rate
+also nachweislich nicht mehr.
+
+### Noch offen, und warum
+
+Der Schwellenfaktor ist nicht fertig eingemessen. Er ist der eine verbliebene Regler, und beim
+Versuch, ihn einzustellen, lieferte dieselbe Einstellung im Abstand von Minuten 427 ms und
+747 ms — der Track war in einen anderen Abschnitt gelaufen. Das ist zum dritten Mal in dieser
+Session dieselbe Sackgasse. **Ohne feste Referenzaufnahme (Loop oder Metronom, mehrere Minuten
+konstant) ist dieser letzte Schritt nicht durchführbar**, und weitere Sweeps gegen laufende
+Musik erzeugen nur wieder Zahlen, die beim nächsten Track nicht mehr gelten.
+
+Nebenbei aufgefallen: `sens` liegt auf `/hwaudio`, nicht auf `/audio_tune`. Frühere
+Empfindlichkeits-Sweeps dieser Session waren wirkungslos und ihre Schlussfolgerung
+(„die Schwelle wirkt nicht") entsprechend falsch.
