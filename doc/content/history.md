@@ -4515,3 +4515,48 @@ noch auf 180, obwohl die Firmware längst 200 erlaubt).
 
 In der GUI ist das Tempo-Dropdown jetzt dreistufig: *tapped (holds)* / *auto tracker* /
 *interval median*, mit Hinweistext, wenn der Tap-Wert gehalten wird.
+
+### 2026-09-01 (3) — BPM je Band gemessen: Mid ist das sauberste, nicht der Bass
+
+Auf die Frage des Users, was die drei Bänder einzeln an Tempo hergeben und ob es ein
+Vielfaches von 147 ist, direkt gemessen (Onset-Abstände je Band über 30 s):
+
+| Band | Rate | Abstand | ergibt | Streuung | Bezug zu 147 |
+|---|---|---|---|---|---|
+| low | 2,40/s | 364 ms | 165 BPM | 84 % | ~1×, 12 % daneben |
+| **mid** | 4,73/s | 206 ms | 291 BPM | **23 %** | **exakt 2×, 1 % daneben** |
+| high | 4,33/s | 210 ms | 286 BPM | 36 % | 2×, 3 % daneben |
+
+**Das Mid-Band ist mit Abstand das regelmäßigste** und liegt auf exakt dem doppelten Beat,
+also auf Achteln. Der Bass ist trotz Optimierung das *unregelmäßigste* Band. Da der
+Tempo-Tracker bisher **ausschließlich** aus Bass-Onsets gespeist wird, arbeitet er damit auf
+der schlechtesten verfügbaren Quelle — das ist der wichtigste Befund dieser Messreihe.
+
+### Die untere Grenzfrequenz war zu tief (Vorschlag des Users, bestätigt)
+
+Der User schlug vor, die untere Bandgrenze auf 80–100 Hz anzuheben. Direkt gegeneinander
+gemessen, dieselbe Passage:
+
+| Bass-Band | Rate | Abstand | Streuung | Rasterfehler |
+|---|---|---|---|---|
+| 62–187 Hz | 0,93/s | 683 ms | 159 % | 33 % |
+| 93–250 Hz | 1,60/s | 418 ms | 54 % | 2 % |
+| **125–281 Hz** | **1,80/s** | **407 ms** | **34 %** | **0 %** |
+
+Der Abstand trifft mit 407 ms die 408 ms des 147er-Beats exakt. Bemerkenswert: das Optimum
+liegt **deutlich höher** als die 50–150 Hz des DJM-500 — offenbar sitzt der Anschlag des
+Kicks höher als sein Grundton, und im Grundtonbereich drängelt die Basslinie, die den
+gleitenden Mittelwert oben hält und die Schwelle mitzieht.
+
+### Methodischer Vorbehalt
+
+Mehrere Folgemessungen waren **nicht vergleichbar**, weil die Musik zwischen den Läufen
+wechselte: dieselbe Einstellung lieferte einmal 2,40 Onsets/s bei 34 % Streuung und wenige
+Minuten später 0,98/s bei 155 %. Ein Vergleich Bass-Energie gegen Bass-Flux fiel dadurch
+ebenfalls aus. Für belastbares Feintuning braucht es eine über mehrere Minuten konstante
+Passage; alles andere misst die Musik, nicht die Einstellung.
+
+**Nächster Schritt, aus der Messung abgeleitet statt geraten:** den Tempo-Tracker aus dem
+**Mid-Band** speisen (oder aus dem jeweils regelmäßigsten), statt aus dem Bass. Die
+Oktav-Faltung im Tracker kann den Faktor 2 auflösen — die Mid-Onsets liegen ja sauber auf
+dem halben Beat.
