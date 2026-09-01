@@ -313,31 +313,85 @@ inline int32_t  sdLp1 = 0, sdLp2 = 0, sdEnv = 0, sdRef = 0, sdRefAcc = 0;
 //    specifically: a hard lockout is what turned this detector into a free-running oscillator
 //    whose onset median was always the lockout plus ~40ms. A threshold that decays back to
 //    normal cannot form a grid of its own.
-#define SD_VAR_HIST 5              // as in the sketch: a handful of recent envelope samples
-inline int32_t sdVarHist[SD_VAR_HIST];
-inline int     sdVarIdx = 0;
+// One window of recent envelope samples, one per block (~32ms), and three statistics from it.
+//
+// The threshold is placed IN THE DYNAMIC RANGE rather than as a multiple of an average:
+//   threshold = floor + fraction * (peak - floor)
+// which is the rule in gibbedy/BeatDetector. That makes the one remaining knob dimensionless --
+// a position between the quiet level and the loud level, not a gain -- so it does not have to be
+// recalibrated when the material changes level, which is what every previous tuning attempt here
+// foundered on.
+//
+// The floor is the MEDIAN, not the mean: foo_bpm (stengerh/foo_bpm) picks peaks against a median
+// of a sliding window, and the reason matters -- a mean is dragged upward by the very peaks it is
+// supposed to be measuring against, a median is not. Working around that with an ever slower
+// average is what produced the frozen-reference bug earlier.
+#define SD_STAT_HIST 24            // ~24 * 32ms = 768ms of history
+inline int32_t sdStatHist[SD_STAT_HIST];
+inline int     sdStatIdx = 0;
 inline bool    sdTransient = false;          // does the recent envelope look like an event?
 inline int32_t sdVarMad = 0, sdVarMean = 0;  // exposed for the AUDIO tab
+inline int32_t sdFloor = 0, sdPeakStat = 0;  // median and maximum of the window
+inline int32_t sdThrBlock = 0, sdMinLevel = 0;
 inline int     sdVarMinPct = 25;             // MAD must be at least this % of the mean
+// Fire at the envelope's PEAK, not at the moment it crosses the threshold. This is condition 1
+// of the peak-picker in Dixon, "Onset Detection Revisited" (DAFx-06), which requires an onset to
+// be a local maximum of the detection function. It matters because a threshold crossing moves
+// with the signal level -- louder passage, earlier crossing -- while the peak does not, so
+// intervals measured peak-to-peak are far more repeatable than crossing-to-crossing. That
+// repeatability is the entire problem here.
+//
+// Done causally: once above threshold, follow the maximum, and commit when the envelope has
+// fallen back from it. The onset is timestamped with the PEAK's time, so nothing is added to the
+// reported onset time -- only to how late we learn of it (bounded by sdPeakMaxWaitMs).
+// The same paper measured its condition 3 (a decaying threshold, which is what sdBoost does) as
+// only a marginal improvement, so sdBoost stays modest rather than being asked to do the work.
+inline bool     sdPeaking       = false;
+inline int32_t  sdPeakVal       = 0;
+inline uint32_t sdPeakClock     = 0;
+inline int      sdPeakFallPct   = 70;   // commit once the envelope drops to this % of the peak
+inline int      sdPeakMaxWaitMs = 60;   // ...or after this long, whichever comes first
+
 inline int32_t sdBoost = 256;                // Q8 threshold multiplier, 256 = 1.0
 inline int     sdBoostMaxQ8 = 1024;          // 4.0x immediately after a beat
 inline int     sdBoostShift = 11;            // decays back, ~128ms time constant
 
 // Called once per block. Mean absolute deviation rather than a true variance: same decision,
 // no squaring, and it matches how the frame-based threshold already measures spread.
-inline void sdUpdateTransient() {
-  sdVarHist[sdVarIdx] = sdEnv;
-  sdVarIdx = (sdVarIdx + 1) % SD_VAR_HIST;
-  int32_t sum = 0;
-  for (int i = 0; i < SD_VAR_HIST; i++) sum += sdVarHist[i];
-  sdVarMean = sum / SD_VAR_HIST;
+inline void sdUpdateStats() {
+  sdStatHist[sdStatIdx] = sdEnv;
+  sdStatIdx = (sdStatIdx + 1) % SD_STAT_HIST;
+
+  int32_t v[SD_STAT_HIST], sum = 0;
+  for (int i = 0; i < SD_STAT_HIST; i++) { v[i] = sdStatHist[i]; sum += v[i]; }
+  sdVarMean = sum / SD_STAT_HIST;
+  for (int i = 1; i < SD_STAT_HIST; i++) {          // insertion sort; 24 values once per block
+    int32_t k = v[i]; int j = i - 1;
+    while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
+    v[j+1] = k;
+  }
+  sdFloor    = v[SD_STAT_HIST / 2];
+  sdPeakStat = v[SD_STAT_HIST - 1];
+
+  // Mean absolute deviation rather than a true variance: same decision, no squaring, and it
+  // matches how the frame-based threshold already measures spread.
   int32_t mad = 0;
-  for (int i = 0; i < SD_VAR_HIST; i++) {
-    int32_t d = sdVarHist[i] - sdVarMean;
+  for (int i = 0; i < SD_STAT_HIST; i++) {
+    int32_t d = sdStatHist[i] - sdVarMean;
     mad += d < 0 ? -d : d;
   }
-  sdVarMad = mad / SD_VAR_HIST;
+  sdVarMad = mad / SD_STAT_HIST;
   sdTransient = (sdVarMean > 0) && ((sdVarMad * 100) >= (sdVarMean * sdVarMinPct));
+
+  // Sensitivity now positions the threshold inside the range: 100 puts it 30% of the way from
+  // the floor to the peak, 0 puts it at 90%.
+  int32_t fracQ8 = 230 - ((int32_t)hwAudioSensitivity * 153) / 100;
+  int32_t range  = sdPeakStat - sdFloor;
+  if (range < 0) range = 0;
+  sdThrBlock = sdFloor + ((range * fracQ8) >> 8) + 8;
+  // A beat also has to be well clear of the typical level, so that a passage with no beat in it
+  // does not have its own noise picked apart -- the "2 x average" test in gibbedy/BeatDetector.
+  sdMinLevel = sdFloor * 2;
 }
 inline uint32_t sdSampleClock = 0;
 inline uint32_t sdLastOnsetMs = 0;
@@ -351,7 +405,7 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
   uint32_t fired = 0;
   sdOnsetsThisFrame = 0;
   // Sensitivity sets the comparator's margin over the tracked reference: 1.0x at 100, 3.0x at 0.
-  const int32_t thrMulQ8 = ((100 + (100 - hwAudioSensitivity) * 2) << 8) / 100;
+  const uint32_t peakMaxWaitSamples = (uint32_t)sdPeakMaxWaitMs * (SAMPLING_FREQUENCY / 1000);
   for (int i = 0; i < count; i++) {
     int32_t x = (raw[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << gainShift;
     if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
@@ -366,42 +420,44 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
     if (mag > sdEnv) sdEnv += (mag - sdEnv) >> sdAtt;
     else             sdEnv -= (sdEnv - mag) >> sdRel;
 
-    // The reference floats with the signal, so the detector works at any input level -- the
-    // "automatic threshold setting" of the original.
-    //
-    // Carried at 8 extra bits. Written as the obvious `sdRef += (sdEnv - sdRef) >> sdRefShift`
-    // it is an integer shift, so any difference smaller than 2^sdRefShift shifts to exactly 0 and
-    // the reference stops moving. At shift 14 that deadband is 16384: the reference stayed pinned
-    // near zero, which made the threshold a constant 8, and the re-arm test `sdEnv < sdRef` then
-    // asked a magnitude to fall below zero -- so after the very first onset it could never arm
-    // again. That is why a slow reference produced no onsets at all, and why at a fast one only
-    // the lockout was left setting the rate. The rolling threshold never actually existed.
+    // Kept only as the re-arm level and for display; the decision threshold is sdThrBlock,
+    // computed once per block from the window statistics above.
     sdRefAcc += (((int32_t)sdEnv << 8) - sdRefAcc) >> sdRefShift;
     sdRef = sdRefAcc >> 8;
 
-    // Threshold as a Q8 multiply rather than a divide: the factor is constant for the whole
-    // block, so computing it per sample cost a 64-bit multiply AND divide every sample. Together
-    // with the timestamp below that was 1.2ms per frame -- more than the entire FFT.
     // Soft refractory: the threshold is lifted 4x by a beat and decays back over ~130ms, so a
     // candidate arriving early is made harder rather than impossible. Shift only, no divide.
     if (sdBoost > 256) sdBoost -= (sdBoost - 256) >> sdBoostShift;
-    int32_t thr = ((((sdRef * thrMulQ8) >> 8) * sdBoost) >> 8) + 8;
+    int32_t thr = (sdThrBlock * sdBoost) >> 8;
 
     // sdTransient is the variance gate: level alone is not a beat, the envelope has to be moving.
-    if (sdArmed && sdTransient && sdEnv > thr) {
-      // Timestamp only when something actually fires, not for every sample.
-      uint32_t tms = (uint32_t)(((uint64_t)sdSampleClock * 1000ULL) / SAMPLING_FREQUENCY);
-      if ((uint32_t)(tms - sdLastOnsetMs) > (uint32_t)sdLockoutMs) {
-        sdArmed = false;
-        sdLastOnsetMs = tms;
-        sdBoost = sdBoostMaxQ8;
-        fired = tms;
-        sdOnsetsThisFrame++;
+    if (sdArmed && sdTransient && sdEnv > thr && sdEnv > sdMinLevel && !sdPeaking) {
+      sdPeaking   = true;
+      sdPeakVal   = sdEnv;
+      sdPeakClock = sdSampleClock;
+    }
+
+    if (sdPeaking) {
+      if (sdEnv > sdPeakVal) {              // still rising: this is the peak so far
+        sdPeakVal   = sdEnv;
+        sdPeakClock = sdSampleClock;
+      } else if (sdEnv * 100 < sdPeakVal * sdPeakFallPct ||
+                 (uint32_t)(sdSampleClock - sdPeakClock) > peakMaxWaitSamples) {
+        // Fallen back from the peak, or waited long enough: commit it, timestamped at the peak.
+        uint32_t tms = (uint32_t)(((uint64_t)sdPeakClock * 1000ULL) / SAMPLING_FREQUENCY);
+        if ((uint32_t)(tms - sdLastOnsetMs) > (uint32_t)sdLockoutMs) {
+          sdLastOnsetMs = tms;
+          sdBoost = sdBoostMaxQ8;
+          fired = tms;
+          sdOnsetsThisFrame++;
+        }
+        sdPeaking = false;
+        sdArmed   = false;
       }
     }
     // Re-arm only once the envelope has fallen back to the reference, so one kick produces one
     // edge rather than a burst while it decays.
-    if (sdEnv < sdRef) sdArmed = true;
+    if (!sdPeaking && sdEnv < sdFloor) sdArmed = true;
 
     sdSampleClock++;
     sdLastEnv = sdEnv; sdLastThr = thr;
@@ -616,6 +672,8 @@ inline uint32_t tempoIvl[TEMPO_IVL_RING];    // the gap
 inline uint32_t tempoIvlAt[TEMPO_IVL_RING];  // when it was measured, so the window can expire it
 inline int      tempoIvlIdx = 0;
 inline uint32_t tempoPrevOnset = 0;
+inline int      tempoAgreePct = 0;      // spread of the gaps around their median, in %
+inline int      tempoAgreeMaxPct = 20;  // above this they do not agree on a tempo
 
 // A gap outside 60..200 BPM is not a tempo -- it is a double trigger or a missed beat. Rejecting
 // it here is what removes the need for any octave or folding logic downstream.
@@ -650,9 +708,23 @@ inline void tempoEvalMedian(uint32_t nowMs) {
     while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
     v[j+1] = k;
   }
-  trackedBPM = constrain((int)(60000UL / v[n / 2]), BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+  uint32_t med = v[n / 2];
+  if (med == 0) return;
+
+  // Only report a tempo when the gaps actually agree on one. gibbedy/BeatDetector requires every
+  // recent interval to match the newest within a tolerance before it will update its BPM, and
+  // holds the previous value otherwise; the same idea, but expressed as spread around the median
+  // so that a single outlier does not veto an otherwise clean reading. Without this a median is
+  // always willing to produce a number, including from gaps that mean nothing.
+  uint32_t dev = 0;
+  for (int i = 0; i < n; i++) dev += (v[i] > med) ? (v[i] - med) : (med - v[i]);
+  dev /= (uint32_t)n;
+  tempoAgreePct = (int)((dev * 100) / med);
+  if (tempoAgreePct > tempoAgreeMaxPct) return;   // gaps disagree: keep what we had
+
+  trackedBPM = constrain((int)(60000UL / med), BPM_MIN_LIMIT, BPM_MAX_LIMIT);
   trackedScore = n;          // how many gaps the answer rests on, for the AUDIO tab
-  dbgLagMilli = (int32_t)v[n / 2];
+  dbgLagMilli = (int32_t)med;
 }
 
 inline void tempoTrackerPush(int32_t flux, unsigned long now) {
@@ -794,7 +866,7 @@ void pollAudioEngine() {
       }
       micPeak = peak; micClipCount = clips;
       // Continuous-time onset detection on the same block the FFT just consumed.
-      sdUpdateTransient();   // block-level: is the envelope moving, or just loud?
+      sdUpdateStats();   // block-level: window median, peak, spread -> this block's threshold
       sdOnsetMs = sdEnabled ? sdProcessBlock(raw_samples, FFT_N, tuneInputGainShift) : 0;
       fftRun();
       fftLastUs = micros() - t0;

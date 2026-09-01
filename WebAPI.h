@@ -40,6 +40,9 @@ void saveAudioPrefs() {
     prefs.putInt("a_vmp", sdVarMinPct);
     prefs.putInt("a_bst", sdBoostMaxQ8);
     prefs.putInt("a_bsh", sdBoostShift);
+    prefs.putInt("a_pfp", sdPeakFallPct);
+    prefs.putInt("a_pmw", sdPeakMaxWaitMs);
+    prefs.putInt("a_agr", tempoAgreeMaxPct);
     prefs.putInt("a_db", tuneDetBass);
     prefs.putInt("a_dm", tuneDetMid);
     prefs.putInt("a_dh", tuneDetHigh);
@@ -82,6 +85,9 @@ void loadAudioPrefs() {
     sdVarMinPct = prefs.getInt("a_vmp", sdVarMinPct);
     sdBoostMaxQ8 = prefs.getInt("a_bst", sdBoostMaxQ8);
     sdBoostShift = prefs.getInt("a_bsh", sdBoostShift);
+    sdPeakFallPct = prefs.getInt("a_pfp", sdPeakFallPct);
+    sdPeakMaxWaitMs = prefs.getInt("a_pmw", sdPeakMaxWaitMs);
+    tempoAgreeMaxPct = prefs.getInt("a_agr", tempoAgreeMaxPct);
     tuneDetBass = prefs.getInt("a_db", tuneDetBass);
     tuneDetMid  = prefs.getInt("a_dm", tuneDetMid);
     tuneDetHigh = prefs.getInt("a_dh", tuneDetHigh);
@@ -517,7 +523,7 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    static char buf[1800];
+    static char buf[2100];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
@@ -529,7 +535,9 @@ void setupAPI() {
       "\"trk\":%d,\"tap\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
       "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d,\"db\":%d,\"dm\":%d,\"dh\":%d,\"nbin\":%d,"
       "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
-      "\"sdEnv\":%ld,\"sdThr\":%ld}",
+      "\"sdEnv\":%ld,\"sdThr\":%ld,"
+      "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
+      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -545,7 +553,9 @@ void setupAPI() {
       tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift,
       tuneDetBass, tuneDetMid, tuneDetHigh, FFT_N / 2,
       sdEnabled ? 1 : 0, sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
-      (long)sdLastEnv, (long)sdLastThr);
+      (long)sdLastEnv, (long)sdLastThr,
+      (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
+      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -628,6 +638,9 @@ void setupAPI() {
     if (server.hasArg("vmp")) sdVarMinPct   = constrain(server.arg("vmp").toInt(), 0, 200);
     if (server.hasArg("bst")) sdBoostMaxQ8  = constrain(server.arg("bst").toInt(), 256, 4096);
     if (server.hasArg("bsh")) sdBoostShift  = constrain(server.arg("bsh").toInt(), 6, 14);
+    if (server.hasArg("pfp")) sdPeakFallPct   = constrain(server.arg("pfp").toInt(), 10, 99);
+    if (server.hasArg("pmw")) sdPeakMaxWaitMs = constrain(server.arg("pmw").toInt(), 10, 200);
+    if (server.hasArg("agr")) tempoAgreeMaxPct = constrain(server.arg("agr").toInt(), 5, 100);
     server.send(200, "OK");
   });
 
