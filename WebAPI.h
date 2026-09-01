@@ -50,7 +50,12 @@ void saveAudioPrefs() {
     prefs.putBool("a_fft", audioUseFFT);
     prefs.putBool("a_flux", audioUseFlux);
     prefs.putBool("a_trk", audioUseTracker);
-    prefs.putBool("a_tap", tempoTapLock);
+    prefs.putBool("a_bsd", sdEnabled);
+    prefs.putInt("a_blo", sdKLo);
+    prefs.putInt("a_bhi", sdKHi);
+    prefs.putInt("a_brl", sdRel);
+    prefs.putInt("a_brf", sdRefShift);
+    prefs.putInt("a_blk", sdLockoutMs);
     prefs.putBool("a_en", hwAudioEnabled);
   prefs.end();
 }
@@ -83,7 +88,12 @@ void loadAudioPrefs() {
     audioUseFFT = prefs.getBool("a_fft", audioUseFFT);
     audioUseFlux = prefs.getBool("a_flux", audioUseFlux);
     audioUseTracker = prefs.getBool("a_trk", audioUseTracker);
-    tempoTapLock = prefs.getBool("a_tap", tempoTapLock);
+    sdEnabled = prefs.getBool("a_bsd", sdEnabled);
+    sdKLo = prefs.getInt("a_blo", sdKLo);
+    sdKHi = prefs.getInt("a_bhi", sdKHi);
+    sdRel = prefs.getInt("a_brl", sdRel);
+    sdRefShift = prefs.getInt("a_brf", sdRefShift);
+    sdLockoutMs = prefs.getInt("a_blk", sdLockoutMs);
     hwAudioEnabled = prefs.getBool("a_en", hwAudioEnabled);
   prefs.end();
   // Defensive: a corrupt or hand-edited NVS value must not be able to make a band inverted or
@@ -93,6 +103,11 @@ void loadAudioPrefs() {
   tuneBinMidLo  = constrain(tuneBinMidLo,  1, LAST_BIN - 1); tuneBinMidHi  = constrain(tuneBinMidHi,  tuneBinMidLo,  LAST_BIN);
   tuneBinHighLo = constrain(tuneBinHighLo, 1, LAST_BIN - 1); tuneBinHighHi = constrain(tuneBinHighHi, tuneBinHighLo, LAST_BIN);
   hwAudioSensitivity = constrain(hwAudioSensitivity, 0, 100);
+  // The tap lock is deliberately NOT persisted: it exists because the user tapped a tempo,
+  // and that tapped value does not survive a reboot. Restoring the lock without it left the
+  // device holding globalBPM at its 120 startup value forever while the tracker, working
+  // correctly in the background, was never allowed through. Observed live 2026-09-01.
+  tempoTapLock = false;
   tuneDetBass = constrain(tuneDetBass, 0, 1);
   tuneDetMid  = constrain(tuneDetMid, 0, 1);
   tuneDetHigh = constrain(tuneDetHigh, 0, 1);
@@ -494,7 +509,7 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    static char buf[1500];
+    static char buf[1800];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
     snprintf(buf, sizeof(buf),
@@ -504,7 +519,9 @@ void setupAPI() {
       "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
       "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
       "\"trk\":%d,\"tap\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
-      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d,\"db\":%d,\"dm\":%d,\"dh\":%d,\"nbin\":%d}",
+      "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d,\"db\":%d,\"dm\":%d,\"dh\":%d,\"nbin\":%d,"
+      "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
+      "\"sdEnv\":%ld,\"sdThr\":%ld}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -518,7 +535,9 @@ void setupAPI() {
       (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode,
       (long)micPeak, micClipCount,
       tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift,
-      tuneDetBass, tuneDetMid, tuneDetHigh, FFT_N / 2);
+      tuneDetBass, tuneDetMid, tuneDetHigh, FFT_N / 2,
+      sdEnabled ? 1 : 0, sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
+      (long)sdLastEnv, (long)sdLastThr);
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -575,6 +594,15 @@ void setupAPI() {
     if (server.hasArg("dh")) tuneDetHigh = constrain(server.arg("dh").toInt(), 0, 1);
     if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
     if (server.hasArg("tap")) tempoTapLock = (server.arg("tap") == "1");
+    // Sample-rate onset detector (the DJM-style continuous-time chain). blo/bhi are the two
+    // one-pole shifts forming the bandpass, brl the envelope release, brf how slowly the
+    // comparator reference tracks, blk the pulse window in ms.
+    if (server.hasArg("bsd")) sdEnabled = (server.arg("bsd") == "1");
+    if (server.hasArg("blo")) sdKLo = constrain(server.arg("blo").toInt(), 2, 10);
+    if (server.hasArg("bhi")) sdKHi = constrain(server.arg("bhi").toInt(), 1, 9);
+    if (server.hasArg("brl")) sdRel = constrain(server.arg("brl").toInt(), 2, 12);
+    if (server.hasArg("brf")) sdRefShift = constrain(server.arg("brf").toInt(), 6, 14);
+    if (server.hasArg("blk")) sdLockoutMs = constrain(server.arg("blk").toInt(), 60, 600);
     if (server.hasArg("tmul")) tempoMulMode = constrain(server.arg("tmul").toInt(), 0, 2);
     // Band edges in FFT bins (bin = 31.25Hz). Clamped so a band can never invert or reach
     // past the spectrum; bin 0 is DC and always excluded.

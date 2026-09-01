@@ -4560,3 +4560,57 @@ Passage; alles andere misst die Musik, nicht die Einstellung.
 **Mid-Band** speisen (oder aus dem jeweils regelmäßigsten), statt aus dem Bass. Die
 Oktav-Faltung im Tracker kann den Faktor 2 auflösen — die Mid-Onsets liegen ja sauber auf
 dem halben Beat.
+
+### 2026-09-01 (4) — Onset-Erkennung auf Sample-Ebene: die eigentliche Ursache
+
+Der User: „egal wie, wir sind immer noch voll daneben. der djm hat das einfach besser gemacht."
+Zu Recht — und beim erneuten Durchgehen der DJM-Architektur zeigte sich ein **struktureller**
+Unterschied, der fünf Anläufe am Tempo-Schätzer erklärt:
+
+**Der DJM erkennt in kontinuierlicher Zeit, wir erkannten in 32-ms-Blöcken.** Sein Komparator
+schaltet in dem Moment, in dem die Hüllkurve die Referenz kreuzt. Unsere Erkennung lief auf
+FFT-Frames und konnte Onsets deshalb nur alle 32 ms zeitstempeln — bei einem 462-ms-Beat sind
+das ±7 % Jitter, bevor irgendein Schätzer anfängt. Ein Kick-Anschlag dauert 5–20 ms, passt
+also komplett in einen Frame und wird vom Frame-Mittel verschmiert. **Alle fünf Schätzer
+bekamen dieselben verrauschten Zeitstempel** — das war nie mit einem besseren Schätzer zu
+beheben.
+
+Jetzt nachgebaut, wörtlich als DJM-Kette, aber pro Sample bei 16 kHz: Bandpass als Differenz
+zweier Ein-Pol-Tiefpässe, Hüllkurvengleichrichter mit schnellem Attack und langsamem Release,
+Komparator gegen eine langsam nachgeführte Referenz, Wiederscharfschaltung erst nach Rückkehr
+zur Referenz, plus Pulse-Window. Zeitstempel kommen aus einem **Sample-Zähler** statt aus
+`millis()` — vom Audiotakt abgeleitet und damit frei vom Jitter der Abfrageschleife.
+
+**Ergebnis, gemessen an einem 130-BPM-Track:**
+
+| | Frame-basiert | Sample-basiert |
+|---|---|---|
+| Onset-Streuung | 82–155 % | **14 %** |
+| Onset-Rate | 0,98–2,40/s schwankend | **2,19/s** (Ziel 2,17) |
+| globalBPM-Schwankung | 52 BPM | **7 BPM** |
+
+Der Tempo-Wert ist damit zum ersten Mal stabil. Die Pulse-Window-Länge wurde eingemessen:
+200 ms fängt Achtel (Streuung 17 %, Rasterfehler 52 %), **410 ms** trifft die Viertel
+(Streuung 7 %, Rasterfehler 2 %).
+
+**Kostenoptimierung dabei:** die erste Fassung brauchte 6,8 % CPU, weil zwei **64-Bit-Divisionen
+pro Sample** darin standen (Zeitstempel und Schwellenberechnung) — auf RV32 softwareemuliert.
+Schwelle als Q8-Multiplikation vorberechnet, Zeitstempel nur noch berechnet wenn tatsächlich
+etwas auslöst: **4,3 %**.
+
+### Fehler im eigenen Entwurf: die Tap-Sperre war persistiert
+
+`globalBPM` stand nach dem Flashen zu 100 % auf 120, obwohl der Tracker korrekt 144 lieferte.
+Ursache: ich hatte `tempoTapLock` in NVS gespeichert. Das Gerät bootete also mit gesperrtem
+Tempo — aber der getappte Wert, dessentwegen die Sperre existiert, überlebt den Neustart
+nicht. `globalBPM` blieb damit für immer auf seinem Startwert 120, während der funktionierende
+Tracker nie durchkam. Eine Sperre zu persistieren, deren Auslöser es nicht tut, ist schlicht
+falsch — sie startet jetzt immer offen.
+
+### Verbleibend
+
+Der Wert sitzt stabil, aber systematisch bei 138 statt 130 (6 % zu hoch). Der Phasentest
+findet die **Achtel**-Periode (218 ms) als stärksten Peak und verdoppelt sie auf 436 ms; ein
+kleiner Fehler auf der halben Periode verdoppelt sich dabei mit. Der Fix wäre, nach dem Falten
+am gefalteten Wert nachzujustieren statt einfach zu verdoppeln — nicht mehr blind gebaut,
+sondern als nächster Schritt notiert.

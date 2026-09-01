@@ -259,6 +259,87 @@ inline int32_t fftBand(int lo, int hi) {
 inline int32_t fftMagPrev[FFT_N / 2];
 
 // =========================================================
+// --- SAMPLE-RATE ONSET DETECTOR (the DJM-500 topology) ---
+// =========================================================
+// Everything above detects on FFT frames, which means an onset can only ever be timestamped on a
+// frame boundary -- once every 32ms. A kick's attack lasts 5-20ms, so it fits inside a single
+// frame and gets smeared by that frame's average, and the resulting timestamp carries +/-32ms of
+// quantisation. At a 462ms beat that is +/-7% of jitter before any tempo estimator even starts,
+// and five different estimators were built on top of those timestamps without fixing it.
+//
+// The 1995 DJM-500 does not have this problem because it works in continuous time: analogue
+// bandpass around the kick, envelope rectifier, comparator against a slowly-tracking reference.
+// This is that chain, run per sample at 16kHz instead of per frame -- roughly thirty times the
+// timing resolution, for a few integer operations per sample.
+//
+// Timestamps come from a SAMPLE COUNTER rather than millis(): derived from the audio clock
+// itself, it carries none of the polling loop's jitter.
+inline bool  sdEnabled  = true;
+inline int   sdKLo      = 5;    // one-pole shift for the lower edge  (~80Hz at 16kHz)
+inline int   sdKHi      = 3;    // one-pole shift for the upper edge  (~320Hz)
+inline int   sdAtt      = 2;    // envelope attack, fast
+inline int   sdRel      = 7;    // envelope release (~50ms)
+inline int   sdRefShift = 11;   // reference tracking, slow -- this is the comparator's baseline
+inline int   sdLockoutMs = 200; // pulse window, as the DJM calls it
+
+inline int32_t  sdLp1 = 0, sdLp2 = 0, sdEnv = 0, sdRef = 0;
+inline uint32_t sdSampleClock = 0;
+inline uint32_t sdLastOnsetMs = 0;
+inline bool     sdArmed = true;
+inline int32_t  sdLastEnv = 0, sdLastThr = 0;   // for the AUDIO tab
+inline int      sdOnsetsThisFrame = 0;
+
+// Returns the timestamp of the last onset found in this block, or 0 if there was none.
+// `gainShift` matches the FFT path so both see the same signal level.
+inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
+  uint32_t fired = 0;
+  sdOnsetsThisFrame = 0;
+  // Sensitivity sets the comparator's margin over the tracked reference: 1.0x at 100, 3.0x at 0.
+  const int32_t thrMulQ8 = ((100 + (100 - hwAudioSensitivity) * 2) << 8) / 100;
+  for (int i = 0; i < count; i++) {
+    int32_t x = (raw[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << gainShift;
+    if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
+
+    // Bandpass as the difference of two one-pole lowpasses: cheap, stable, and the two shifts
+    // map directly onto the two edges the DJM's filter array sets in hardware.
+    sdLp1 += (x - sdLp1) >> sdKHi;
+    sdLp2 += (x - sdLp2) >> sdKLo;
+    int32_t bp = sdLp1 - sdLp2;
+    int32_t mag = bp < 0 ? -bp : bp;
+
+    if (mag > sdEnv) sdEnv += (mag - sdEnv) >> sdAtt;
+    else             sdEnv -= (sdEnv - mag) >> sdRel;
+
+    // The reference floats with the signal, so the detector works at any input level -- the
+    // "automatic threshold setting" of the original.
+    sdRef += (sdEnv - sdRef) >> sdRefShift;
+
+    // Threshold as a Q8 multiply rather than a divide: the factor is constant for the whole
+    // block, so computing it per sample cost a 64-bit multiply AND divide every sample. Together
+    // with the timestamp below that was 1.2ms per frame -- more than the entire FFT.
+    int32_t thr = ((sdRef * thrMulQ8) >> 8) + 8;
+
+    if (sdArmed && sdEnv > thr) {
+      // Timestamp only when something actually fires, not for every sample.
+      uint32_t tms = (uint32_t)(((uint64_t)sdSampleClock * 1000ULL) / SAMPLING_FREQUENCY);
+      if ((uint32_t)(tms - sdLastOnsetMs) > (uint32_t)sdLockoutMs) {
+        sdArmed = false;
+        sdLastOnsetMs = tms;
+        fired = tms;
+        sdOnsetsThisFrame++;
+      }
+    }
+    // Re-arm only once the envelope has fallen back to the reference, so one kick produces one
+    // edge rather than a burst while it decays.
+    if (sdEnv < sdRef) sdArmed = true;
+
+    sdSampleClock++;
+    sdLastEnv = sdEnv; sdLastThr = thr;
+  }
+  return fired;
+}
+
+// =========================================================
 // --- TEMPO TRACKER (autocorrelation over the flux history) ---
 // =========================================================
 // Why this exists: taking the median of the gaps between detected onsets cannot recover the
@@ -524,6 +605,8 @@ inline int tuneDetHigh = 1;
 // fluctuates removes that dependency, and is what Patin's classic energy beat detector does with
 // the variance. MAD is used rather than variance because it needs no squaring and no rescaling.
 inline int32_t dynMadBass = 0, dynMadMid = 0, dynMadHigh = 0;
+// Timestamp of the onset the sample-rate detector found in this frame, 0 if none.
+inline uint32_t sdOnsetMs = 0;
 // Display-only copies so the AUDIO tab can show level and flux side by side.
 inline int32_t lastBassLevel = 0, lastMidLevel = 0, lastHighLevel = 0;
 inline int32_t lastBassFlux = 0, lastMidFlux = 0, lastHighFlux = 0;
@@ -578,6 +661,8 @@ void pollAudioEngine() {
         fftIm[i] = 0;
       }
       micPeak = peak; micClipCount = clips;
+      // Continuous-time onset detection on the same block the FFT just consumed.
+      sdOnsetMs = sdEnabled ? sdProcessBlock(raw_samples, FFT_N, tuneInputGainShift) : 0;
       fftRun();
       fftLastUs = micros() - t0;
 
@@ -658,11 +743,18 @@ void pollAudioEngine() {
     int32_t thBass = dynThreshold + (dynMadBass * kSens) / 8 + tuneNoiseFloor;
     lastBassEnergy = bassEnergy; lastMidEnergy = midEnergy; lastHighEnergy = highEnergy; lastThBass = thBass;
 
-    bool beatDetected = (bassEnergy > thBass && (now - lastBassTime) > MIN_BEAT_INTERVAL_MS);
+    // With the sample-rate detector active the bass trigger comes from it, timestamped from the
+    // audio clock; the frame-based comparison stays as the fallback (/audio_tune?bsd=0).
+    bool beatDetected;
+    if (sdEnabled && audioUseFFT) beatDetected = (sdOnsetMs != 0);
+    else beatDetected = (bassEnergy > thBass && (now - lastBassTime) > MIN_BEAT_INTERVAL_MS);
 
     if (beatDetected) {
       unsigned long diff = now - lastBassTime;
-      pushOnset(now, bassEnergy, thBass);   // feeds the tempo estimator (see tempoTrackerEval)
+      // Precise timestamp where it matters: the tempo estimator works on onset positions, so it
+      // gets the sample-clock time rather than the frame's millis(). Everything else stays on
+      // millis() so the beat clock is not fed from two different timebases.
+      pushOnset(sdEnabled && sdOnsetMs ? sdOnsetMs : (uint32_t)now, bassEnergy, thBass);
       lastBassTime = now;
       triggerBass = true;
       guiBass = true;
