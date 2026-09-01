@@ -38,6 +38,7 @@ void saveAudioPrefs() {
     prefs.putInt("a_ig", tuneInputGainShift);
     prefs.putInt("a_tw", tempoWindowMs);
     prefs.putInt("a_vmp", sdVarMinPct);
+    prefs.putInt("a_mrp", sdMinRangePct);
     prefs.putInt("a_bst", sdBoostMaxQ8);
     prefs.putInt("a_bsh", sdBoostShift);
     prefs.putInt("a_pfp", sdPeakFallPct);
@@ -87,6 +88,7 @@ void loadAudioPrefs() {
     tuneInputGainShift = prefs.getInt("a_ig", tuneInputGainShift);
     tempoWindowMs = prefs.getInt("a_tw", tempoWindowMs);
     sdVarMinPct = prefs.getInt("a_vmp", sdVarMinPct);
+    sdMinRangePct = prefs.getInt("a_mrp", sdMinRangePct);
     sdBoostMaxQ8 = prefs.getInt("a_bst", sdBoostMaxQ8);
     sdBoostShift = prefs.getInt("a_bsh", sdBoostShift);
     sdPeakFallPct = prefs.getInt("a_pfp", sdPeakFallPct);
@@ -653,6 +655,7 @@ void setupAPI() {
     if (server.hasArg("ig")) { tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5); autoGain = false; }
     if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 1000, 10000);
     if (server.hasArg("vmp")) sdVarMinPct   = constrain(server.arg("vmp").toInt(), 0, 200);
+    if (server.hasArg("mrp")) sdMinRangePct = constrain(server.arg("mrp").toInt(), 0, 400);
     if (server.hasArg("bst")) sdBoostMaxQ8  = constrain(server.arg("bst").toInt(), 256, 4096);
     if (server.hasArg("bsh")) sdBoostShift  = constrain(server.arg("bsh").toInt(), 6, 14);
     if (server.hasArg("pfp")) sdPeakFallPct   = constrain(server.arg("pfp").toInt(), 10, 99);

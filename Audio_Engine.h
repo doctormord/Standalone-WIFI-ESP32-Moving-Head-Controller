@@ -283,12 +283,18 @@ inline int   sdKHi      = 4;    // upper edge ~160Hz -- the kick's band, as on t
 // 3 (~320Hz) was wide enough to let the bass line and the low mids through, and every one
 // of those that crossed the threshold became a spurious beat.
 inline int   sdAtt      = 2;    // envelope attack, ~0.25ms -- follows the leading edge
-inline int   sdRel      = 11;   // envelope release, ~128ms (2^k samples / 16000)
-// 7 was a mistake: 2^7 samples at 16kHz is 8ms, not the ~50ms the comment claimed. At an 8ms
-// release nothing is being enveloped -- the value just follows the rectified bandpass, which
-// swings at 40-160Hz and therefore crosses any threshold continuously. The only thing holding
-// the rate down was the refractory period, which is exactly the failure this chain kept showing.
-// A kick needs the release long enough that its decay reads as one hump.
+inline int   sdRel      = 8;    // envelope release, ~16ms (2^k samples / 16000)
+// Chosen by measurement in sim/, not by argument. Across 90..174 BPM its worst case is F=0.939,
+// against 0.656 for the 128ms release that was here before -- which at 174 BPM missed every
+// second beat and reported half the tempo, because at a 345ms beat a 128ms decay never lets the
+// envelope fall far enough between kicks for the next one to stand out. It gives up about 0.02
+// at the slow end and wins far more than that at the fast end.
+//
+// This reverses an earlier change in the same session, and the earlier reasoning was not wrong at
+// the time: with the comparator reference frozen by an integer deadband, a short release did fire
+// continuously, so lengthening it looked like the fix. Once the threshold became a position
+// within the measured dynamic range, with a median floor and peak picking, that stopped being
+// true. A conclusion that only held because of a bug.
 inline int   sdRefShift = 14;   // ~1s: the rolling average the comparator measures against
 // The refractory period only suppresses one kick re-triggering on its own decay. It must
 // stay far below the shortest beat in range (60000/200 = 300ms), because a lockout longer
@@ -332,8 +338,10 @@ inline int     sdStatIdx = 0;
 inline bool    sdTransient = false;          // does the recent envelope look like an event?
 inline int32_t sdVarMad = 0, sdVarMean = 0;  // exposed for the AUDIO tab
 inline int32_t sdFloor = 0, sdPeakStat = 0;  // median and maximum of the window
-inline int32_t sdThrBlock = 0, sdMinLevel = 0;
-inline int     sdVarMinPct = 25;             // MAD must be at least this % of the mean
+inline int32_t sdThrBlock = 0;
+inline bool    sdHasDynamics = false;
+inline int     sdMinRangePct = 25;   // window range, as a % of its floor, for anything to fire
+inline int     sdVarMinPct = 10;             // MAD must be at least this % of the mean
 // Fire at the envelope's PEAK, not at the moment it crosses the threshold. This is condition 1
 // of the peak-picker in Dixon, "Onset Detection Revisited" (DAFx-06), which requires an onset to
 // be a local maximum of the detection function. It matters because a threshold crossing moves
@@ -352,7 +360,13 @@ inline uint32_t sdPeakClock     = 0;
 inline int      sdPeakFallPct   = 70;   // commit once the envelope drops to this % of the peak
 inline int      sdPeakMaxWaitMs = 60;   // ...or after this long, whichever comes first
 
-inline int32_t sdBoost = 256;                // Q8 threshold multiplier, 256 = 1.0
+// Carried in Q16, not Q8, for the same reason the comparator reference is carried with extra
+// bits: `sdBoost -= (sdBoost - one) >> shift` is an integer shift, so if the whole range of the
+// value is smaller than 2^shift the decrement is always zero and it never decays. In Q8 the range
+// is 256..1024 against a shift of 11 -- the decay was exactly zero, the threshold stayed at four
+// times normal forever, and the detector went permanently deaf after its first onset. Caught in
+// the simulator; on hardware it would have looked like "it only ever finds one beat".
+inline int32_t sdBoost = 65536;              // Q16, 65536 = 1.0
 inline int     sdBoostMaxQ8 = 1024;          // 4.0x immediately after a beat
 inline int     sdBoostShift = 11;            // decays back, ~128ms time constant
 
@@ -364,7 +378,7 @@ inline void sdScaleState(int d) {
   if (d == 0) return;
   #define SD_SC(x) ((x) = (d > 0) ? ((x) << d) : ((x) >> (-d)))
   SD_SC(sdLp1); SD_SC(sdLp2); SD_SC(sdEnv); SD_SC(sdRef); SD_SC(sdRefAcc);
-  SD_SC(sdPeakVal); SD_SC(sdFloor); SD_SC(sdPeakStat); SD_SC(sdThrBlock); SD_SC(sdMinLevel);
+  SD_SC(sdPeakVal); SD_SC(sdFloor); SD_SC(sdPeakStat); SD_SC(sdThrBlock);
   for (int i = 0; i < SD_STAT_HIST; i++) SD_SC(sdStatHist[i]);
   #undef SD_SC
 }
@@ -464,9 +478,17 @@ inline void sdUpdateStats() {
   int32_t range  = sdPeakStat - sdFloor;
   if (range < 0) range = 0;
   sdThrBlock = sdFloor + ((range * fracQ8) >> 8) + 8;
-  // A beat also has to be well clear of the typical level, so that a passage with no beat in it
-  // does not have its own noise picked apart -- the "2 x average" test in gibbedy/BeatDetector.
-  sdMinLevel = sdFloor * 2;
+  // A passage with no beat in it has almost no range, and the threshold above -- being a position
+  // WITHIN the range -- would then sit just above the floor and start picking apart the noise. So
+  // require the window to contain real dynamics before anything may fire.
+  //
+  // gibbedy/BeatDetector expresses this as "the value must exceed twice the average", and copying
+  // that verbatim was wrong: its average is an FFT bin magnitude, which falls close to zero
+  // between beats, whereas this floor is the median of an envelope with a 128ms release, which
+  // never falls that far. Measured in the simulator on a clean 130 BPM track, floor 10191 against
+  // a window peak of 16977 -- a ratio of 1.67, so a "2x" rule can never be satisfied and the
+  // detector was silent. Same intent, expressed against the range instead of the level.
+  sdHasDynamics = (range * 100) >= (sdFloor * sdMinRangePct);
 }
 inline uint32_t sdSampleClock = 0;
 // Does the sample clock keep up with real time? sdSampleClock only advances for audio we actually
@@ -509,11 +531,12 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
 
     // Soft refractory: the threshold is lifted 4x by a beat and decays back over ~130ms, so a
     // candidate arriving early is made harder rather than impossible. Shift only, no divide.
-    if (sdBoost > 256) sdBoost -= (sdBoost - 256) >> sdBoostShift;
-    int32_t thr = (sdThrBlock * sdBoost) >> 8;
+    if (sdBoost > 65536) sdBoost -= (sdBoost - 65536) >> sdBoostShift;
+    // Truncated to Q8 only at the point of use, which keeps the product inside 32 bits.
+    int32_t thr = (sdThrBlock * (sdBoost >> 8)) >> 8;
 
     // sdTransient is the variance gate: level alone is not a beat, the envelope has to be moving.
-    if (sdArmed && sdTransient && sdEnv > thr && sdEnv > sdMinLevel && !sdPeaking) {
+    if (sdArmed && sdTransient && sdHasDynamics && sdEnv > thr && !sdPeaking) {
       sdPeaking   = true;
       sdPeakVal   = sdEnv;
       sdPeakClock = sdSampleClock;
@@ -529,7 +552,7 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
         uint32_t tms = (uint32_t)(((uint64_t)sdPeakClock * 1000ULL) / SAMPLING_FREQUENCY);
         if ((uint32_t)(tms - sdLastOnsetMs) > (uint32_t)sdLockoutMs) {
           sdLastOnsetMs = tms;
-          sdBoost = sdBoostMaxQ8;
+          sdBoost = sdBoostMaxQ8 << 8;   // the API keeps this knob in Q8
           fired = tms;
           sdOnsetsThisFrame++;
         }
