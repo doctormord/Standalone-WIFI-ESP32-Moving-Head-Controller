@@ -4614,3 +4614,59 @@ findet die **Achtel**-Periode (218 ms) als stärksten Peak und verdoppelt sie au
 kleiner Fehler auf der halben Periode verdoppelt sich dabei mit. Der Fix wäre, nach dem Falten
 am gefalteten Wert nachzujustieren statt einfach zu verdoppeln — nicht mehr blind gebaut,
 sondern als nächster Schritt notiert.
+
+### 2026-09-01 (5) — Richtigstellung: der Sample-Detektor war ein freilaufender Oszillator
+
+Der Eintrag 2026-09-01 (4) meldete einen Durchbruch bei der Onset-Erkennung: Streuung von
+82–155 % auf 14 %, Rate 2,19/s bei einem Ziel von 2,17. **Diese Zahlen waren ein Artefakt.**
+Der User bestätigte das Tempo als 133 BPM (nicht 130), und ein Sweep über die Pulse-Window-Länge
+zeigte dann das hier:
+
+| Sperre | 200 | 240 | 280 | 320 | 360 | 410 |
+|---|---|---|---|---|---|---|
+| Onset-Median | 217 | 267 | 307 | 350 | 399 | 454 |
+
+**Der Median ist bei jeder Einstellung die Sperre plus rund 40 ms.** Der Detektor erkannte
+nichts — er feuerte in dem Moment wieder, in dem die Sperre aufging. Dass 410 ms so gut
+passte, lag ausschließlich daran, dass ich die Sperre zuvor gegen das Beat-Intervall
+eingemessen hatte: 410 + 40 = 450 ≈ 451 ms. Die geringe Streuung war die Gleichmäßigkeit
+der Sperre, nicht die der Musik. Ein Detektor, dessen Rate man über die Sperre einstellt,
+misst die Sperre.
+
+**Ursache:** die Referenz, gegen die der Komparator vergleicht, hatte mit `sdRefShift = 11`
+eine Zeitkonstante von 2¹¹ Samples = **128 ms**. Bei einem Beat von 451 ms folgt sie dem Kick
+mit, den sie als Ausreißer erkennen soll, und löscht genau den Kontrast aus. Der DJM mittelt
+über Sekunden. Erst mit `brf = 13` (512 ms) fiel die Rate von 4,9 auf 2,4/s, **ohne** dass die
+Sperre band (die stand auf 150 ms) — dort kam die Rate zum ersten Mal aus der Erkennung.
+Auch die Empfindlichkeit war wirkungslos: bei `sens = 100` ist der Schwellenfaktor exakt 1,0,
+die Schwelle also gleich der Referenz.
+
+### Zwei Fehler, die nicht von der Musik abhängen — behoben und verifiziert
+
+**Der Pegelmesser maß nach der Begrenzung.** Ein einziges gesättigtes Sample im Frame nagelte
+die Anzeige auf Vollausschlag, und sie konnte sich danach nicht mehr bewegen, egal wie weit
+die Verstärkung heruntergedreht wurde. Sie zeigte weder den echten Pegel noch Headroom; ein
+hart geclipptes Sample wurde zudem doppelt als Clipping gezählt. Jetzt vor der Begrenzung
+gemessen — der Wert darf über Vollausschlag hinauslaufen, denn genau dieser Überschuss ist
+die nützliche Information. Verifiziert: die Anzeige verdoppelt sich exakt pro Stufe
+(3484, 7352, 14048, 27264, 54928, 95904).
+
+**Damit wurde sichtbar: der Eingang stand auf `ig = 5`, also 293 % Vollaussteuerung mit 269
+geclippten Samples pro Frame.** Sämtliche Spektren und Bandpegel dieser Session wurden von
+einem hart übersteuerten Signal abgelesen. `ig = 3` liefert 83 % ohne jedes Clipping und ist
+jetzt Standard.
+
+**Das Fenster des Phasentests ist jetzt einstellbar** (`tw`, Standard 24 s statt fest 10 s).
+Die Periodenauflösung eines Phasentests ist etwa P²/D — bei 450 ms Beat löst ein 10-s-Fenster
+nur ~20 ms auf, 428 und 452 ms fallen also in dieselbe Zelle. Auf dem Gerät bestätigt: bei
+5 s streut `tLag` über 412–436, bei 28 s steht ein einziger Wert.
+
+### Methodik: das eigentliche Hindernis
+
+Zum zweiten Mal in dieser Session sind Messreihen daran gescheitert, dass gegen laufende Musik
+gemessen wurde. Dieselben Einstellungen lieferten im Abstand von Minuten 2,42 Onsets/s und
+0,96/s bei 320 % Streuung; `brf = 14` einmal 0,04/s und einmal exakt null. Jeder Sweep dauert
+Minuten, der Track läuft weiter, und damit ist keine einzige dieser Zahlen belastbar — auch
+die guten nicht. **Vor der nächsten Detektor-Einmessung muss eine feste Referenzaufnahme
+stehen** (Loop oder Metronom bei bekanntem Tempo), sonst wiederholt sich das ein drittes Mal.
+Das stand bereits als Vorsatz in Commit 7328427 und wurde übersprungen.
