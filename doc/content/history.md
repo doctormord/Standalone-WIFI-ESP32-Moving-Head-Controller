@@ -4726,3 +4726,62 @@ Musik erzeugen nur wieder Zahlen, die beim nächsten Track nicht mehr gelten.
 Nebenbei aufgefallen: `sens` liegt auf `/hwaudio`, nicht auf `/audio_tune`. Frühere
 Empfindlichkeits-Sweeps dieser Session waren wirkungslos und ihre Schlussfolgerung
 („die Schwelle wirkt nicht") entsprechend falsch.
+
+### 2026-09-01 (7) — Fremde Implementierungen gelesen, drei Dinge übernommen, eines verworfen
+
+Der User lieferte drei Quellen: `Steppschuh/Micro-Beat-Detection`, `gibbedy/BeatDetector`,
+`stengerh/foo_bpm` sowie das Stichwort Collins, „A Comparison of Sound Onset Detection
+Algorithms with Emphasis on Psychoacoustically Motivated Detection Functions" (AES 118, 2005,
+hinter Paywall — stattdessen die frei zugängliche Nachfolgearbeit Dixon, „Onset Detection
+Revisited", DAFx-06, ausgewertet).
+
+**Übernommen:**
+
+*Onset am Gipfel statt an der Flanke* (Dixon, Bedingung 1 seines Peak-Pickers). Unser Detektor
+feuerte beim Schwellendurchgang. Ein Durchgang wandert mit dem Pegel — lautere Passage, früherer
+Durchgang — ein Gipfel nicht. Peak-zu-Peak gemessene Abstände sind damit deutlich
+wiederholgenauer, und Wiederholgenauigkeit ist hier das ganze Problem. Kausal umgesetzt: ab
+Schwellenüberschreitung dem Maximum folgen, festschreiben wenn die Hüllkurve zurückfällt, und
+mit der Zeit **des Gipfels** stempeln — der gemeldete Zeitpunkt verspätet sich also nicht, nur
+die Kenntnis davon.
+
+*Schwelle im Dynamikbereich* (gibbedy): `Untergrenze + Anteil × (Spitze − Untergrenze)` statt
+`Mittelwert × Faktor`. Der Regler wird dimensionslos — eine Position zwischen leise und laut,
+keine Verstärkung — und muss deshalb bei Pegelwechsel nicht nachgestellt werden. Genau daran sind
+sämtliche bisherigen Einmessversuche gescheitert. Dazu gibbedys Zusatzbedingung „> 2 ×
+Mittelwert", damit in beatlosen Passagen nicht das Eigenrauschen zerlegt wird.
+
+*Median statt Mittelwert als Bezugsgröße* (foo_bpm). Ein Mittelwert wird von genau den Peaks nach
+oben gezogen, gegen die er messen soll; ein Median nicht. Das mit einem immer langsameren Mittel
+zu umgehen war der Weg, der in den eingefrorenen Referenzwert geführt hat (Eintrag 6).
+
+*Konsistenzprüfung vor der BPM-Ausgabe* (gibbedy). Er verlangt, dass alle jüngsten Intervalle
+zum neuesten passen, sonst hält er den alten Wert. Hier als Streuung um den Median formuliert,
+damit ein einzelner Ausreißer eine sonst saubere Messung nicht blockiert. Ein Median liefert
+sonst immer eine Zahl, auch aus bedeutungslosen Abständen.
+
+*Varianz-Gate* (Steppschuh): ein Beat verlangt eine bewegte Hüllkurve, nicht nur eine hohe. Eine
+gehaltene Bassnote überschreitet die Schwelle dauerhaft — das waren die Zusatz-Onsets zwischen
+den Kicks. Und dessen *weiche* Sperre statt einer harten: eine abklingende Schwelle kann kein
+eigenes Raster bilden, eine harte Sperre nachweislich schon (Eintrag 5).
+
+**Verworfen, gegen die eigene erste Einschätzung:** Klapuris logarithmische bzw. relative
+Differenzfunktion. Sie klingt überzeugend und wurde hier zunächst als „für uns fundamental"
+bezeichnet — Dixon hat genau das gemessen: *„Empirical tests favoured the use of the L1-norm
+here over the L2-norm, and the linear magnitude over the logarithmic (relative or normalised)
+function proposed by Klapuri."* Ebenso verworfen: foo_bpms quadratische, binhalb gewichtete
+Flux-Variante. In Dixons großem Datensatz (106.054 Onsets) erreicht schlichter Spectral Flux das
+beste F-Maß (0,964) **und** den kleinsten Zeitfehler (8,8 ms) von acht Verfahren. Unsere
+bestehende lineare Summe positiver Differenzen ist damit bereits die empirisch bevorzugte Wahl.
+
+**Ebenfalls nicht übernommen:** foo_bpms Gittersuche über Tempo × Phase (Offline-Analyse eines
+ganzen Tracks, für uns pro Schleifendurchlauf nicht bezahlbar), Steppschuhs FHT-Frontend (unserer
+16-kHz-Festkomma-FFT unterlegen) und dessen handgefittete Magnitudenkurve
+(`-1.05`, `*10`, `pow(x,3)/3-1.25`) — Konstanten ohne Prinzip, die zwischen Aufbauten nicht
+übertragen. In beiden Fremdprojekten stecken zudem Fehler, die man beim Abschreiben mitnähme:
+Steppschuh zieht in `calculateMagnitudeChangeFactor` 0,1 vom bereits begrenzten Overall-Faktor
+ab, mitten im Block für den First-Faktor; gibbedy berechnet in Zeile 30 eine Glättung des
+Maximums und überschreibt sie in Zeile 31 sofort.
+
+**Stand:** kompiliert, Flash 93,4 %. **Auf Hardware unverifiziert** — Gerät ab 2026-09-02 wieder
+verfügbar. Prüfplan siehe `handoff.md`.
