@@ -278,14 +278,25 @@ inline int32_t fftMagPrev[FFT_N / 2];
 // Timestamps come from a SAMPLE COUNTER rather than millis(): derived from the audio clock
 // itself, it carries none of the polling loop's jitter.
 inline bool  sdEnabled  = true;
-inline int   sdKLo      = 5;    // one-pole shift for the lower edge  (~80Hz at 16kHz)
-inline int   sdKHi      = 3;    // one-pole shift for the upper edge  (~320Hz)
-inline int   sdAtt      = 2;    // envelope attack, fast
-inline int   sdRel      = 7;    // envelope release (~50ms)
-inline int   sdRefShift = 11;   // reference tracking, slow -- this is the comparator's baseline
-inline int   sdLockoutMs = 200; // pulse window, as the DJM calls it
+inline int   sdKLo      = 6;    // lower edge ~40Hz   (fc = 16000 / (2*pi * 2^k))
+inline int   sdKHi      = 4;    // upper edge ~160Hz -- the kick's band, as on the DJM.
+// 3 (~320Hz) was wide enough to let the bass line and the low mids through, and every one
+// of those that crossed the threshold became a spurious beat.
+inline int   sdAtt      = 2;    // envelope attack, ~0.25ms -- follows the leading edge
+inline int   sdRel      = 11;   // envelope release, ~128ms (2^k samples / 16000)
+// 7 was a mistake: 2^7 samples at 16kHz is 8ms, not the ~50ms the comment claimed. At an 8ms
+// release nothing is being enveloped -- the value just follows the rectified bandpass, which
+// swings at 40-160Hz and therefore crosses any threshold continuously. The only thing holding
+// the rate down was the refractory period, which is exactly the failure this chain kept showing.
+// A kick needs the release long enough that its decay reads as one hump.
+inline int   sdRefShift = 14;   // ~1s: the rolling average the comparator measures against
+// The refractory period only suppresses one kick re-triggering on its own decay. It must
+// stay far below the shortest beat in range (60000/200 = 300ms), because a lockout longer
+// than that stops being a guard and becomes the thing that sets the rate: measured on the
+// device, the onset median came out as the lockout plus ~40ms at every setting tried.
+inline int   sdLockoutMs = 120; // refractory only -- never the rate
 
-inline int32_t  sdLp1 = 0, sdLp2 = 0, sdEnv = 0, sdRef = 0;
+inline int32_t  sdLp1 = 0, sdLp2 = 0, sdEnv = 0, sdRef = 0, sdRefAcc = 0;
 inline uint32_t sdSampleClock = 0;
 inline uint32_t sdLastOnsetMs = 0;
 inline bool     sdArmed = true;
@@ -315,7 +326,16 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
 
     // The reference floats with the signal, so the detector works at any input level -- the
     // "automatic threshold setting" of the original.
-    sdRef += (sdEnv - sdRef) >> sdRefShift;
+    //
+    // Carried at 8 extra bits. Written as the obvious `sdRef += (sdEnv - sdRef) >> sdRefShift`
+    // it is an integer shift, so any difference smaller than 2^sdRefShift shifts to exactly 0 and
+    // the reference stops moving. At shift 14 that deadband is 16384: the reference stayed pinned
+    // near zero, which made the threshold a constant 8, and the re-arm test `sdEnv < sdRef` then
+    // asked a magnitude to fall below zero -- so after the very first onset it could never arm
+    // again. That is why a slow reference produced no onsets at all, and why at a fast one only
+    // the lockout was left setting the rate. The rolling threshold never actually existed.
+    sdRefAcc += (((int32_t)sdEnv << 8) - sdRefAcc) >> sdRefShift;
+    sdRef = sdRefAcc >> 8;
 
     // Threshold as a Q8 multiply rather than a divide: the factor is constant for the whole
     // block, so computing it per sample cost a 64-bit multiply AND divide every sample. Together
@@ -376,14 +396,9 @@ inline bool tempoAvgSeeded = false;
 // for a candidate period, which needs their absolute positions.
 #define IOI_RING 64
 
-// How far back the phase test looks. This is a RESOLUTION setting, not a smoothing one: the
-// period resolution of a phase test is roughly P^2/D, so at a 450ms beat a 10s window resolves
-// only ~20ms -- +/-6%, which put 428ms and 452ms inside the same cell and let the tracker report
-// 140 BPM while its own onsets said 133. At 24s the same arithmetic gives ~8ms, about 2%.
-// The ring holds 64 onsets, i.e. ~28s at a typical 2.2 onsets/s, so this uses what is already
-// collected rather than needing more memory. Tempo does not meaningfully change inside 24s of
-// the material this is for; if it does, the hysteresis below is what handles the switch.
-inline int tempoWindowMs = 24000;
+// How far back the median looks. Long enough to hold several beats so one bad gap cannot
+// decide the answer, short enough that a tempo change shows up rather than being averaged away.
+inline int tempoWindowMs = 3000;
 inline uint32_t onsetRing[IOI_RING];
 // How far above its threshold each onset was, 16 == exactly at threshold. Weighting the phase
 // test by this is what removes the need to tune sensitivity per track: a weak off-beat hit still
@@ -536,11 +551,66 @@ inline void tempoTrackerEval() {
   dbgPlainHalf = ioiCount;
 }
 
-// Called once per audio frame. The flux ring is no longer used for tempo (see tempoTrackerEval),
-// only the periodic re-evaluation is driven from here.
+// =========================================================
+// --- TEMPO: the median gap between kicks, and nothing else ---
+// =========================================================
+// Five estimators were stacked here over time -- a smoothed median history, autocorrelation with
+// harmonic summing, an interval histogram, an onset-phase DFT, and hysteresis on top. Each was
+// added to patch the previous one's failure, two of them wrote globalBPM independently, and in
+// the end no single one of them owned the answer. All of them were also working on onsets that
+// the reference-deadband bug above had made meaningless, so none of the tuning meant anything.
+//
+// What is left is the whole thing: time the gaps between detected kicks, throw away any gap that
+// is not a plausible beat, and take the median of what remains over the last few seconds. The
+// median rather than the mean because one missed beat doubles a gap, and a mean would carry that
+// straight into the answer while a median ignores it.
+#define TEMPO_IVL_RING 16
+inline uint32_t tempoIvl[TEMPO_IVL_RING];    // the gap
+inline uint32_t tempoIvlAt[TEMPO_IVL_RING];  // when it was measured, so the window can expire it
+inline int      tempoIvlIdx = 0;
+inline uint32_t tempoPrevOnset = 0;
+
+// A gap outside 60..200 BPM is not a tempo -- it is a double trigger or a missed beat. Rejecting
+// it here is what removes the need for any octave or folding logic downstream.
+#define TEMPO_IVL_MIN (60000 / BPM_MAX_LIMIT)   // 300ms
+#define TEMPO_IVL_MAX (60000 / BPM_MIN_LIMIT)   // 1000ms
+
+// Two clocks, on purpose. The GAP is measured on the sample clock, which is what makes it
+// precise. WHEN it was measured is recorded on millis(), because that is the clock the window is
+// later checked against -- the sample clock only advances while blocks are being processed, so it
+// runs behind wall time, and comparing the two made every stored interval look already expired.
+inline void tempoPushOnsetTime(uint32_t preciseMs, uint32_t wallMs) {
+  if (tempoPrevOnset != 0) {
+    uint32_t d = preciseMs - tempoPrevOnset;
+    if (d >= TEMPO_IVL_MIN && d <= TEMPO_IVL_MAX) {
+      tempoIvl[tempoIvlIdx] = d;
+      tempoIvlAt[tempoIvlIdx] = wallMs;
+      tempoIvlIdx = (tempoIvlIdx + 1) % TEMPO_IVL_RING;
+    }
+  }
+  tempoPrevOnset = preciseMs;
+}
+
+inline void tempoEvalMedian(uint32_t nowMs) {
+  uint32_t v[TEMPO_IVL_RING]; int n = 0;
+  for (int i = 0; i < TEMPO_IVL_RING; i++) {
+    if (tempoIvl[i] && (uint32_t)(nowMs - tempoIvlAt[i]) <= (uint32_t)tempoWindowMs) v[n++] = tempoIvl[i];
+  }
+  // Below three gaps there is nothing honest to report, so the previous answer stands.
+  if (n < 3) return;
+  for (int i = 1; i < n; i++) {
+    uint32_t k = v[i]; int j = i - 1;
+    while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
+    v[j+1] = k;
+  }
+  trackedBPM = constrain((int)(60000UL / v[n / 2]), BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+  trackedScore = n;          // how many gaps the answer rests on, for the AUDIO tab
+  dbgLagMilli = (int32_t)v[n / 2];
+}
+
 inline void tempoTrackerPush(int32_t flux, unsigned long now) {
   (void)flux;
-  if (now - tempoLastEval >= TEMPO_EVAL_MS) { tempoLastEval = now; tempoTrackerEval(); }
+  if (now - tempoLastEval >= TEMPO_EVAL_MS) { tempoLastEval = now; tempoEvalMedian((uint32_t)now); }
 }
 
 // Spectral flux: the sum of the POSITIVE changes across a bin range, i.e. how much energy
@@ -769,7 +839,9 @@ void pollAudioEngine() {
       // Precise timestamp where it matters: the tempo estimator works on onset positions, so it
       // gets the sample-clock time rather than the frame's millis(). Everything else stays on
       // millis() so the beat clock is not fed from two different timebases.
-      pushOnset(sdEnabled && sdOnsetMs ? sdOnsetMs : (uint32_t)now, bassEnergy, thBass);
+      uint32_t onsetAt = sdEnabled && sdOnsetMs ? sdOnsetMs : (uint32_t)now;
+      pushOnset(onsetAt, bassEnergy, thBass);
+      tempoPushOnsetTime(onsetAt, (uint32_t)now);
       lastBassTime = now;
       triggerBass = true;
       guiBass = true;
@@ -839,12 +911,9 @@ void pollAudioEngine() {
             // consecutive ones -- which syncopated material defeats by construction. The
             // median path stays as the fallback for when the tracker has nothing yet
             // (startup, silence) and remains visible as rawBPM for comparison.
-            if (!tempoTapLock && !(audioUseTracker && trackedBPM > 0)) {
-              long dev = labs((long)detectedBPM - (long)globalBPM) * 100L / (globalBPM > 0 ? globalBPM : 1);
-              if (dev > BPM_RELOCK_PERCENT) globalBPM = detectedBPM;
-              else globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
-              globalBPM = constrain(globalBPM, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
-            }
+            // Display only. This path used to write globalBPM as well, so two estimators wrote
+            // it from the same function and whichever ran last won; it stays visible as rawBPM
+            // purely as a second opinion to compare against.
           }
         }
       }

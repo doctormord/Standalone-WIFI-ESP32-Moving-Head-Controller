@@ -618,7 +618,7 @@ void setupAPI() {
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     if (server.hasArg("ig"))  tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5);
-    if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 4000, 28000);
+    if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 1000, 10000);
     server.send(200, "OK");
   });
 
