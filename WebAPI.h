@@ -36,6 +36,7 @@ void saveAudioPrefs() {
     prefs.putInt("a_htd", tuneHighThreshDivShift);
     prefs.putInt("a_fg", tuneFftGainShift);
     prefs.putInt("a_ig", tuneInputGainShift);
+    prefs.putInt("a_tw", tempoWindowMs);
     prefs.putInt("a_db", tuneDetBass);
     prefs.putInt("a_dm", tuneDetMid);
     prefs.putInt("a_dh", tuneDetHigh);
@@ -74,6 +75,7 @@ void loadAudioPrefs() {
     tuneHighThreshDivShift = prefs.getInt("a_htd", tuneHighThreshDivShift);
     tuneFftGainShift = prefs.getInt("a_fg", tuneFftGainShift);
     tuneInputGainShift = prefs.getInt("a_ig", tuneInputGainShift);
+    tempoWindowMs = prefs.getInt("a_tw", tempoWindowMs);
     tuneDetBass = prefs.getInt("a_db", tuneDetBass);
     tuneDetMid  = prefs.getInt("a_dm", tuneDetMid);
     tuneDetHigh = prefs.getInt("a_dh", tuneDetHigh);
@@ -616,6 +618,7 @@ void setupAPI() {
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     if (server.hasArg("ig"))  tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5);
+    if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 4000, 28000);
     server.send(200, "OK");
   });
 

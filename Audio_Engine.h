@@ -71,7 +71,7 @@ inline int tuneBinHighLo = BIN_HIGH_LO, tuneBinHighHi = BIN_HIGH_HI;
 // Raw input telemetry, so the mic level (and whether it clips) is visible instead of guessed.
 // Without this the rolling graph's auto-scaling hides both silence and overload -- they look
 // identical once everything is normalised.
-inline int32_t micPeak = 0;       // 0..32767, peak magnitude of the last frame
+inline int32_t micPeak = 0;       // peak magnitude of the last frame, pre-clamp -- may exceed 32767 when overdriven
 inline int micClipCount = 0;      // samples at/near full scale in the last frame
 
 // Audio tuning is persisted to NVS, but NOT on every change: dragging a slider fires a
@@ -87,7 +87,10 @@ inline void markAudioPrefsDirty() { audioPrefsDirty = true; audioPrefsDirtyAt = 
 // available range, which throws away more than three bits before the transform even starts.
 // Physical level could not be raised further, so the resolution is recovered here instead.
 // The clip counter above is the guard rail: turn this up until CLIPPING shows, then back off.
-inline int tuneInputGainShift = 0;   // 0..5 -> x1 .. x32
+inline int tuneInputGainShift = 3;   // 0..5 -> x1 .. x32
+// 3 measured on the device 2026-09-01: 83% of full scale on peaks with zero clipping.
+// 4 already runs 168% and clips, 5 runs 293% -- which is where this sat all along, so every
+// spectrum and band level was being read off a hard-clipped signal.
 
 // Attack/Decay speeds as bit-shifts (1 = /2, 2 = /4 ...), the mid/high threshold trims and the
 // noise floor. Runtime-tunable rather than #define so the AUDIO tab can adjust them live via
@@ -372,6 +375,15 @@ inline bool tempoAvgSeeded = false;
 // Onset TIMES, not intervals: the estimator below asks how well all onsets line up in phase
 // for a candidate period, which needs their absolute positions.
 #define IOI_RING 64
+
+// How far back the phase test looks. This is a RESOLUTION setting, not a smoothing one: the
+// period resolution of a phase test is roughly P^2/D, so at a 450ms beat a 10s window resolves
+// only ~20ms -- +/-6%, which put 428ms and 452ms inside the same cell and let the tracker report
+// 140 BPM while its own onsets said 133. At 24s the same arithmetic gives ~8ms, about 2%.
+// The ring holds 64 onsets, i.e. ~28s at a typical 2.2 onsets/s, so this uses what is already
+// collected rather than needing more memory. Tempo does not meaningfully change inside 24s of
+// the material this is for; if it does, the hysteresis below is what handles the switch.
+inline int tempoWindowMs = 24000;
 inline uint32_t onsetRing[IOI_RING];
 // How far above its threshold each onset was, 16 == exactly at threshold. Weighting the phase
 // test by this is what removes the need to tune sensitivity per track: a weak off-beat hit still
@@ -461,7 +473,7 @@ inline void tempoTrackerEval() {
     for (int i = 0; i < ioiCount; i++) {
       uint32_t t = onsetRing[i];
       uint32_t age = newest - t;
-      if (age > 10000) continue;                 // only the last 10s describe the current tempo
+      if (age > (uint32_t)tempoWindowMs) continue;
       uint32_t ph = ((age % (uint32_t)P) * 256u) / (uint32_t)P;
       int32_t w = (int32_t)onsetW[i];
       re += (int32_t)tempoSinTab[(ph + 64) & 255] * w;
@@ -652,11 +664,14 @@ void pollAudioEngine() {
       int32_t peak = 0; int clips = 0;
       for (int i = 0; i < FFT_N; i++) {
         int32_t s = (raw_samples[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << tuneInputGainShift;
-        if (s > 32767) { s = 32767; clips++; }
-        else if (s < -32768) { s = -32768; clips++; }
+        // Measure the level BEFORE clamping. Taking it afterwards pins the meter to full scale
+        // as soon as one sample in the frame saturates, and it then cannot move again however
+        // far the gain is turned down -- so it shows neither the real level nor any headroom.
+        // Letting peak run past 32767 is the point: that overshoot is what says "turn it down".
         int32_t a = s < 0 ? -s : s;
         if (a > peak) peak = a;
-        if (a >= 32000) clips++;              // at/near full scale counts as clipping
+        if (a >= 32000) clips++;              // count each saturated sample once
+        if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
         fftRe[i] = (int16_t)(((int32_t)s * fftWindow[i]) >> 15);
         fftIm[i] = 0;
       }
