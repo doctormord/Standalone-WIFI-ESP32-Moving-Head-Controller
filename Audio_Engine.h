@@ -323,6 +323,12 @@ inline int32_t trackedScore = 0;    // winning harmonic score, for the AUDIO tab
 // octaves were, so the choice can be inspected instead of inferred.
 inline int32_t dbgLagMilli = 0, dbgPlainBase = 0, dbgPlainHalf = 0, dbgPlainDouble = 0;
 inline int tempoCandidate = 0, tempoAgree = 0;
+// A tapped tempo outranks the tracker. Until this was added the tracker reassigned globalBPM on
+// every audio frame (~31 times a second), so a tapped value survived about 32ms and tapping was
+// simply ineffective whenever the mic was on -- which reads as "tapping is jumpy" rather than as
+// the override it actually was. Tapping now holds the tempo and the audio keeps supplying phase
+// through the beat-clock correction, which is how a lighting desk is normally driven.
+inline bool tempoTapLock = false;
 inline bool audioUseTracker = true;
 // Manual octave override for the tracker's result: 0 = as measured, 1 = double, 2 = halve.
 // Deliberately a user decision, not a heuristic. The tracker reports the pulse the bass
@@ -405,11 +411,28 @@ inline void tempoTrackerEval() {
   int bpm = 60000 / bestP;
   if (bpm < BPM_MIN_LIMIT || bpm > BPM_MAX_LIMIT) return;
 
-  // Hysteresis: a different tempo must win twice running before it is adopted, because a tempo
-  // that flips changes the beat length underneath every synced effect and makes the phase jump.
+  // Hysteresis. A tempo that flips changes the beat length underneath every synced effect and
+  // makes the phase jump, so switching has to be deliberately hard. Measured live 2026-09-01 on a
+  // track the user confirmed as 147 BPM: the correct value was already the most common reading by
+  // far, but the tracker still spent a third of the time at 192-197 (147 x 4/3). Two conditions
+  // now have to hold before the reported tempo moves:
+  //
+  //   1. the challenger has to win several evaluations in a row, not just two, and
+  //   2. it has to be clearly better than the tempo currently held -- the incumbent's own score is
+  //      looked up and the challenger must beat it by a margin.
+  //
+  // Without the second test a marginally noisier window was enough to switch, which is exactly
+  // how a value that is right most of the time still ends up unusable.
   if (trackedBPM > 0 && (bpm > trackedBPM + 2 || bpm < trackedBPM - 2)) {
+    int curP = 60000 / trackedBPM;
+    int ci = (curP - TEMPO_P_MIN) / TEMPO_P_STEP;
+    if (ci >= 0 && ci < TEMPO_CAND_N) {
+      int32_t curMag = magOf[ci];
+      // Not clearly better than what we already have: keep the incumbent.
+      if (curMag > 0 && (int64_t)bestMag * 100 < (int64_t)curMag * 130) { tempoAgree = 0; return; }
+    }
     if (tempoCandidate > bpm + 2 || tempoCandidate < bpm - 2) { tempoCandidate = bpm; tempoAgree = 1; return; }
-    if (++tempoAgree < 2) return;
+    if (++tempoAgree < 4) return;
   }
   tempoCandidate = bpm;
   tempoAgree = 0;
@@ -709,7 +732,7 @@ void pollAudioEngine() {
             // consecutive ones -- which syncopated material defeats by construction. The
             // median path stays as the fallback for when the tracker has nothing yet
             // (startup, silence) and remains visible as rawBPM for comparison.
-            if (!(audioUseTracker && trackedBPM > 0)) {
+            if (!tempoTapLock && !(audioUseTracker && trackedBPM > 0)) {
               long dev = labs((long)detectedBPM - (long)globalBPM) * 100L / (globalBPM > 0 ? globalBPM : 1);
               if (dev > BPM_RELOCK_PERCENT) globalBPM = detectedBPM;
               else globalBPM = ((globalBPM * BPM_SMOOTHING_WEIGHT_OLD) + detectedBPM) / BPM_SMOOTHING_WEIGHT_TOTAL;
@@ -817,7 +840,7 @@ void pollAudioEngine() {
   // Held per 5s window so a single outlier cannot hide behind an average.
   // Applied outside the beat-detected block on purpose: the tracker does not need an onset
   // to have just fired, it works off the rolling flux history.
-  if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled) {
+  if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled && !tempoTapLock) {
     int shown = trackedBPM;
     // The override is ignored rather than clamped when it would leave the valid range --
     // clamping would silently show a tempo that is neither the measurement nor its octave.

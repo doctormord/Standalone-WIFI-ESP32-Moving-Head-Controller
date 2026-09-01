@@ -4472,3 +4472,46 @@ Detektor-Vorgaben stehen wie beabsichtigt (Bass=Energie, Mid=Flux, High=Flux). D
 Verhalten, aber mit der Folge, dass das High-Band weiterhin bei Bin 127 (≈4 kHz) endet und
 den neu verfügbaren Bereich bis 8 kHz nicht nutzt. Wer ihn will, zieht die obere Grenze im
 AUDIO-Tab hoch. Presets haben beide Flash-Vorgänge überstanden.
+
+### 2026-09-01 (2) — Einstellungen live optimiert, und zwei echte Fehler beim Tap
+
+Der User bat, die Einstellungen über die API zu optimieren, weil „BPM jetzt aus Mid und High
+zu kommen scheint, weil Bass mit Energie einfach zuläuft".
+
+**Die Beobachtung war exakt richtig, und es waren zwei Ursachen:**
+
+1. **Der Eingang war voll übersteuert.** Input-Gain stand auf ×32, Mic-Peak konstant bei
+   32768 — also 100 % Aussteuerung, alle Transienten plattgedrückt. Unter der Bedingung kann
+   keine Einstellung funktionieren. Eingemessen: **×16** ist die höchste Stufe ohne Clipping.
+2. **Hüllkurve und Schwelle liefen im Gleichschritt.** Bass-Decay ÷16, Schwellen-Nachführung
+   ebenfalls ÷16 — die Schwelle zog also exakt so schnell nach, wie die Hüllkurve abfiel, und
+   der Bass konnte sie prinzipiell nie kreuzen (gemessen: Bass 16346 gegen Schwelle 24770).
+   Genau das ist das „läuft zu". **Regel daraus: die Hüllkurve muss deutlich schneller
+   abfallen, als die Schwelle nachgeführt wird.** Eingemessen: Decay ÷2 gegen Schwelle ÷256,
+   Sensitivity 100.
+
+Ergebnis: Onset-Rate 2,28/s bei einem 147er-Track, Tracker-Modalwert **exakt 147** (vom User
+bestätigt). Nach zusätzlich verschärfter Hysterese (vier Bestätigungen statt zwei, plus 30 %
+Score-Vorsprung gegenüber dem gehaltenen Wert) liegt der Anteil im Zielbereich 144–150 bei
+**73 %**, vorher rund 55 %. Die verbleibenden Ausreißer gehen nach 182–197.
+
+### Tappen war wirkungslos — und das erklärt „sprunghaft"
+
+Der User merkte an, Handtapping solle Vorrang haben und wirke sehr sprunghaft. Der Befund war
+gravierender als die Formulierung vermuten ließ: `globalBPM = trackedBPM` lief in **jedem**
+Audio-Frame, also ~31× pro Sekunde. Ein getappter Wert überlebte damit rund 32 ms — bei
+eingeschaltetem Mikrofon war Tappen schlicht **ohne Wirkung**.
+
+Jetzt setzt ein Tap `tempoTapLock`, und der Tracker überschreibt nicht mehr. Live verifiziert:
+getappte 123 BPM hielten über 12 s, während der Tracker weiterhin 197 meldete; nach
+`?tap=0` übernimmt wieder die Automatik. Die Audio-Erkennung liefert dabei weiterhin die
+**Phase** über die Beat-Uhr-Regelung — Tempo von Hand, Phase vom Signal, wie an einem Pult.
+
+Zusätzlich war die Tap-Auswertung selbst unnötig empfindlich: sie bildete den **Mittelwert**
+der Intervalle, ein einzelner verrutschter Schlag zog ihn also sofort mit, und schon zwei Taps
+lieferten ein Ergebnis. Jetzt Median statt Mittelwert, Ausreißer über 35 % Abweichung werden
+verworfen, mindestens drei Taps, 3-s-Fenster, und die Obergrenze auf 200 angehoben (sie stand
+noch auf 180, obwohl die Firmware längst 200 erlaubt).
+
+In der GUI ist das Tempo-Dropdown jetzt dreistufig: *tapped (holds)* / *auto tracker* /
+*interval median*, mit Hinweistext, wenn der Tap-Wert gehalten wird.

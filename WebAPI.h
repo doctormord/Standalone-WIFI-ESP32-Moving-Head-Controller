@@ -50,6 +50,7 @@ void saveAudioPrefs() {
     prefs.putBool("a_fft", audioUseFFT);
     prefs.putBool("a_flux", audioUseFlux);
     prefs.putBool("a_trk", audioUseTracker);
+    prefs.putBool("a_tap", tempoTapLock);
     prefs.putBool("a_en", hwAudioEnabled);
   prefs.end();
 }
@@ -82,6 +83,7 @@ void loadAudioPrefs() {
     audioUseFFT = prefs.getBool("a_fft", audioUseFFT);
     audioUseFlux = prefs.getBool("a_flux", audioUseFlux);
     audioUseTracker = prefs.getBool("a_trk", audioUseTracker);
+    tempoTapLock = prefs.getBool("a_tap", tempoTapLock);
     hwAudioEnabled = prefs.getBool("a_en", hwAudioEnabled);
   prefs.end();
   // Defensive: a corrupt or hand-edited NVS value must not be able to make a band inverted or
@@ -501,7 +503,7 @@ void setupAPI() {
       "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
       "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
       "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
-      "\"trk\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
+      "\"trk\":%d,\"tap\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
       "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d,\"db\":%d,\"dm\":%d,\"dh\":%d,\"nbin\":%d}",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
@@ -512,7 +514,7 @@ void setupAPI() {
       audioUseFlux ? 1 : 0, tuneDynThreshSmoothShift,
       (long)lastBassLevel, (long)lastMidLevel, (long)lastHighLevel,
       (long)lastBassFlux, (long)lastMidFlux, (long)lastHighFlux,
-      audioUseTracker ? 1 : 0, trackedBPM, (long)trackedScore,
+      audioUseTracker ? 1 : 0, tempoTapLock ? 1 : 0, trackedBPM, (long)trackedScore,
       (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode,
       (long)micPeak, micClipCount,
       tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift,
@@ -572,6 +574,7 @@ void setupAPI() {
     if (server.hasArg("dm")) tuneDetMid  = constrain(server.arg("dm").toInt(), 0, 1);
     if (server.hasArg("dh")) tuneDetHigh = constrain(server.arg("dh").toInt(), 0, 1);
     if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
+    if (server.hasArg("tap")) tempoTapLock = (server.arg("tap") == "1");
     if (server.hasArg("tmul")) tempoMulMode = constrain(server.arg("tmul").toInt(), 0, 2);
     // Band edges in FFT bins (bin = 31.25Hz). Clamped so a band can never invert or reach
     // past the spectrum; bin 0 is DC and always excluded.
@@ -678,6 +681,9 @@ void setupAPI() {
       lastBeatTime = now - interval;
     }
     manualTap = true;
+    // A tap is an explicit statement of the tempo, so it takes over from the tracker until the
+    // user hands control back (/audio_tune?tap=0, or the AUDIO tab's Tempo control).
+    if (server.hasArg("bpm")) { tempoTapLock = true; markAudioPrefsDirty(); }
     // Returns the post-write generation so the frontend can gate its optimistic tapped BPM against
     // it -- a poll landing right after a tap used to snap the displayed BPM back to the pre-tap value.
     server.send(200, "text/plain", String(bumpGen("beat")));

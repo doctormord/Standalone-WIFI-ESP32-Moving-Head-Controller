@@ -607,16 +607,22 @@ function useTapTempo() {
   const taps = useRef([]);
   const tap = useCallback(() => {
     const now = performance.now();
-    taps.current = [...taps.current.filter((t) => now - t < 2000), now];
-    if (taps.current.length >= 2) {
+    // 3s window rather than 2s, so a slow tempo still accumulates enough taps to average.
+    taps.current = [...taps.current.filter((t) => now - t < 3000), now];
+    // Three taps minimum: with only two, a single mistimed press IS the answer. The median of the
+    // intervals is then used instead of the mean, and intervals more than 35% away from it are
+    // dropped -- one bad tap used to move the mean immediately, which is what made tapping feel
+    // jumpy. Reported live 2026-09-01.
+    if (taps.current.length >= 3) {
       const intervals = [];
       for (let i = 1; i < taps.current.length; i++) intervals.push(taps.current[i] - taps.current[i-1]);
-      const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-      const next = Math.round(60000 / avg);
-      // Clamped to the backend's own BPM_MIN_LIMIT/BPM_MAX_LIMIT (60-180, see Audio_Engine.h) --
-      // a value outside that range would just get rejected server-side anyway (see /beat), so
-      // matching it here keeps the displayed tap result consistent with what actually gets applied.
-      if (next >= 60 && next <= 180) { setBpm(next); return next; }
+      const sorted = [...intervals].sort((a, b) => a - b);
+      const med = sorted[Math.floor(sorted.length / 2)];
+      const kept = intervals.filter((v) => Math.abs(v - med) <= med * 0.35);
+      const use = kept.length ? kept.reduce((a, b) => a + b, 0) / kept.length : med;
+      const next = Math.round(60000 / use);
+      // Matches the backend's BPM_MIN_LIMIT/BPM_MAX_LIMIT, raised to 200 for drum & bass.
+      if (next >= 60 && next <= 200) { setBpm(next); return next; }
     }
     return undefined;
   }, []);
@@ -1688,7 +1694,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             mtd: d.mtd, htd: d.htd, dts: d.dts, fg: d.fg, tmul: d.tmul,
             fft: d.fft, flux: d.flux, trk: d.trk,
             bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh, ig: d.ig,
-            db: d.db, dm: d.dm, dh: d.dh,
+            db: d.db, dm: d.dm, dh: d.dh, tap: d.tap,
           };
           const now2 = Date.now();
           setTune((prev) => {
@@ -1808,10 +1814,11 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                 <Dropdown value={tune.db} onChange={(v) => applyTune('db', parseInt(v))} options={[[0, 'Bass · energy'], [1, 'Bass · flux']]} accent="#22c55e" dense />
                 <Dropdown value={tune.dm} onChange={(v) => applyTune('dm', parseInt(v))} options={[[0, 'Mid · energy'], [1, 'Mid · flux']]} accent="#fbbf24" dense />
                 <Dropdown value={tune.dh} onChange={(v) => applyTune('dh', parseInt(v))} options={[[0, 'High · energy'], [1, 'High · flux']]} accent="#22d3ee" dense />
-                <Dropdown value={tune.trk} onChange={(v) => applyTune('trk', parseInt(v))} options={[[1, 'Tempo · auto tracker'], [0, 'Tempo · interval median']]} accent={accent} dense />
+                <Dropdown value={tune.tap ? 2 : tune.trk} onChange={(v) => { const n = parseInt(v); if (n === 2) applyTune('tap', 1); else { applyTune('tap', 0); applyTune('trk', n); } }} options={[[2, 'Tempo · tapped (holds)'], [1, 'Tempo · auto tracker'], [0, 'Tempo · interval median']]} accent={accent} dense />
                 <Dropdown value={tune.tmul} onChange={(v) => applyTune('tmul', parseInt(v))} options={[[0, 'Octave · as measured'], [1, 'Octave · ×2'], [2, 'Octave · ÷2']]} accent={accent} dense />
               </div>
               <div style={{ marginTop: 9, fontFamily: '"JetBrains Mono", monospace', fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
+                {tune.tap ? <span style={{ color: '#fbbf24' }}>tempo held from your tap — the tracker is not overriding it. </span> : null}
                 tempo measured <b style={{ color: accent }}>{live.tBPM || '--'}</b> BPM
                 {live.tBPM ? ` → shown ${live.tmul === 1 ? live.tBPM * 2 : live.tmul === 2 ? Math.round(live.tBPM / 2) : live.tBPM}` : ''}
               </div>
