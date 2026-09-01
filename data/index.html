@@ -875,9 +875,9 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     const micPk = raw.pk || 0, micClip = raw.clip || 0;
     const micPct = Math.round((micPk / 32767) * 100);
     const micState = !micOn ? { show: false }
-      : micClip > 0 ? { show: true, color: '#f87171', label: `CLIP ${micPct}%`, title: `Mic input is clipping (${micClip} saturated samples in the last frame). Lower the input gain on the AUDIO tab.` }
+      : micClip > 0 ? { show: true, color: '#f87171', label: `CLIP ${micPct}%`, title: raw.ag ? `Mic input is clipping (${micClip} saturated samples in the last frame). Auto range will bring it down within a second.` : `Mic input is clipping (${micClip} saturated samples in the last frame). Lower the input gain on the AUDIO tab, or set it to AUTO.` }
       : micPct < 8 ? { show: true, color: '#fbbf24', label: `MIC ${micPct}%`, title: 'Mic level is very low - raise the input gain on the AUDIO tab, or beat detection will have nothing to work with.' }
-      : { show: true, color: '#4ade80', label: `MIC ${micPct}%`, title: 'Mic level has headroom and is not clipping.' };
+      : { show: true, color: '#4ade80', label: `MIC ${micPct}%${raw.ag ? ' A' : ''}`, title: raw.ag ? 'Mic level has headroom and is not clipping; input range is being set automatically.' : 'Mic level has headroom and is not clipping.' };
 
     return (
       <div style={{ height: 46, padding: '0 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.015)', flex: '0 0 auto', gap: 12 }}>
@@ -1698,7 +1698,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       const poll = async () => {
         if (paused) return;
         try {
-          const r = await fetch('/api/audio_debug'); const d = await r.json();
+          const r = await fetch('/api/audio_debug?spec=1'); const d = await r.json();
           if (!active) return;
           setLive({ lo: d.lo, mi: d.mi, hi: d.hi, th: d.th, thM: d.thM, thH: d.thH,
                     pk: d.pk, clip: d.clip, tBPM: d.tBPM, tmul: d.tmul });
@@ -1715,6 +1715,12 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             fft: d.fft, flux: d.flux, trk: d.trk,
             bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh, ig: d.ig,
             db: d.db, dm: d.dm, dh: d.dh, tap: d.tap,
+            // The sample-rate detector's own parameters, the peak picker's, and the auto range
+            // switch. Every key a control binds to has to be listed here or that control never
+            // learns what the device is actually running -- which is the exact failure this
+            // merge was written to fix in the first place.
+            bsd: d.bsd, blo: d.blo, bhi: d.bhi, brl: d.brl, brf: d.brf, blk: d.blk,
+            vmp: d.vmp, pfp: d.pfp, pmw: d.pmw, agrMax: d.agrMax, tw: d.tw, ag: d.ag,
           };
           const now2 = Date.now();
           setTune((prev) => {
@@ -1727,6 +1733,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             return merged;
           });
           if (d.nbin) setNbin(d.nbin);
+          if (d.b) { setSpec(d); drawSpec(d); }
           const buf = bufRef.current;
           buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi);
           buf.th.push(d.th); buf.thM.push(d.thM); buf.thH.push(d.thH);
@@ -1735,24 +1742,13 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           draw();
         } catch (e) {}
       };
-      poll(); const id = setInterval(poll, 66);
+      // One request now carries the band values and the spectrum together. This server handles
+      // requests one at a time out of the main loop, so two endpoints at 15Hz and 10Hz meant 25
+      // round trips a second whose fixed cost dominated the tiny payloads -- and that load showed
+      // up as second-long spikes in the header's ping. Halving the request count buys the rate.
+      poll(); const id = setInterval(poll, 40);
       return () => { active = false; clearInterval(id); };
-    }, [paused, draw]);
-
-    useEffect(() => {
-      let active = true;
-      const poll = async () => {
-        if (paused) return;
-        try {
-          const r = await fetch('/api/spectrum'); const d = await r.json();
-          if (!active) return;
-          setSpec(d); drawSpec(d);
-        } catch (e) {}
-      };
-      // Slower than the band poll: 128 numbers per response, and the eye cannot use more.
-      poll(); const id = setInterval(poll, 100);
-      return () => { active = false; clearInterval(id); };
-    }, [paused, drawSpec]);
+    }, [paused, draw, drawSpec]);
 
     // Every tune param round-trips through the device (not just local state) so the slider always
     // reflects what's actually running -- same "don't trust the optimistic value alone" discipline
@@ -1793,7 +1789,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         </Panel>
 
         <Panel title="Spectrum · what the FFT actually sees" accentDot={accent}
-          right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{spec ? `${spec.n} bins · ${spec.hz}Hz each` : '…'}</span>}>
+          right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{spec && spec.b ? `${spec.b.length} bins · ${spec.hz}Hz each` : '…'}</span>}>
           <canvas ref={specRef} width={640} height={150} style={{ width: '100%', height: 150, display: 'block', background: 'rgba(0,0,0,0.4)', borderRadius: 10 }} />
           <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', marginTop: 6 }}>
             Log scale with a slowly decaying peak hold. Coloured areas are the three detection bands —
@@ -1851,7 +1847,10 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                 multiple of the average, so one setting should hold across steady and dynamic music.
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
-                <Dropdown value={tune.ig} onChange={(v) => applyTune('ig', parseInt(v))} options={gainOpts(5)} accent={accent} dense />
+                <Dropdown value={tune.ag ? 'auto' : String(tune.ig)}
+                  onChange={(v) => v === 'auto' ? applyTune('ag', 1) : applyTune('ig', parseInt(v))}
+                  options={[['auto', `Input gain · AUTO (now ×${1 << (tune.ig || 0)})`], ...gainOpts(5)]}
+                  accent={accent} dense />
                 <Dropdown value={tune.fg} onChange={(v) => applyTune('fg', parseInt(v))} options={bandGainOpts()} accent={accent} dense />
                 <Dropdown value={tune.nf} onChange={(v) => applyTune('nf', parseInt(v))} options={[[0, 'Noise floor · 0'], [50, 'Noise floor · 50'], [100, 'Noise floor · 100'], [200, 'Noise floor · 200'], [400, 'Noise floor · 400'], [800, 'Noise floor · 800'], [1500, 'Noise floor · 1500']]} accent={accent} dense />
                 <Dropdown value={tune.dts} onChange={(v) => applyTune('dts', parseInt(v))} options={shiftOpts('Threshold follow')} accent={accent} dense />

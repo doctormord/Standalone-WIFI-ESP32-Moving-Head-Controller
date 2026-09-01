@@ -29,6 +29,13 @@ Gerät hat alte Werte in NVS, die die neuen Standardwerte überschreiben. Nach d
 
 ## Prüfplan, in dieser Reihenfolge
 
+**0. Zuerst die Uhr prüfen — das ist der wichtigste Test.** `drift` auf `/api/audio_debug` ist
+die Abweichung der Sample-Uhr von der Wanduhr in Promille. Sie **muss bei etwa null liegen**.
+Steht dort ein zweistelliger positiver Wert, verliert die Abholung immer noch Audio, die
+Sample-Uhr geht nach, und **jedes gemessene Tempo fällt zu hoch aus** — genau der Fehler, der
+diese Session über für einen Schätzerfehler gehalten wurde. Alle folgenden Schritte sind
+wertlos, solange dieser Wert nicht stimmt.
+
 **Vorher: feste Referenzaufnahme besorgen.** Loop oder Metronom bei bekanntem Tempo, mehrere
 Minuten konstant. Ohne das ist Schritt 3 sinnlos — dreimal in einer Session daran gescheitert,
 dass der Track währenddessen weiterlief. Siehe `history.md` Einträge 5 und 6.
@@ -41,11 +48,22 @@ dass der Track währenddessen weiterlief. Siehe `history.md` Einträge 5 und 6.
    keinen Effekt und `pfp`/`pmw` sind falsch dimensioniert.
 3. **Der eine verbliebene Regler**: `sens` positioniert die Schwelle im Dynamikbereich
    (100 = 30 % hoch, 0 = 90 %). Gegen die Referenzaufnahme einmessen, **einmal**.
+   **Vorher Auto-Gain abschalten** (`/audio_tune?ag=0`, oder im Dropdown eine feste Stufe
+   wählen — ein explizites `ig=` schaltet Auto ohnehin ab). Sonst verstellt die automatische
+   Bereichswahl während der Messreihe den Pegel und die Reihe misst zwei Dinge gleichzeitig.
 4. **Gegenprobe an zwei fremden Tracks.** Der Sinn der ganzen Übung ist, dass Schritt 3 danach
    nicht wiederholt werden muss. Tut er es doch, ist die Schwelle immer noch nicht skalenfrei.
 
-Neue Diagnosefelder auf `/api/audio_debug`: `sdFloor`, `sdPeak`, `sdMad`, `sdTrans`, `agree`,
-`agrMax`, `pfp`, `pmw`, `vmp`.
+5. **Auto-Gain im Betrieb**: laut aufdrehen bis es clippt — die Kopfzeile muss rot werden und
+   der Pegel innerhalb von ~1 s von selbst zurückgehen. Dann leise drehen: hoch geht es
+   absichtlich erst nach ~20 s, damit ein Breakdown die Verstärkung nicht aufreißt.
+
+Neue Diagnosefelder auf `/api/audio_debug`: `drift`, `sdFloor`, `sdPeak`, `sdMad`, `sdTrans`,
+`agree`, `agrMax`, `pfp`, `pmw`, `vmp`, `ag`, `agPk`, `tw`.
+
+`/api/spectrum` gibt es nicht mehr — das Spektrum kommt jetzt über
+`/api/audio_debug?spec=1` in derselben Antwort. Messskripte, die nur Bandwerte brauchen,
+lassen `spec=1` weg und zahlen nichts für die 256 Bins.
 
 ## Danach
 

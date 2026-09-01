@@ -43,6 +43,10 @@ void saveAudioPrefs() {
     prefs.putInt("a_pfp", sdPeakFallPct);
     prefs.putInt("a_pmw", sdPeakMaxWaitMs);
     prefs.putInt("a_agr", tempoAgreeMaxPct);
+    prefs.putBool("a_ag", autoGain);
+    prefs.putInt("a_agt", agTargetPct);
+    prefs.putInt("a_agu", agUpDelayMs);
+    prefs.putInt("a_agd", agDownDelayMs);
     prefs.putInt("a_db", tuneDetBass);
     prefs.putInt("a_dm", tuneDetMid);
     prefs.putInt("a_dh", tuneDetHigh);
@@ -88,6 +92,10 @@ void loadAudioPrefs() {
     sdPeakFallPct = prefs.getInt("a_pfp", sdPeakFallPct);
     sdPeakMaxWaitMs = prefs.getInt("a_pmw", sdPeakMaxWaitMs);
     tempoAgreeMaxPct = prefs.getInt("a_agr", tempoAgreeMaxPct);
+    autoGain = prefs.getBool("a_ag", autoGain);
+    agTargetPct = prefs.getInt("a_agt", agTargetPct);
+    agUpDelayMs = prefs.getInt("a_agu", agUpDelayMs);
+    agDownDelayMs = prefs.getInt("a_agd", agDownDelayMs);
     tuneDetBass = prefs.getInt("a_db", tuneDetBass);
     tuneDetMid  = prefs.getInt("a_dm", tuneDetMid);
     tuneDetHigh = prefs.getInt("a_dh", tuneDetHigh);
@@ -239,7 +247,8 @@ void setupAPI() {
             // Mic level and clipping ride along on the telemetry poll every client already
             // runs, so the header can warn about a badly set input on any tab without
             // anyone having to open the AUDIO one -- and without a second request.
-            + ",\"pk\":" + String((long)micPeak) + ",\"clip\":" + String(micClipCount);
+            + ",\"pk\":" + String((long)micPeak) + ",\"clip\":" + String(micClipCount)
+            + ",\"ag\":" + String(autoGain ? 1 : 0);
     json += ",\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "]}";
     server.send(200, "application/json", json);
     guiBass = false; guiMid = false; guiHigh = false;
@@ -527,10 +536,11 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
-    static char buf[2100];
+    // Sized to hold the band data plus the optional 256-bin spectrum in one response.
+    static char buf[4400];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,
     // see Audio_Engine.h); fft/fg report which analysis path is live and its gain, aUs/fUs its cost.
-    snprintf(buf, sizeof(buf),
+    int n = snprintf(buf, sizeof(buf),
       "{\"lo\":%ld,\"mi\":%ld,\"hi\":%ld,\"th\":%ld,\"thM\":%ld,\"thH\":%ld,"
       "\"xb\":%d,\"xm\":%d,\"xh\":%d,"
       "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
@@ -541,7 +551,7 @@ void setupAPI() {
       "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
       "\"sdEnv\":%ld,\"sdThr\":%ld,"
       "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
-      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d}",
+      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -559,7 +569,24 @@ void setupAPI() {
       sdEnabled ? 1 : 0, sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
       (long)sdLastEnv, (long)sdLastThr,
       (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
-      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdClkDriftPpt);
+      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdClkDriftPpt,
+      autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs);
+    // The spectrum rides along on request rather than living at its own URL. This server handles
+    // requests one at a time from the main loop, so the per-request overhead dominates for small
+    // payloads: the AUDIO tab used to poll two endpoints and spent more time on round trips than
+    // on data. Callers that only want the band values (a tuning script, say) simply omit spec=1
+    // and pay nothing for the 256 bins.
+    if (server.hasArg("spec")) {
+      n += snprintf(buf + n, sizeof(buf) - n, ",\"n\":%d,\"hz\":%d,\"b\":[",
+                    FFT_N / 2, SAMPLING_FREQUENCY / FFT_N);
+      for (int i = 0; i < FFT_N / 2 && n < (int)sizeof(buf) - 12; i++) {
+        int32_t v = fftMag[i];
+        if (v > 99999) v = 99999;
+        n += snprintf(buf + n, sizeof(buf) - n, "%s%ld", i ? "," : "", (long)v);
+      }
+      n += snprintf(buf + n, sizeof(buf) - n, "]");
+    }
+    snprintf(buf + n, sizeof(buf) - n, "}");
     server.send(200, "application/json", buf);
     // Latch-and-clear (see dbgBassHit's declaration in Audio_Engine.h) -- triggerBass/Mid/High
     // themselves are useless here, they get zeroed by pollAudioEngine() on the very next loop()
@@ -573,20 +600,6 @@ void setupAPI() {
   // /api/audio_debug: 128 numbers roughly double that response, and the two are polled at
   // different rates. Values are the unscaled magnitudes -- the client decides on log scaling,
   // which keeps the display honest about how much energy is really there.
-  server.on("/api/spectrum", []() {
-    // 256 bins since the move to 16kHz/N=512. Sized for the worst case rather than the
-    // typical one: a truncated array would still parse as valid-looking JSON up to the cut.
-    static char buf[2600];
-    int n = snprintf(buf, sizeof(buf), "{\"n\":%d,\"hz\":%d,\"pk\":%ld,\"clip\":%d,\"b\":[",
-                     FFT_N / 2, SAMPLING_FREQUENCY / FFT_N, (long)micPeak, micClipCount);
-    for (int i = 0; i < FFT_N / 2 && n < (int)sizeof(buf) - 12; i++) {
-      int32_t v = fftMag[i];
-      if (v > 99999) v = 99999;
-      n += snprintf(buf + n, sizeof(buf) - n, "%s%ld", i ? "," : "", (long)v);
-    }
-    snprintf(buf + n, sizeof(buf) - n, "]}");
-    server.send(200, "application/json", buf);
-  });
 
   server.on("/audio_tune", []() {
     if (server.hasArg("nf"))  tuneNoiseFloor        = constrain(server.arg("nf").toInt(), 0, 2000);
@@ -637,7 +650,7 @@ void setupAPI() {
     markAudioPrefsDirty();
     if (server.hasArg("dts")) tuneDynThreshSmoothShift = constrain(server.arg("dts").toInt(), 0, 10);
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
-    if (server.hasArg("ig"))  tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5);
+    if (server.hasArg("ig")) { tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5); autoGain = false; }
     if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 1000, 10000);
     if (server.hasArg("vmp")) sdVarMinPct   = constrain(server.arg("vmp").toInt(), 0, 200);
     if (server.hasArg("bst")) sdBoostMaxQ8  = constrain(server.arg("bst").toInt(), 256, 4096);
@@ -645,6 +658,12 @@ void setupAPI() {
     if (server.hasArg("pfp")) sdPeakFallPct   = constrain(server.arg("pfp").toInt(), 10, 99);
     if (server.hasArg("pmw")) sdPeakMaxWaitMs = constrain(server.arg("pmw").toInt(), 10, 200);
     if (server.hasArg("agr")) tempoAgreeMaxPct = constrain(server.arg("agr").toInt(), 5, 100);
+    // Auto range selection. Setting the gain by hand implies wanting it left alone, so an
+    // explicit ig= switches auto off rather than fighting the next correction.
+    if (server.hasArg("ag"))  autoGain = (server.arg("ag") == "1");
+    if (server.hasArg("agt")) agTargetPct = constrain(server.arg("agt").toInt(), 30, 90);
+    if (server.hasArg("agu")) agUpDelayMs = constrain(server.arg("agu").toInt(), 2000, 120000);
+    if (server.hasArg("agd")) agDownDelayMs = constrain(server.arg("agd").toInt(), 100, 10000);
     server.send(200, "OK");
   });
 

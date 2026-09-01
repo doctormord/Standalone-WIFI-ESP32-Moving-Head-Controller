@@ -356,6 +356,81 @@ inline int32_t sdBoost = 256;                // Q8 threshold multiplier, 256 = 1
 inline int     sdBoostMaxQ8 = 1024;          // 4.0x immediately after a beat
 inline int     sdBoostShift = 11;            // decays back, ~128ms time constant
 
+// Rescale every level-domain filter state when the input gain shift changes, so a gain step
+// causes no transient at all. Without this the envelope, its reference and the whole window
+// history would jump by a factor of two and the detector would fire on its own gain change --
+// or go deaf for a window -- every time the level was adjusted.
+inline void sdScaleState(int d) {
+  if (d == 0) return;
+  #define SD_SC(x) ((x) = (d > 0) ? ((x) << d) : ((x) >> (-d)))
+  SD_SC(sdLp1); SD_SC(sdLp2); SD_SC(sdEnv); SD_SC(sdRef); SD_SC(sdRefAcc);
+  SD_SC(sdPeakVal); SD_SC(sdFloor); SD_SC(sdPeakStat); SD_SC(sdThrBlock); SD_SC(sdMinLevel);
+  for (int i = 0; i < SD_STAT_HIST; i++) SD_SC(sdStatHist[i]);
+  #undef SD_SC
+}
+
+// --- Automatic input range selection ------------------------------------------------------
+// tuneInputGainShift is a SHIFT, so every step is a factor of two. This is not a continuous AGC,
+// it is range selection, like an auto-ranging meter -- and that is what makes it stable: the
+// acceptable window (25%..92% of full scale, a factor of 3.7) is wider than one step (a factor
+// of 2), so a correction always lands inside the window and cannot oscillate between two steps.
+//
+// The two directions deliberately have different time constants. Clipping destroys the signal
+// and we now know it silently ruins detection, so coming down is fast. A quiet passage is
+// ordinary music and lasts tens of seconds, and raising the gain during a breakdown guarantees
+// clipping when the drop lands, so going up is slow and one step at a time.
+//
+// Because the level is measured before the clamp, an overdriven input says by how much, so the
+// downward correction can go straight to the right range instead of feeling its way.
+//
+// Not persisted: it re-converges within seconds of any restart, and writing NVS on every gain
+// change would be pointless flash wear. Only the on/off switch is stored.
+inline bool     autoGain      = true;
+inline int32_t  agPeakWin     = 0;      // peak over ~2s, decaying
+inline uint32_t agHighSince   = 0, agLowSince = 0, agLastChange = 0;
+inline int      agTargetPct   = 70;     // where a correction aims to put the peak
+inline int      agHighPct     = 92, agLowPct = 25;
+inline int      agDownDelayMs = 1000, agUpDelayMs = 20000, agHoldMs = 3000;
+
+inline void updateAutoGain(uint32_t now) {
+  // Track the recent peak whether or not auto is on, so the UI always has something honest.
+  if (micPeak > agPeakWin) agPeakWin = micPeak;
+  else agPeakWin -= agPeakWin >> 6;      // ~64 frames at 31fps, about 2s
+  if (!autoGain) { agHighSince = agLowSince = 0; return; }
+  if ((uint32_t)(now - agLastChange) < (uint32_t)agHoldMs) return;   // let the window resettle
+
+  const int32_t full = 32767;
+  int32_t hi = (full * agHighPct) / 100, lo = (full * agLowPct) / 100;
+  int delta = 0;
+
+  if (agPeakWin > hi) {
+    if (agHighSince == 0) agHighSince = now;
+    else if ((uint32_t)(now - agHighSince) > (uint32_t)agDownDelayMs) {
+      int32_t target = (full * agTargetPct) / 100, p = agPeakWin;
+      while (p > target && delta > -5) { p >>= 1; delta--; }   // straight to the right range
+    }
+    agLowSince = 0;
+  } else if (agPeakWin < lo && agPeakWin > (full / 32)) {
+    // The level floor matters: in silence the peak is near zero and without it the gain would
+    // wind all the way up, then clip the moment the music starts.
+    if (agLowSince == 0) agLowSince = now;
+    else if ((uint32_t)(now - agLowSince) > (uint32_t)agUpDelayMs) delta = 1;
+    agHighSince = 0;
+  } else {
+    agHighSince = agLowSince = 0;
+  }
+
+  if (delta == 0) return;
+  int ns = constrain(tuneInputGainShift + delta, 0, 5);
+  delta = ns - tuneInputGainShift;
+  if (delta == 0) { agHighSince = agLowSince = 0; return; }
+  sdScaleState(delta);
+  agPeakWin = (delta > 0) ? (agPeakWin << delta) : (agPeakWin >> (-delta));
+  tuneInputGainShift = ns;
+  agLastChange = now;
+  agHighSince = agLowSince = 0;
+}
+
 // Called once per block. Mean absolute deviation rather than a true variance: same decision,
 // no squaring, and it matches how the frame-based threshold already measures spread.
 inline void sdUpdateStats() {
@@ -895,6 +970,7 @@ void pollAudioEngine() {
           sdClkDriftPpt = (int)(((int64_t)wallEl - (int64_t)sampEl) * 1000LL / (int64_t)wallEl);
         }
       }
+      updateAutoGain((uint32_t)now);
       sdUpdateStats();   // block-level: window median, peak, spread -> this block's threshold
       sdOnsetMs = sdEnabled ? sdProcessBlock(raw_samples, FFT_N, tuneInputGainShift) : 0;
       fftRun();
