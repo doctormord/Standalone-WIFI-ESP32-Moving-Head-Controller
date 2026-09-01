@@ -63,6 +63,7 @@ void saveAudioPrefs() {
     prefs.putBool("a_flux", audioUseFlux);
     prefs.putBool("a_trk", audioUseTracker);
     prefs.putBool("a_bsd", sdEnabled);
+    prefs.putBool("a_sab", sdAllBands);
     prefs.putInt("a_blo", sdKLo);
     prefs.putInt("a_bhi", sdKHi);
     prefs.putInt("a_brl", sdRel);
@@ -113,6 +114,7 @@ void loadAudioPrefs() {
     audioUseFlux = prefs.getBool("a_flux", audioUseFlux);
     audioUseTracker = prefs.getBool("a_trk", audioUseTracker);
     sdEnabled = prefs.getBool("a_bsd", sdEnabled);
+    sdAllBands = prefs.getBool("a_sab", sdAllBands);
     sdKLo = prefs.getInt("a_blo", sdKLo);
     sdKHi = prefs.getInt("a_bhi", sdKHi);
     sdRel = prefs.getInt("a_brl", sdRel);
@@ -553,7 +555,7 @@ void setupAPI() {
       "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
       "\"sdEnv\":%ld,\"sdThr\":%ld,"
       "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
-      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d,\"rclip\":%d",
+      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d,\"rclip\":%d,\"sab\":%d,\"mOn\":%ld,\"hOn\":%ld",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -572,7 +574,8 @@ void setupAPI() {
       (long)sdLastEnv, (long)sdLastThr,
       (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
       tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdClkDriftPpt,
-      autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs, micRawClipCount);
+      autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs, micRawClipCount, sdAllBands ? 1 : 0,
+      (long)sdMid.lastOnsetMs, (long)sdHigh.lastOnsetMs);
     // The spectrum rides along on request rather than living at its own URL. This server handles
     // requests one at a time from the main loop, so the per-request overhead dominates for small
     // payloads: the AUDIO tab used to poll two endpoints and spent more time on round trips than
@@ -635,6 +638,7 @@ void setupAPI() {
     // one-pole shifts forming the bandpass, brl the envelope release, brf how slowly the
     // comparator reference tracks, blk the pulse window in ms.
     if (server.hasArg("bsd")) sdEnabled = (server.arg("bsd") == "1");
+    if (server.hasArg("sab")) sdAllBands = (server.arg("sab") == "1");
     if (server.hasArg("blo")) sdKLo = constrain(server.arg("blo").toInt(), 2, 10);
     if (server.hasArg("bhi")) sdKHi = constrain(server.arg("bhi").toInt(), 1, 9);
     if (server.hasArg("brl")) sdRel = constrain(server.arg("brl").toInt(), 2, 12);

@@ -279,109 +279,127 @@ inline int32_t fftMagPrev[FFT_N / 2];
 // Timestamps come from a SAMPLE COUNTER rather than millis(): derived from the audio clock
 // itself, it carries none of the polling loop's jitter.
 inline bool  sdEnabled  = true;
-inline int   sdKLo      = 6;    // lower edge ~40Hz   (fc = 16000 / (2*pi * 2^k))
-inline int   sdKHi      = 4;    // upper edge ~160Hz -- the kick's band, as on the DJM.
-// 3 (~320Hz) was wide enough to let the bass line and the low mids through, and every one
-// of those that crossed the threshold became a spurious beat.
-inline int   sdAtt      = 2;    // envelope attack, ~0.25ms -- follows the leading edge
-inline int   sdRel      = 8;    // envelope release, ~16ms (2^k samples / 16000)
-// Chosen by measurement in sim/, not by argument. Across 90..174 BPM its worst case is F=0.939,
-// against 0.656 for the 128ms release that was here before -- which at 174 BPM missed every
-// second beat and reported half the tempo, because at a 345ms beat a 128ms decay never lets the
-// envelope fall far enough between kicks for the next one to stand out. It gives up about 0.02
-// at the slow end and wins far more than that at the fast end.
-//
-// This reverses an earlier change in the same session, and the earlier reasoning was not wrong at
-// the time: with the comparator reference frozen by an integer deadband, a short release did fire
-// continuously, so lengthening it looked like the fix. Once the threshold became a position
-// within the measured dynamic range, with a median floor and peak picking, that stopped being
-// true. A conclusion that only held because of a bug.
-inline int   sdRefShift = 14;   // ~1s: the rolling average the comparator measures against
-// The refractory period only suppresses one kick re-triggering on its own decay. It must
-// stay far below the shortest beat in range (60000/200 = 300ms), because a lockout longer
-// than that stops being a guard and becomes the thing that sets the rate: measured on the
-// device, the onset median came out as the lockout plus ~40ms at every setting tried.
-inline int   sdLockoutMs = 60;  // hard floor only; the soft boost above does the real work
+// Mid and High cost two more filter chains per sample on a chip with no FPU. Measured audio cost
+// was 4-7% of the loop with one band; expect roughly three times that. If the DMX frame ever
+// starts slipping (watch loopMax on /api/state), turning this off drops back to bass-only
+// detection and mid/high revert to the frame-based band comparison.
+inline bool  sdAllBands = true;
 
-inline int32_t  sdLp1 = 0, sdLp2 = 0, sdEnv = 0, sdRef = 0, sdRefAcc = 0;
+// One band of the detector. Three of these run over the same samples so that Mid and High get
+// the identical chain the kick does, instead of the frame-based comparison they used to share
+// with the old envelope followers -- that path timestamps only on 32ms frame boundaries and
+// measures against a smoothed mean, both of which this session established as the reason nothing
+// downstream could be trusted. Measured in the simulator, the High band is in fact the cleanest
+// of the three (1% interval spread against 3% for the kick), so there is no reason to leave it
+// on the worse detector.
+#define SD_STAT_HIST 24            // ~24 blocks * 32ms = 768ms of history
+struct SdBand {
+  SdBand(int lo, int hi, int rel_, int lock_, int bmax_, int bsh_)
+    : kLo(lo), kHi(hi), rel(rel_), lockoutMs(lock_), boostMaxQ8(bmax_), boostShift(bsh_) {}
+  // Filter edges, as one-pole shifts: fc = 16000 / (2*pi * 2^k), so 6 is 40Hz, 4 is 159Hz,
+  // 2 is 637Hz, 1 is 1273Hz, and 0 on the upper edge is a pass-through, which turns the pair
+  // into a plain highpass.
+  int kLo, kHi;
+  int rel;                  // envelope release, 2^k samples / 16000
+  int lockoutMs;            // hard floor only; the soft boost does the real work
+  int boostMaxQ8;           // how far an onset lifts the threshold, Q8
+  int boostShift;           // and how fast that decays back
+  int att = 2;              // envelope attack, ~0.25ms -- follows the leading edge
+  int refShift = 14;        // ~1s rolling reference, used for re-arming and for display
+  int varMinPct = 10;       // MAD must be at least this % of the mean for an event to count
+  int minRangePct = 25;     // the window must contain this much range, as a % of its floor
+  int peakFallPct = 70;     // commit the onset once the envelope drops to this % of its peak
+  int peakMaxWaitMs = 60;   // ...or after this long, whichever comes first
 
-// --- Two ideas taken from Steppschuh/Micro-Beat-Detection ---------------------------------
-// (github.com/Steppschuh/Micro-Beat-Detection, an AVR/FHT sketch). Its FHT front-end is well
-// below what we already have and its magnitude curve is hand-fitted magic numbers, but two of
-// its tests are scale-free -- they are ratios, so they need no per-track calibration, which is
-// exactly what our threshold factor kept demanding.
-//
-// 1. A beat needs VARIANCE, not level. Our comparator fires while the envelope sits above the
-//    threshold, so a held bass note keeps re-triggering; that is what put extra onsets between
-//    the kicks and dragged the interval median down (427ms measured against a true 451ms).
-//    Requiring the recent envelope history to be uneven admits transients, rejects sustain.
-// 2. A SOFT refractory rather than a hard one. The sketch weights a candidate by how long it
-//    has been since the last beat instead of excluding it outright. That matters here
-//    specifically: a hard lockout is what turned this detector into a free-running oscillator
-//    whose onset median was always the lockout plus ~40ms. A threshold that decays back to
-//    normal cannot form a grid of its own.
-// One window of recent envelope samples, one per block (~32ms), and three statistics from it.
-//
-// The threshold is placed IN THE DYNAMIC RANGE rather than as a multiple of an average:
-//   threshold = floor + fraction * (peak - floor)
-// which is the rule in gibbedy/BeatDetector. That makes the one remaining knob dimensionless --
-// a position between the quiet level and the loud level, not a gain -- so it does not have to be
-// recalibrated when the material changes level, which is what every previous tuning attempt here
-// foundered on.
-//
-// The floor is the MEDIAN, not the mean: foo_bpm (stengerh/foo_bpm) picks peaks against a median
-// of a sliding window, and the reason matters -- a mean is dragged upward by the very peaks it is
-// supposed to be measuring against, a median is not. Working around that with an ever slower
-// average is what produced the frozen-reference bug earlier.
-#define SD_STAT_HIST 24            // ~24 * 32ms = 768ms of history
-inline int32_t sdStatHist[SD_STAT_HIST];
-inline int     sdStatIdx = 0;
-inline bool    sdTransient = false;          // does the recent envelope look like an event?
-inline int32_t sdVarMad = 0, sdVarMean = 0;  // exposed for the AUDIO tab
-inline int32_t sdFloor = 0, sdPeakStat = 0;  // median and maximum of the window
-inline int32_t sdThrBlock = 0;
-inline bool    sdHasDynamics = false;
-inline int     sdMinRangePct = 25;   // window range, as a % of its floor, for anything to fire
-inline int     sdVarMinPct = 10;             // MAD must be at least this % of the mean
-// Fire at the envelope's PEAK, not at the moment it crosses the threshold. This is condition 1
-// of the peak-picker in Dixon, "Onset Detection Revisited" (DAFx-06), which requires an onset to
-// be a local maximum of the detection function. It matters because a threshold crossing moves
-// with the signal level -- louder passage, earlier crossing -- while the peak does not, so
-// intervals measured peak-to-peak are far more repeatable than crossing-to-crossing. That
-// repeatability is the entire problem here.
-//
-// Done causally: once above threshold, follow the maximum, and commit when the envelope has
-// fallen back from it. The onset is timestamped with the PEAK's time, so nothing is added to the
-// reported onset time -- only to how late we learn of it (bounded by sdPeakMaxWaitMs).
-// The same paper measured its condition 3 (a decaying threshold, which is what sdBoost does) as
-// only a marginal improvement, so sdBoost stays modest rather than being asked to do the work.
-inline bool     sdPeaking       = false;
-inline int32_t  sdPeakVal       = 0;
-inline uint32_t sdPeakClock     = 0;
-inline int      sdPeakFallPct   = 70;   // commit once the envelope drops to this % of the peak
-inline int      sdPeakMaxWaitMs = 60;   // ...or after this long, whichever comes first
+  int32_t lp1 = 0, lp2 = 0, env = 0, ref = 0, refAcc = 0;
+  int32_t statHist[SD_STAT_HIST] = {0};
+  int     statIdx = 0;
+  bool    transient = false, hasDynamics = false;
+  int32_t varMad = 0, varMean = 0, floorV = 0, peakStat = 0, thrBlock = 0;
+  int32_t boost = 65536;    // Q16, 65536 = 1.0
+  bool    peaking = false;
+  int32_t peakVal = 0;
+  uint32_t peakClock = 0;
+  bool    armed = true;
+  uint32_t lastOnsetMs = 0;
+  int32_t lastEnv = 0, lastThr = 0;
+  int     onsetsThisFrame = 0;
+  uint32_t onsetMs = 0;     // timestamp found in this block, 0 if none
+};
 
-// Carried in Q16, not Q8, for the same reason the comparator reference is carried with extra
-// bits: `sdBoost -= (sdBoost - one) >> shift` is an integer shift, so if the whole range of the
-// value is smaller than 2^shift the decrement is always zero and it never decays. In Q8 the range
-// is 256..1024 against a shift of 11 -- the decay was exactly zero, the threshold stayed at four
-// times normal forever, and the detector went permanently deaf after its first onset. Caught in
-// the simulator; on hardware it would have looked like "it only ever finds one beat".
-inline int32_t sdBoost = 65536;              // Q16, 65536 = 1.0
-inline int     sdBoostMaxQ8 = 1024;          // 4.0x immediately after a beat
-inline int     sdBoostShift = 11;            // decays back, ~128ms time constant
+// Bass is the kick band the DJM uses. Mid covers snare and vocal body. High is a plain highpass
+// above 1273Hz, which is where hats and the snare's crack live.
+//
+// Each band gets its own recovery, because they are being asked for different things. A kick
+// arrives once a beat and its neighbours should be suppressed, so the bass band lifts the
+// threshold 4x and takes ~128ms to come back. Hats run at eighths or sixteenths -- 207ms and
+// 103ms at 145 BPM -- so the high band has to be ready again long before that, or a dimmer effect
+// set to "high" simply follows the beat instead of the hats, which is the whole point of routing
+// it there. Its release is shorter too: a hat is a few milliseconds, a kick rings for a hundred.
+//                    lo hi  rel lock boost  bshift
+inline SdBand sdBass ( 6, 4,   8,  60, 1024,     11);   // kick:  4.0x, ~128ms recovery
+inline SdBand sdMid  ( 4, 2,   7,  50,  768,     10);   // snare: 3.0x, ~64ms
+inline SdBand sdHigh ( 1, 0,   6,  40,  512,      9);   // hats:  2.0x, ~32ms
 
-// Rescale every level-domain filter state when the input gain shift changes, so a gain step
-// causes no transient at all. Without this the envelope, its reference and the whole window
-// history would jump by a factor of two and the detector would fire on its own gain change --
-// or go deaf for a window -- every time the level was adjusted.
+// The existing names stay as references to the bass band, so the API, the debug JSON and the
+// simulator keep addressing "the detector" exactly as before without a rename sweep.
+inline int&      sdKLo = sdBass.kLo;
+inline int&      sdKHi = sdBass.kHi;
+inline int&      sdAtt = sdBass.att;
+inline int&      sdRel = sdBass.rel;
+inline int&      sdRefShift = sdBass.refShift;
+inline int&      sdLockoutMs = sdBass.lockoutMs;
+inline int&      sdVarMinPct = sdBass.varMinPct;
+inline int&      sdMinRangePct = sdBass.minRangePct;
+inline int&      sdPeakFallPct = sdBass.peakFallPct;
+inline int&      sdPeakMaxWaitMs = sdBass.peakMaxWaitMs;
+inline int&      sdBoostMaxQ8 = sdBass.boostMaxQ8;
+inline int&      sdBoostShift = sdBass.boostShift;
+inline int32_t&  sdLp1 = sdBass.lp1;
+inline int32_t&  sdLp2 = sdBass.lp2;
+inline int32_t&  sdEnv = sdBass.env;
+inline int32_t&  sdRef = sdBass.ref;
+inline int32_t&  sdRefAcc = sdBass.refAcc;
+inline int32_t (&sdStatHist)[SD_STAT_HIST] = sdBass.statHist;
+inline int&      sdStatIdx = sdBass.statIdx;
+inline bool&     sdTransient = sdBass.transient;
+inline bool&     sdHasDynamics = sdBass.hasDynamics;
+inline int32_t&  sdVarMad = sdBass.varMad;
+inline int32_t&  sdVarMean = sdBass.varMean;
+inline int32_t&  sdFloor = sdBass.floorV;
+inline int32_t&  sdPeakStat = sdBass.peakStat;
+inline int32_t&  sdThrBlock = sdBass.thrBlock;
+inline int32_t&  sdBoost = sdBass.boost;
+inline bool&     sdPeaking = sdBass.peaking;
+inline int32_t&  sdPeakVal = sdBass.peakVal;
+inline uint32_t& sdPeakClock = sdBass.peakClock;
+inline bool&     sdArmed = sdBass.armed;
+inline uint32_t& sdLastOnsetMs = sdBass.lastOnsetMs;
+inline int32_t&  sdLastEnv = sdBass.lastEnv;
+inline int32_t&  sdLastThr = sdBass.lastThr;
+inline int&      sdOnsetsThisFrame = sdBass.onsetsThisFrame;
+
+// Shared: one audio stream, one clock.
+inline uint32_t sdSampleClock = 0;
+// Does the sample clock keep up with real time? It only advances for audio we actually processed,
+// so any sample the DMA ring drops makes it run slow -- and since beat intervals are measured on
+// it, a slow clock reports every tempo too high. Positive means behind, in parts per thousand.
+inline uint32_t sdClkStartWall = 0, sdClkStartSample = 0;
+inline int      sdClkDriftPpt = 0;
+
+// Rescale every level-domain state when the input gain shift changes, so a gain step causes no
+// transient. Without this the envelopes, their references and the whole window history would jump
+// by a factor of two and the detector would fire on its own gain change.
+inline void sdScaleBand(SdBand& b, int d) {
+  #define SD_SC(x) ((x) = (d > 0) ? ((x) << d) : ((x) >> (-d)))
+  SD_SC(b.lp1); SD_SC(b.lp2); SD_SC(b.env); SD_SC(b.ref); SD_SC(b.refAcc);
+  SD_SC(b.peakVal); SD_SC(b.floorV); SD_SC(b.peakStat); SD_SC(b.thrBlock);
+  for (int i = 0; i < SD_STAT_HIST; i++) SD_SC(b.statHist[i]);
+  #undef SD_SC
+}
 inline void sdScaleState(int d) {
   if (d == 0) return;
-  #define SD_SC(x) ((x) = (d > 0) ? ((x) << d) : ((x) >> (-d)))
-  SD_SC(sdLp1); SD_SC(sdLp2); SD_SC(sdEnv); SD_SC(sdRef); SD_SC(sdRefAcc);
-  SD_SC(sdPeakVal); SD_SC(sdFloor); SD_SC(sdPeakStat); SD_SC(sdThrBlock);
-  for (int i = 0; i < SD_STAT_HIST; i++) SD_SC(sdStatHist[i]);
-  #undef SD_SC
+  sdScaleBand(sdBass, d); sdScaleBand(sdMid, d); sdScaleBand(sdHigh, d);
 }
 
 // --- Automatic input range selection ------------------------------------------------------
@@ -449,129 +467,122 @@ inline void updateAutoGain(uint32_t now) {
   agHighSince = agLowSince = 0;
 }
 
-// Called once per block. Mean absolute deviation rather than a true variance: same decision,
-// no squaring, and it matches how the frame-based threshold already measures spread.
-inline void sdUpdateStats() {
-  sdStatHist[sdStatIdx] = sdEnv;
-  sdStatIdx = (sdStatIdx + 1) % SD_STAT_HIST;
+// Once per block: the window's median, maximum and spread, and from them this block's threshold.
+//
+// The threshold is placed IN THE DYNAMIC RANGE rather than as a multiple of an average:
+//   threshold = floor + fraction * (peak - floor)
+// which is the rule in gibbedy/BeatDetector. That makes the one remaining knob dimensionless --
+// a position between the quiet level and the loud level, not a gain -- so it does not have to be
+// recalibrated when the material changes level.
+//
+// The floor is the MEDIAN, not the mean, as foo_bpm does for its peak picking: a mean is dragged
+// upward by the very peaks it is supposed to be measured against, a median is not.
+inline void sdUpdateStatsBand(SdBand& b) {
+  b.statHist[b.statIdx] = b.env;
+  b.statIdx = (b.statIdx + 1) % SD_STAT_HIST;
 
   int32_t v[SD_STAT_HIST], sum = 0;
-  for (int i = 0; i < SD_STAT_HIST; i++) { v[i] = sdStatHist[i]; sum += v[i]; }
-  sdVarMean = sum / SD_STAT_HIST;
+  for (int i = 0; i < SD_STAT_HIST; i++) { v[i] = b.statHist[i]; sum += v[i]; }
+  b.varMean = sum / SD_STAT_HIST;
   for (int i = 1; i < SD_STAT_HIST; i++) {          // insertion sort; 24 values once per block
     int32_t k = v[i]; int j = i - 1;
     while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
     v[j+1] = k;
   }
-  sdFloor    = v[SD_STAT_HIST / 2];
-  sdPeakStat = v[SD_STAT_HIST - 1];
+  b.floorV   = v[SD_STAT_HIST / 2];
+  b.peakStat = v[SD_STAT_HIST - 1];
 
-  // Mean absolute deviation rather than a true variance: same decision, no squaring, and it
-  // matches how the frame-based threshold already measures spread.
+  // Mean absolute deviation rather than a true variance: same decision, no squaring.
   int32_t mad = 0;
   for (int i = 0; i < SD_STAT_HIST; i++) {
-    int32_t d = sdStatHist[i] - sdVarMean;
+    int32_t d = b.statHist[i] - b.varMean;
     mad += d < 0 ? -d : d;
   }
-  sdVarMad = mad / SD_STAT_HIST;
-  sdTransient = (sdVarMean > 0) && ((sdVarMad * 100) >= (sdVarMean * sdVarMinPct));
+  b.varMad = mad / SD_STAT_HIST;
+  // A beat needs VARIANCE, not level: a held note sits above any threshold indefinitely.
+  b.transient = (b.varMean > 0) && ((b.varMad * 100) >= (b.varMean * b.varMinPct));
 
-  // Sensitivity now positions the threshold inside the range: 100 puts it 30% of the way from
-  // the floor to the peak, 0 puts it at 90%.
   int32_t fracQ8 = 230 - ((int32_t)hwAudioSensitivity * 153) / 100;
-  int32_t range  = sdPeakStat - sdFloor;
+  int32_t range  = b.peakStat - b.floorV;
   if (range < 0) range = 0;
-  sdThrBlock = sdFloor + ((range * fracQ8) >> 8) + 8;
-  // A passage with no beat in it has almost no range, and the threshold above -- being a position
-  // WITHIN the range -- would then sit just above the floor and start picking apart the noise. So
-  // require the window to contain real dynamics before anything may fire.
-  //
-  // gibbedy/BeatDetector expresses this as "the value must exceed twice the average", and copying
-  // that verbatim was wrong: its average is an FFT bin magnitude, which falls close to zero
-  // between beats, whereas this floor is the median of an envelope with a 128ms release, which
-  // never falls that far. Measured in the simulator on a clean 130 BPM track, floor 10191 against
-  // a window peak of 16977 -- a ratio of 1.67, so a "2x" rule can never be satisfied and the
-  // detector was silent. Same intent, expressed against the range instead of the level.
-  sdHasDynamics = (range * 100) >= (sdFloor * sdMinRangePct);
+  b.thrBlock = b.floorV + ((range * fracQ8) >> 8) + 8;
+  // A passage with no beat in it has almost no range, and a threshold placed WITHIN the range
+  // would then sit just above the floor and start picking apart the noise.
+  b.hasDynamics = (range * 100) >= (b.floorV * b.minRangePct);
 }
-inline uint32_t sdSampleClock = 0;
-// Does the sample clock keep up with real time? sdSampleClock only advances for audio we actually
-// processed, so any sample the DMA ring drops makes it run slow -- and since beat intervals are
-// measured on it, a slow clock reports every tempo too high. This is the number that says whether
-// the collection path is losing audio: positive means the sample clock is behind the wall clock,
-// in parts per thousand. It should sit at essentially zero.
-inline uint32_t sdClkStartWall = 0, sdClkStartSample = 0;
-inline int      sdClkDriftPpt = 0;
-inline uint32_t sdLastOnsetMs = 0;
-inline bool     sdArmed = true;
-inline int32_t  sdLastEnv = 0, sdLastThr = 0;   // for the AUDIO tab
-inline int      sdOnsetsThisFrame = 0;
+inline void sdUpdateStats() {
+  sdUpdateStatsBand(sdBass);
+  if (sdAllBands) { sdUpdateStatsBand(sdMid); sdUpdateStatsBand(sdHigh); }
+}
 
-// Returns the timestamp of the last onset found in this block, or 0 if there was none.
-// `gainShift` matches the FFT path so both see the same signal level.
+// One sample through one band.
+inline void sdStep(SdBand& b, int32_t x) {
+  // Bandpass as the difference of two one-pole lowpasses: cheap, stable, and the two shifts map
+  // directly onto the two edges the DJM's filter array sets in hardware.
+  b.lp1 += (x - b.lp1) >> b.kHi;
+  b.lp2 += (x - b.lp2) >> b.kLo;
+  int32_t bp = b.lp1 - b.lp2;
+  int32_t mag = bp < 0 ? -bp : bp;
+
+  if (mag > b.env) b.env += (mag - b.env) >> b.att;
+  else             b.env -= (b.env - mag) >> b.rel;
+
+  // Carried with 8 extra bits: written as a plain shift the decrement underflows to zero and the
+  // reference freezes. Kept as the re-arm level and for display; the decision threshold is
+  // thrBlock, computed once per block from the window statistics.
+  b.refAcc += (((int32_t)b.env << 8) - b.refAcc) >> b.refShift;
+  b.ref = b.refAcc >> 8;
+
+  // Soft refractory: an onset lifts the threshold and it decays back, so a candidate arriving
+  // early is made harder rather than impossible. A hard lockout, by contrast, becomes the thing
+  // that sets the rate. Carried in Q16 for the same underflow reason as the reference.
+  if (b.boost > 65536) b.boost -= (b.boost - 65536) >> b.boostShift;
+  int32_t thr = (b.thrBlock * (b.boost >> 8)) >> 8;
+
+  if (b.armed && b.transient && b.hasDynamics && b.env > thr && !b.peaking) {
+    b.peaking   = true;
+    b.peakVal   = b.env;
+    b.peakClock = sdSampleClock;
+  }
+
+  if (b.peaking) {
+    // Take the onset at the envelope's PEAK, not where it crossed: a crossing moves with the
+    // signal level, a peak does not, so intervals measured peak-to-peak are far more repeatable.
+    if (b.env > b.peakVal) {
+      b.peakVal   = b.env;
+      b.peakClock = sdSampleClock;
+    } else if (b.env * 100 < b.peakVal * b.peakFallPct ||
+               (uint32_t)(sdSampleClock - b.peakClock) >
+                 (uint32_t)b.peakMaxWaitMs * (SAMPLING_FREQUENCY / 1000)) {
+      uint32_t tms = (uint32_t)(((uint64_t)b.peakClock * 1000ULL) / SAMPLING_FREQUENCY);
+      if ((uint32_t)(tms - b.lastOnsetMs) > (uint32_t)b.lockoutMs) {
+        b.lastOnsetMs = tms;
+        b.boost = b.boostMaxQ8 << 8;      // the API keeps this knob in Q8
+        b.onsetMs = tms;
+        b.onsetsThisFrame++;
+      }
+      b.peaking = false;
+      b.armed   = false;
+    }
+  }
+  // Re-arm only once the envelope has fallen back, so one hit produces one edge.
+  if (!b.peaking && b.env < b.floorV) b.armed = true;
+  b.lastEnv = b.env; b.lastThr = thr;
+}
+
+// All three bands over the same block. The gain and clamp are computed once per sample and shared,
+// so the extra cost of two more bands is only their filters and comparator, not the input stage.
 inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
-  uint32_t fired = 0;
-  sdOnsetsThisFrame = 0;
-  // Sensitivity sets the comparator's margin over the tracked reference: 1.0x at 100, 3.0x at 0.
-  const uint32_t peakMaxWaitSamples = (uint32_t)sdPeakMaxWaitMs * (SAMPLING_FREQUENCY / 1000);
+  sdBass.onsetMs = sdMid.onsetMs = sdHigh.onsetMs = 0;
+  sdBass.onsetsThisFrame = sdMid.onsetsThisFrame = sdHigh.onsetsThisFrame = 0;
   for (int i = 0; i < count; i++) {
     int32_t x = (raw[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << gainShift;
     if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
-
-    // Bandpass as the difference of two one-pole lowpasses: cheap, stable, and the two shifts
-    // map directly onto the two edges the DJM's filter array sets in hardware.
-    sdLp1 += (x - sdLp1) >> sdKHi;
-    sdLp2 += (x - sdLp2) >> sdKLo;
-    int32_t bp = sdLp1 - sdLp2;
-    int32_t mag = bp < 0 ? -bp : bp;
-
-    if (mag > sdEnv) sdEnv += (mag - sdEnv) >> sdAtt;
-    else             sdEnv -= (sdEnv - mag) >> sdRel;
-
-    // Kept only as the re-arm level and for display; the decision threshold is sdThrBlock,
-    // computed once per block from the window statistics above.
-    sdRefAcc += (((int32_t)sdEnv << 8) - sdRefAcc) >> sdRefShift;
-    sdRef = sdRefAcc >> 8;
-
-    // Soft refractory: the threshold is lifted 4x by a beat and decays back over ~130ms, so a
-    // candidate arriving early is made harder rather than impossible. Shift only, no divide.
-    if (sdBoost > 65536) sdBoost -= (sdBoost - 65536) >> sdBoostShift;
-    // Truncated to Q8 only at the point of use, which keeps the product inside 32 bits.
-    int32_t thr = (sdThrBlock * (sdBoost >> 8)) >> 8;
-
-    // sdTransient is the variance gate: level alone is not a beat, the envelope has to be moving.
-    if (sdArmed && sdTransient && sdHasDynamics && sdEnv > thr && !sdPeaking) {
-      sdPeaking   = true;
-      sdPeakVal   = sdEnv;
-      sdPeakClock = sdSampleClock;
-    }
-
-    if (sdPeaking) {
-      if (sdEnv > sdPeakVal) {              // still rising: this is the peak so far
-        sdPeakVal   = sdEnv;
-        sdPeakClock = sdSampleClock;
-      } else if (sdEnv * 100 < sdPeakVal * sdPeakFallPct ||
-                 (uint32_t)(sdSampleClock - sdPeakClock) > peakMaxWaitSamples) {
-        // Fallen back from the peak, or waited long enough: commit it, timestamped at the peak.
-        uint32_t tms = (uint32_t)(((uint64_t)sdPeakClock * 1000ULL) / SAMPLING_FREQUENCY);
-        if ((uint32_t)(tms - sdLastOnsetMs) > (uint32_t)sdLockoutMs) {
-          sdLastOnsetMs = tms;
-          sdBoost = sdBoostMaxQ8 << 8;   // the API keeps this knob in Q8
-          fired = tms;
-          sdOnsetsThisFrame++;
-        }
-        sdPeaking = false;
-        sdArmed   = false;
-      }
-    }
-    // Re-arm only once the envelope has fallen back to the reference, so one kick produces one
-    // edge rather than a burst while it decays.
-    if (!sdPeaking && sdEnv < sdFloor) sdArmed = true;
-
+    sdStep(sdBass, x);
+    if (sdAllBands) { sdStep(sdMid, x); sdStep(sdHigh, x); }
     sdSampleClock++;
-    sdLastEnv = sdEnv; sdLastThr = thr;
   }
-  return fired;
+  return sdBass.onsetMs;
 }
 
 // =========================================================
@@ -1265,10 +1276,23 @@ void pollAudioEngine() {
     }
     lastThMid = thMid; lastThHigh = thHigh;
 
-    if (midEnergy > thMid && (now - lastMidTime) > MID_DEBOUNCE_MS) {
+    // Mid and High now come from their own instances of the same chain the kick uses, rather
+    // than from a frame-based comparison against a smoothed mean. That old path could only
+    // timestamp on 32ms frame boundaries and had no peak picking, which is why a dimmer effect
+    // set to "high" never sat on the hi-hats properly. The band comparison stays as the fallback
+    // for when the sample detector is off (/audio_tune?bsd=0) or the FFT path is not running.
+    bool midHit, highHit;
+    if (sdEnabled && sdAllBands && audioUseFFT) {
+      midHit  = (sdMid.onsetMs  != 0);
+      highHit = (sdHigh.onsetMs != 0);
+    } else {
+      midHit  = (midEnergy  > thMid);
+      highHit = (highEnergy > thHigh);
+    }
+    if (midHit && (now - lastMidTime) > MID_DEBOUNCE_MS) {
         lastMidTime = now; triggerMid = true; guiMid = true; dbgMidHit = true;
     }
-    if (highEnergy > thHigh && (now - lastHighTime) > HIGH_DEBOUNCE_MS) {
+    if (highHit && (now - lastHighTime) > HIGH_DEBOUNCE_MS) {
         lastHighTime = now; triggerHigh = true; guiHigh = true; dbgHighHit = true;
     }
   }

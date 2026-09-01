@@ -290,9 +290,13 @@ int ovMinRange = -1, ovBoostMax = -1, ovBoostSh = -1, ovPeakFall = -1, ovPeakWai
 void resetEngine(int sens, bool autogain) {
   // Fresh state for every run, so one case cannot colour the next.
   simMicros = 0; track = Track();
-  sdLp1 = sdLp2 = sdEnv = sdRef = sdRefAcc = 0;
-  sdSampleClock = 0; sdLastOnsetMs = 0; sdArmed = true; sdPeaking = false;
-  sdBoost = 65536; sdStatIdx = 0; memset(sdStatHist, 0, sizeof(sdStatHist));
+  for (SdBand* b : { &sdBass, &sdMid, &sdHigh }) {
+    b->lp1 = b->lp2 = b->env = b->ref = b->refAcc = 0;
+    b->lastOnsetMs = 0; b->armed = true; b->peaking = false; b->boost = 65536;
+    b->statIdx = 0; memset(b->statHist, 0, sizeof(b->statHist));
+    b->onsetMs = 0; b->transient = false; b->hasDynamics = false;
+  }
+  sdSampleClock = 0;
   sdClkStartWall = sdClkStartSample = 0; sdClkDriftPpt = 0;
   tempoPrevOnset = 0; tempoIvlIdx = 0;
   memset(tempoIvl, 0, sizeof(tempoIvl)); memset(tempoIvlAt, 0, sizeof(tempoIvlAt));
@@ -351,43 +355,51 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "bands") {
-    // The same detector run three times over different bands of the same audio. One-pole
-    // cutoffs are fs / (2*pi * 2^k), so k=6 is 40Hz, 4 is 159Hz, 2 is 637Hz, 1 is 1273Hz, and
-    // k=0 on the upper edge is a pass-through, which turns the pair into a plain highpass.
-    struct Band { const char* name; int kLo, kHi; const char* range; };
-    Band bands[] = {
-      { "Bass", 6, 4, "40-159 Hz"   },
-      { "Mid",  4, 2, "159-637 Hz"  },
-      { "High", 1, 0, "ueber 1273 Hz" },
+    // ONE run with all three detectors live, which is how the device actually runs them --
+    // not three separate runs, which would not show them competing for the same samples.
+    resetEngine(sens, autogain);
+    if (wavPath) { wav.pos = 0; wav.gain = wavGain; }
+    track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
+
+    struct Obs { const char* name; SdBand* b; const char* range; uint32_t last; std::vector<double> on; };
+    Obs obs[] = {
+      { "Bass", &sdBass, "40-159 Hz",     0, {} },
+      { "Mid",  &sdMid,  "159-637 Hz",    0, {} },
+      { "High", &sdHigh, "ueber 1273 Hz", 0, {} },
     };
-    printf("Datei: %s\n", wavPath ? wavPath : "(synthetisch)");
-    if (!wav.loaded && wavPath) { fprintf(stderr, "WAV nicht geladen!\n"); return 1; }
-    if (wav.loaded) printf("  %.1f s Material, auf %d Hz gewandelt, %.0fx geschleift auf %.0fs\n\n",
-                           wav.lengthSec(), SAMPLING_FREQUENCY, secs / wav.lengthSec(), secs);
-    printf("  Band   Bereich          Onsets   Abstand   ergibt   Streuung  Geraet meldet  ig\n");
-    for (auto& b : bands) {
-      ovKLo = b.kLo; ovKHi = b.kHi;
-      resetEngine(sens, autogain);
-      wav.pos = 0; wav.gain = wavGain;
-      Result r = run(secs);
-      std::vector<double> gaps;
-      for (size_t i = 1; i < r.onsets.size(); i++) {
-        double d = r.onsets[i] - r.onsets[i - 1];
-        if (d > 60 && d < 2000) gaps.push_back(d);
-      }
-      if (gaps.size() < 4) {
-        printf("  %-5s  %-15s  %6zu   zu wenige Onsets\n", b.name, b.range, r.onsets.size());
-        continue;
-      }
-      std::sort(gaps.begin(), gaps.end());
-      double med = gaps[gaps.size() / 2];
-      double dev = 0; for (double g : gaps) dev += fabs(g - med);
-      dev /= gaps.size();
-      printf("  %-5s  %-15s  %6zu   %5.0f ms  %6.1f    %5.0f%%  %11d   %d\n",
-             b.name, b.range, r.onsets.size(), med, 60000.0 / med, dev / med * 100,
-             medianBPM(r.bpmReadings), tuneInputGainShift);
+    std::mt19937 lr{99};
+    while (simMicros < (uint64_t)(secs * 1e6)) {
+      simMicros += 900 + (lr() % 400);
+      if (lr() % 250 == 0) simMicros += 15000;
+      pollAudioEngine();
+      for (auto& o : obs)
+        if (o.b->lastOnsetMs != o.last) {
+          o.last = o.b->lastOnsetMs;
+          if (simMicros > 500000) o.on.push_back((double)o.last);
+        }
     }
-    ovKLo = ovKHi = -1;
+
+    printf("Datei: %s\n", wavPath ? wavPath : "(synthetisch)");
+    if (wav.loaded) printf("  %.1f s Material, auf %d Hz gewandelt, %.0fx geschleift auf %.0fs\n",
+                           wav.lengthSec(), SAMPLING_FREQUENCY, secs / wav.lengthSec(), secs);
+    printf("  ig=%d, verworfene Samples %ld, Uhrenabweichung %d Promille\n\n",
+           tuneInputGainShift, simI2sDropped, sdClkDriftPpt);
+    printf("  Band   Bereich          Onsets  pro s   Abstand   ergibt   Streuung\n");
+    for (auto& o : obs) {
+      std::vector<double> gaps;
+      for (size_t i = 1; i < o.on.size(); i++) {
+        double d = o.on[i] - o.on[i-1];
+        if (d > 40 && d < 2000) gaps.push_back(d);
+      }
+      if (gaps.size() < 4) { printf("  %-5s  %-15s  %6zu   zu wenige\n", o.name, o.range, o.on.size()); continue; }
+      std::sort(gaps.begin(), gaps.end());
+      double med = gaps[gaps.size()/2], dev = 0;
+      for (double g : gaps) dev += fabs(g - med);
+      dev /= gaps.size();
+      printf("  %-5s  %-15s  %6zu  %5.2f   %5.0f ms  %6.1f    %5.0f%%\n",
+             o.name, o.range, o.on.size(), o.on.size()/secs, med, 60000.0/med, dev/med*100);
+    }
+    printf("\n  globalBPM %d\n", globalBPM);
     return 0;
   }
 

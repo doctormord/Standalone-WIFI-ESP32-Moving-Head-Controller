@@ -58,23 +58,33 @@ wertlos, solange dieser Wert nicht stimmt.
 Minuten konstant. Ohne das ist Schritt 3 sinnlos — dreimal in einer Session daran gescheitert,
 dass der Track währenddessen weiterlief. Siehe `history.md` Einträge 5 und 6.
 
-1. **Erkennt er überhaupt?** Sperre steht auf 60 ms. Liegt der Onset-Median bei ~100 ms, ist es
+1. **CPU zuerst.** Mid und High laufen jetzt als eigene Detektoren, das ist die dreifache
+   Rechenlast pro Sample. `audUs` und `loopMax` auf `/api/state` prüfen: `audUs` lag mit einem
+   Band bei 1200–2400 µs pro 32-ms-Frame, erwartbar sind jetzt ~5000. Bleibt `loopMax` unter
+   ~25 ms, ist alles gut. Falls nicht: `/audio_tune?sab=0` schaltet Mid/High zurück auf den
+   alten Bandvergleich und spart zwei Drittel.
+
+2. **Erkennt er überhaupt?** Sperre steht auf 60 ms. Liegt der Onset-Median bei ~100 ms, ist es
    wieder ein freilaufender Oszillator. Liegt er beim Beat, erkennt er. Das ist der einzige
    Test, der zwischen den beiden unterscheidet.
-2. **Gipfel statt Flanke** — der Kern dieses Umbaus. Onset-Streuung gegen den Stand von
+3. **Gipfel statt Flanke** — der Kern dieses Umbaus. Onset-Streuung gegen den Stand von
    Commit `6abd2d8` vergleichen. Sie muss sinken; tut sie das nicht, hat das Peak-Tracking
    keinen Effekt und `pfp`/`pmw` sind falsch dimensioniert.
-3. **Der eine verbliebene Regler**: `sens` positioniert die Schwelle im Dynamikbereich
+4. **Der eine verbliebene Regler**: `sens` positioniert die Schwelle im Dynamikbereich
    (100 = 30 % hoch, 0 = 90 %). Gegen die Referenzaufnahme einmessen, **einmal**.
    **Vorher Auto-Gain abschalten** (`/audio_tune?ag=0`, oder im Dropdown eine feste Stufe
    wählen — ein explizites `ig=` schaltet Auto ohnehin ab). Sonst verstellt die automatische
    Bereichswahl während der Messreihe den Pegel und die Reihe misst zwei Dinge gleichzeitig.
-4. **Gegenprobe an zwei fremden Tracks.** Der Sinn der ganzen Übung ist, dass Schritt 3 danach
+5. **Gegenprobe an zwei fremden Tracks.** Der Sinn der ganzen Übung ist, dass Schritt 3 danach
    nicht wiederholt werden muss. Tut er es doch, ist die Schwelle immer noch nicht skalenfrei.
 
-5. **Auto-Gain im Betrieb**: laut aufdrehen bis es clippt — die Kopfzeile muss rot werden und
+6. **Auto-Gain im Betrieb**: laut aufdrehen bis es clippt — die Kopfzeile muss rot werden und
    der Pegel innerhalb von ~1 s von selbst zurückgehen. Dann leise drehen: hoch geht es
    absichtlich erst nach ~20 s, damit ein Breakdown die Verstärkung nicht aufreißt.
+
+7. **Die neuen Trigger ausprobieren** — der eigentliche Zweck: Movement FX auf `bass`, Dimmer FX
+   auf `high`. Der Dimmer muss dann auf den Hats blitzen, nicht auf dem Kick. Im Simulator
+   gemessen (145-BPM-Trance): Bass 2,35/s auf der Viertel, High 4,33/s auf der Achtel.
 
 Neue Diagnosefelder auf `/api/audio_debug`: `drift`, `sdFloor`, `sdPeak`, `sdMad`, `sdTrans`,
 `agree`, `agrMax`, `pfp`, `pmw`, `vmp`, `ag`, `agPk`, `tw`.
