@@ -300,8 +300,11 @@ void resetEngine(int sens, bool autogain) {
   sdClkStartWall = sdClkStartSample = 0; sdClkDriftPpt = 0;
   tempoPrevOnset = 0; tempoIvlIdx = 0;
   memset(tempoIvl, 0, sizeof(tempoIvl)); memset(tempoIvlAt, 0, sizeof(tempoIvlAt));
-  trackedBPM = 0; globalBPM = 120; ioiIdx = ioiCount = 0;
+  trackedBPM = 0; globalBPM = 120;
   hwAudioEnabled = true; hwAudioSensitivity = sens; autoGain = autogain;
+  // On the device these are set from the FX routing; here we ask for all three so a band test
+  // measures the bands rather than the routing.
+  sdMidWanted = sdHighWanted = true;
   initAudioEngine();
   if (ovRel      >= 0) sdRel           = ovRel;
   if (ovRefShift >= 0) sdRefShift      = ovRefShift;

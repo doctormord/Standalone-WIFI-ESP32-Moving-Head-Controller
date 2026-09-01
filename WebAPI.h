@@ -540,6 +540,9 @@ void setupAPI() {
   // a handful of ints. lo/mi/hi are the three envelope-follower bands (this project's "fake FFT"),
   // th is the live bass detection threshold they're compared against.
   server.on("/api/audio_debug", []() {
+    // Renew the FFT's lease: detection does not need it, only this display does, so it runs
+    // while somebody is on the AUDIO tab and stops a couple of seconds after they leave.
+    fftWantedUntil = millis() + 2000;
     // Sized to hold the band data plus the optional 256-bin spectrum in one response.
     static char buf[4400];
     // thM/thH are the Mid/High bands' own thresholds (FFT mode gives each band an independent one,

@@ -285,6 +285,31 @@ inline bool  sdEnabled  = true;
 // detection and mid/high revert to the frame-based band comparison.
 inline bool  sdAllBands = true;
 
+// The FFT is no longer part of detection -- all three bands are found by the sample-rate chain,
+// which works on raw samples and never touches a spectrum. What still needs it is the AUDIO
+// tab's spectrum and band display, and the fallback path when the sample detector is switched
+// off. So run it when something is actually going to read it, and not otherwise.
+//
+// This is the single largest cost in the audio path: measured on the device, fftUs was
+// 1127-1207us of an audUs of 1212-2438us per 32ms frame -- around 3.6% of the loop, spent on a
+// spectrum nobody was looking at. Skipping it pays for the two extra detector bands.
+//
+// Any request to /api/audio_debug renews the lease, so the spectrum is live for as long as a
+// browser is on that tab and stops within two seconds of it being closed.
+// Which bands anything is actually listening to. Set from the .ino, which is where the FX
+// objects live and therefore the only place that knows what each one is triggered from. A band
+// nobody has routed anything to costs a filter chain and a comparator per sample for a result
+// that is thrown away, so it simply does not run -- and the AUDIO tab still sees all three,
+// because a browser watching it renews the same lease the FFT uses.
+inline bool sdMidWanted = false, sdHighWanted = false;
+inline bool sdRunMid = false, sdRunHigh = false;
+
+inline uint32_t fftWantedUntil = 0;
+inline bool fftIsNeeded(unsigned long now) {
+  if (!sdEnabled || !sdAllBands) return true;    // the fallback reads band energies
+  return (int32_t)(fftWantedUntil - (uint32_t)now) > 0;
+}
+
 // One band of the detector. Three of these run over the same samples so that Mid and High get
 // the identical chain the kick does, instead of the frame-based comparison they used to share
 // with the old envelope followers -- that path timestamps only on 32ms frame boundaries and
@@ -512,7 +537,8 @@ inline void sdUpdateStatsBand(SdBand& b) {
 }
 inline void sdUpdateStats() {
   sdUpdateStatsBand(sdBass);
-  if (sdAllBands) { sdUpdateStatsBand(sdMid); sdUpdateStatsBand(sdHigh); }
+  if (sdRunMid)  sdUpdateStatsBand(sdMid);
+  if (sdRunHigh) sdUpdateStatsBand(sdHigh);
 }
 
 // One sample through one band.
@@ -579,7 +605,8 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
     int32_t x = (raw[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << gainShift;
     if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
     sdStep(sdBass, x);
-    if (sdAllBands) { sdStep(sdMid, x); sdStep(sdHigh, x); }
+    if (sdRunMid)  sdStep(sdMid,  x);
+    if (sdRunHigh) sdStep(sdHigh, x);
     sdSampleClock++;
   }
   return sdBass.onsetMs;
@@ -596,12 +623,7 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
 // answerable question.
 #define TEMPO_RING      192   // ~6.1s of flux at one frame per 32ms
 #define TEMPO_LAG_MIN     9   // ~208 BPM
-#define TEMPO_LAG_MAX    40   // ~47 BPM
 #define TEMPO_EVAL_MS  1000   // re-evaluate once a second; the ring changes slowly
-#define TEMPO_P_MIN   300     // 200 BPM
-#define TEMPO_P_MAX  1000     //  60 BPM
-#define TEMPO_P_STEP    4
-#define TEMPO_CAND_N ((TEMPO_P_MAX - TEMPO_P_MIN) / TEMPO_P_STEP + 1)
 
 inline int16_t tempoRing[TEMPO_RING];
 inline int tempoRingIdx = 0;
@@ -612,41 +634,23 @@ inline unsigned long tempoLastEval = 0;
 // steady material (measured live 2026-08-28). Averaging the per-lag scores over successive
 // evaluations accumulates evidence for ~10s and then takes ONE peak, which is both more
 // stable and cheaper than any post-hoc median of the winners.
-inline int32_t tempoHarmAvg[TEMPO_LAG_MAX + 2];
-inline int32_t tempoPlainAvg[TEMPO_LAG_MAX * 2 + 4];
 inline bool tempoAvgSeeded = false;
 // Onset TIMES, not intervals: the estimator below asks how well all onsets line up in phase
 // for a candidate period, which needs their absolute positions.
-#define IOI_RING 64
 
 // How far back the median looks. Long enough to hold several beats so one bad gap cannot
 // decide the answer, short enough that a tempo change shows up rather than being averaged away.
 inline int tempoWindowMs = 3000;
-inline uint32_t onsetRing[IOI_RING];
 // How far above its threshold each onset was, 16 == exactly at threshold. Weighting the phase
 // test by this is what removes the need to tune sensitivity per track: a weak off-beat hit still
 // counts, but it can no longer outvote the kicks. Measured on techno, the detector fired 2.67
 // times a second against a beat rate of 2.37, and that surplus formed a competing ~170 BPM grid
 // that the unweighted test kept locking onto.
-inline uint16_t onsetW[IOI_RING];
-inline int ioiIdx = 0, ioiCount = 0;
-inline void pushOnset(unsigned long ms, int32_t energy, int32_t threshold) {
-  onsetRing[ioiIdx] = (uint32_t)ms;
-  int32_t w = (threshold > 0) ? (energy * 16) / threshold : 16;
-  if (w < 1) w = 1; else if (w > 255) w = 255;
-  onsetW[ioiIdx] = (uint16_t)w;
-  ioiIdx = (ioiIdx + 1) % IOI_RING;
-  if (ioiCount < IOI_RING) ioiCount++;
-}
+
 
 // Quarter-wave sine in Q7, 256 steps. Integer only: 200+ candidate periods times 60 onsets is far
 // too many sinf() calls for a chip without an FPU.
-inline int8_t tempoSinTab[256];
-inline bool tempoSinReady = false;
-inline void tempoInitSin() {
-  for (int i = 0; i < 256; i++) tempoSinTab[i] = (int8_t)(sinf(2.0f * PI * i / 256.0f) * 127.0f);
-  tempoSinReady = true;
-}
+
 
 inline int trackedBPM = 0;          // 0 = no confident estimate yet
 inline int32_t trackedScore = 0;    // winning harmonic score, for the AUDIO tab
@@ -681,98 +685,7 @@ inline int64_t tempoAutocorr(int lag) {
   return sum / n;
 }
 
-inline void tempoTrackerEval() {
-  // Tempo from the ONSET TRAIN, by asking for each candidate period how tightly the onsets cluster
-  // in phase. This is a Fourier component evaluated over onset times rather than over audio, and
-  // it is phase-invariant, so it needs no assumption about where the downbeat sits.
-  //
-  // Two earlier attempts here failed, and both failures were informative:
-  //   * autocorrelation with harmonic summing locked onto the dotted quarter -- it read 98 for a
-  //     track tapped at 143, and every second multiple of a 1.5x period does line up, so the
-  //     relative collects genuine support;
-  //   * sweeping periods and scoring integer multiples of the intervals collapsed onto the
-  //     shortest period in the range, because a short period explains nearly any interval as some
-  //     multiple; the winning and runner-up scores came out 602 against 601.
-  //   * taking the median interval failed too: the detector also fires between beats, so the most
-  //     common gap (330ms) simply is not the beat (420ms).
-  // What the measurements did show is that the onset RATE is already right -- 2.39 per second
-  // against 2.38 expected -- so the information is in how the onsets distribute, which is exactly
-  // what a phase test reads.
-  if (ioiCount < 10) return;
-  if (!tempoSinReady) tempoInitSin();
 
-  uint32_t newest = onsetRing[(ioiIdx + IOI_RING - 1) % IOI_RING];
-  int32_t bestMag = 0; int bestP = 0;
-  int32_t magOf[TEMPO_CAND_N];
-
-  for (int ci = 0; ci < TEMPO_CAND_N; ci++) {
-    int P = TEMPO_P_MIN + ci * TEMPO_P_STEP;
-    int32_t re = 0, im = 0, wsum = 0, used = 0;
-    for (int i = 0; i < ioiCount; i++) {
-      uint32_t t = onsetRing[i];
-      uint32_t age = newest - t;
-      if (age > (uint32_t)tempoWindowMs) continue;
-      uint32_t ph = ((age % (uint32_t)P) * 256u) / (uint32_t)P;
-      int32_t w = (int32_t)onsetW[i];
-      re += (int32_t)tempoSinTab[(ph + 64) & 255] * w;
-      im += (int32_t)tempoSinTab[ph & 255] * w;
-      wsum += w;
-      used++;
-    }
-    if (used < 8 || wsum <= 0) { magOf[ci] = 0; continue; }
-    // Normalised by the total weight, so neither a busier window nor a louder passage can
-    // outscore a quieter one -- only how well the onsets line up matters.
-    int32_t mag = (re / wsum) * (re / wsum) + (im / wsum) * (im / wsum);
-    magOf[ci] = mag;
-    if (mag > bestMag) { bestMag = mag; bestP = P; }
-  }
-  if (bestP == 0) return;
-
-  // An onset train at period P also produces peaks at P/2, P/3 ... (the harmonics of 1/P), so the
-  // strongest peak can be a subdivision. Fold up to the longest period that still holds most of
-  // the strength -- that is the beat rather than its subdivisions.
-  for (int m = 2; m <= 3; m++) {
-    int cand = bestP * m;
-    if (cand > TEMPO_P_MAX) break;
-    int ci = (cand - TEMPO_P_MIN) / TEMPO_P_STEP;
-    if (ci < 0 || ci >= TEMPO_CAND_N) continue;
-    if (magOf[ci] * 100 >= bestMag * 75) { bestP = cand; bestMag = magOf[ci]; }
-  }
-
-  int bpm = 60000 / bestP;
-  if (bpm < BPM_MIN_LIMIT || bpm > BPM_MAX_LIMIT) return;
-
-  // Hysteresis. A tempo that flips changes the beat length underneath every synced effect and
-  // makes the phase jump, so switching has to be deliberately hard. Measured live 2026-09-01 on a
-  // track the user confirmed as 147 BPM: the correct value was already the most common reading by
-  // far, but the tracker still spent a third of the time at 192-197 (147 x 4/3). Two conditions
-  // now have to hold before the reported tempo moves:
-  //
-  //   1. the challenger has to win several evaluations in a row, not just two, and
-  //   2. it has to be clearly better than the tempo currently held -- the incumbent's own score is
-  //      looked up and the challenger must beat it by a margin.
-  //
-  // Without the second test a marginally noisier window was enough to switch, which is exactly
-  // how a value that is right most of the time still ends up unusable.
-  if (trackedBPM > 0 && (bpm > trackedBPM + 2 || bpm < trackedBPM - 2)) {
-    int curP = 60000 / trackedBPM;
-    int ci = (curP - TEMPO_P_MIN) / TEMPO_P_STEP;
-    if (ci >= 0 && ci < TEMPO_CAND_N) {
-      int32_t curMag = magOf[ci];
-      // Not clearly better than what we already have: keep the incumbent.
-      if (curMag > 0 && (int64_t)bestMag * 100 < (int64_t)curMag * 130) { tempoAgree = 0; return; }
-    }
-    if (tempoCandidate > bpm + 2 || tempoCandidate < bpm - 2) { tempoCandidate = bpm; tempoAgree = 1; return; }
-    if (++tempoAgree < 4) return;
-  }
-  tempoCandidate = bpm;
-  tempoAgree = 0;
-  trackedBPM = bpm;
-  trackedScore = bestMag;
-  dbgLagMilli = bestP;
-  dbgPlainBase = bestMag;
-  dbgPlainHalf = ioiCount;
-}
 
 // =========================================================
 // --- TEMPO: the median gap between kicks, and nothing else ---
@@ -982,6 +895,7 @@ void pollAudioEngine() {
       // were indistinguishable and "bass" was just the smoothed total level. That is why a
       // dedicated High trigger (e.g. strobe on hi-hats) could not work before.
       uint32_t t0 = micros();
+      const bool runFft = fftIsNeeded(now);
       int32_t peak = 0; int clips = 0; int rawClips = 0;
       for (int i = 0; i < FFT_N; i++) {
         // Saturation at the microphone is a different failure from our own gain being too high,
@@ -1000,9 +914,11 @@ void pollAudioEngine() {
         int32_t a = s < 0 ? -s : s;
         if (a > peak) peak = a;
         if (a >= 32000) clips++;              // count each saturated sample once
-        if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
-        fftRe[i] = (int16_t)(((int32_t)s * fftWindow[i]) >> 15);
-        fftIm[i] = 0;
+        if (runFft) {
+          if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
+          fftRe[i] = (int16_t)(((int32_t)s * fftWindow[i]) >> 15);
+          fftIm[i] = 0;
+        }
       }
       micPeak = peak; micClipCount = clips; micRawClipCount = rawClips;
       // Continuous-time onset detection on the same block the FFT just consumed.
@@ -1017,8 +933,14 @@ void pollAudioEngine() {
         }
       }
       updateAutoGain((uint32_t)now);
+      // Decided once per block, not per sample. A band runs if something is routed to it, or if
+      // a browser is on the AUDIO tab and would otherwise see it as permanently silent.
+      sdRunMid  = sdAllBands && (sdMidWanted  || runFft);
+      sdRunHigh = sdAllBands && (sdHighWanted || runFft);
       sdUpdateStats();   // block-level: window median, peak, spread -> this block's threshold
       sdOnsetMs = sdEnabled ? sdProcessBlock(raw_samples, FFT_N, tuneInputGainShift) : 0;
+      // Everything above is detection and runs every frame. Everything below is spectrum work.
+      if (runFft) {
       fftRun();
       fftLastUs = micros() - t0;
 
@@ -1040,7 +962,6 @@ void pollAudioEngine() {
       lastMidFlux  = std::min(fftFlux(tuneBinMidLo,  tuneBinMidHi),  BAND_MAX) << tuneFftGainShift;
       lastHighFlux = std::min(fftFlux(tuneBinHighLo, tuneBinHighHi), BAND_MAX) << tuneFftGainShift;
       for (int i = 0; i < FFT_N / 2; i++) fftMagPrev[i] = fftMag[i];
-      tempoTrackerPush(lastBassFlux, now);
 
       // Per band: flux goes in unsmoothed (an onset IS a single-frame spike, and the envelope
       // would smear exactly the peak we are looking for), while energy runs through the
@@ -1062,6 +983,11 @@ void pollAudioEngine() {
         else envFast -= (envFast - hRaw) >> tuneFastDecayShift;
       }
       lastBassLevel = bRaw; lastMidLevel = mRaw; lastHighLevel = hRaw;
+      } else {
+        fftLastUs = 0;          // reported as zero so the saving is visible on the AUDIO tab
+      }
+      // Outside the spectrum work: the tempo estimator runs off onset timestamps, not the FFT.
+      tempoTrackerPush(lastBassFlux, now);
     } else {
       // --- Legacy envelope-follower path (/audio_tune?fft=0) ---------------------------
       for (int i = 0; i < count; i++) {
@@ -1111,7 +1037,6 @@ void pollAudioEngine() {
       // gets the sample-clock time rather than the frame's millis(). Everything else stays on
       // millis() so the beat clock is not fed from two different timebases.
       uint32_t onsetAt = sdEnabled && sdOnsetMs ? sdOnsetMs : (uint32_t)now;
-      pushOnset(onsetAt, bassEnergy, thBass);
       tempoPushOnsetTime(onsetAt, (uint32_t)now);
       lastBassTime = now;
       triggerBass = true;
@@ -1283,8 +1208,8 @@ void pollAudioEngine() {
     // for when the sample detector is off (/audio_tune?bsd=0) or the FFT path is not running.
     bool midHit, highHit;
     if (sdEnabled && sdAllBands && audioUseFFT) {
-      midHit  = (sdMid.onsetMs  != 0);
-      highHit = (sdHigh.onsetMs != 0);
+      midHit  = sdRunMid  && (sdMid.onsetMs  != 0);
+      highHit = sdRunHigh && (sdHigh.onsetMs != 0);
     } else {
       midHit  = (midEnergy  > thMid);
       highHit = (highEnergy > thHigh);

@@ -591,6 +591,21 @@ void loop() {
   ArduinoOTA.handle();
   flushAudioPrefs();   // debounced NVS write of the audio tuning, see WebAPI.h
   artnet.read();
+  // Tell the audio engine which bands are worth detecting. Cheap, but pointless to redo every
+  // loop, and a routing change taking half a second to take effect is imperceptible.
+  {
+    static unsigned long lastBandScan = 0;
+    if (millis() - lastBandScan > 500) {
+      lastBandScan = millis();
+      auto routed = [](int band) {
+        return moveFX.trigger == band || dimFX.trigger == band || gRotFX.trigger == band
+            || pRotFX.trigger == band || colFX.trigger == band || sgobFX.trigger == band
+            || rgobFX.trigger == band;
+      };
+      sdMidWanted  = routed(3);   // 3 = Mid, as used by checkAudioTrg() below
+      sdHighWanted = routed(4);   // 4 = High
+    }
+  }
   pollAudioEngine();
   // Timed alongside pollAudioEngine() (see Audio_Engine.h) so the actual CPU split between the
   // audio path and the Movement soft-float maths is measurable via /api/state, rather than

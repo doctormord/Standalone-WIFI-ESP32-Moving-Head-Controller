@@ -58,11 +58,13 @@ wertlos, solange dieser Wert nicht stimmt.
 Minuten konstant. Ohne das ist Schritt 3 sinnlos — dreimal in einer Session daran gescheitert,
 dass der Track währenddessen weiterlief. Siehe `history.md` Einträge 5 und 6.
 
-1. **CPU zuerst.** Mid und High laufen jetzt als eigene Detektoren, das ist die dreifache
-   Rechenlast pro Sample. `audUs` und `loopMax` auf `/api/state` prüfen: `audUs` lag mit einem
-   Band bei 1200–2400 µs pro 32-ms-Frame, erwartbar sind jetzt ~5000. Bleibt `loopMax` unter
-   ~25 ms, ist alles gut. Falls nicht: `/audio_tune?sab=0` schaltet Mid/High zurück auf den
-   alten Bandvergleich und spart zwei Drittel.
+1. **CPU zuerst — und zwar zweimal messen.** `audUs`/`fftUs`/`loopMax` auf `/api/state`,
+   **einmal mit geschlossenem Browser und einmal mit offenem AUDIO-Tab.** Die beiden Werte
+   müssen sich deutlich unterscheiden: bei geschlossenem Tab läuft die FFT gar nicht mehr
+   (`fftUs` muss 0 sein) und es laufen nur die Bänder, auf die tatsächlich ein FX geroutet ist.
+   Bei offenem Tab läuft alles. Referenz von vorher: `audUs` 1200–2400 µs pro 32-ms-Frame,
+   davon `fftUs` 1127–1207. Bleibt `loopMax` unter ~25 ms, ist alles gut.
+   Notausgang: `/audio_tune?sab=0` schaltet Mid/High auf den alten Bandvergleich zurück.
 
 2. **Erkennt er überhaupt?** Sperre steht auf 60 ms. Liegt der Onset-Median bei ~100 ms, ist es
    wieder ein freilaufender Oszillator. Liegt er beim Beat, erkennt er. Das ist der einzige
