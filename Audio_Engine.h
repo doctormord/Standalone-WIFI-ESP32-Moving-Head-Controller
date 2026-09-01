@@ -294,9 +294,51 @@ inline int   sdRefShift = 14;   // ~1s: the rolling average the comparator measu
 // stay far below the shortest beat in range (60000/200 = 300ms), because a lockout longer
 // than that stops being a guard and becomes the thing that sets the rate: measured on the
 // device, the onset median came out as the lockout plus ~40ms at every setting tried.
-inline int   sdLockoutMs = 120; // refractory only -- never the rate
+inline int   sdLockoutMs = 60;  // hard floor only; the soft boost above does the real work
 
 inline int32_t  sdLp1 = 0, sdLp2 = 0, sdEnv = 0, sdRef = 0, sdRefAcc = 0;
+
+// --- Two ideas taken from Steppschuh/Micro-Beat-Detection ---------------------------------
+// (github.com/Steppschuh/Micro-Beat-Detection, an AVR/FHT sketch). Its FHT front-end is well
+// below what we already have and its magnitude curve is hand-fitted magic numbers, but two of
+// its tests are scale-free -- they are ratios, so they need no per-track calibration, which is
+// exactly what our threshold factor kept demanding.
+//
+// 1. A beat needs VARIANCE, not level. Our comparator fires while the envelope sits above the
+//    threshold, so a held bass note keeps re-triggering; that is what put extra onsets between
+//    the kicks and dragged the interval median down (427ms measured against a true 451ms).
+//    Requiring the recent envelope history to be uneven admits transients, rejects sustain.
+// 2. A SOFT refractory rather than a hard one. The sketch weights a candidate by how long it
+//    has been since the last beat instead of excluding it outright. That matters here
+//    specifically: a hard lockout is what turned this detector into a free-running oscillator
+//    whose onset median was always the lockout plus ~40ms. A threshold that decays back to
+//    normal cannot form a grid of its own.
+#define SD_VAR_HIST 5              // as in the sketch: a handful of recent envelope samples
+inline int32_t sdVarHist[SD_VAR_HIST];
+inline int     sdVarIdx = 0;
+inline bool    sdTransient = false;          // does the recent envelope look like an event?
+inline int32_t sdVarMad = 0, sdVarMean = 0;  // exposed for the AUDIO tab
+inline int     sdVarMinPct = 25;             // MAD must be at least this % of the mean
+inline int32_t sdBoost = 256;                // Q8 threshold multiplier, 256 = 1.0
+inline int     sdBoostMaxQ8 = 1024;          // 4.0x immediately after a beat
+inline int     sdBoostShift = 11;            // decays back, ~128ms time constant
+
+// Called once per block. Mean absolute deviation rather than a true variance: same decision,
+// no squaring, and it matches how the frame-based threshold already measures spread.
+inline void sdUpdateTransient() {
+  sdVarHist[sdVarIdx] = sdEnv;
+  sdVarIdx = (sdVarIdx + 1) % SD_VAR_HIST;
+  int32_t sum = 0;
+  for (int i = 0; i < SD_VAR_HIST; i++) sum += sdVarHist[i];
+  sdVarMean = sum / SD_VAR_HIST;
+  int32_t mad = 0;
+  for (int i = 0; i < SD_VAR_HIST; i++) {
+    int32_t d = sdVarHist[i] - sdVarMean;
+    mad += d < 0 ? -d : d;
+  }
+  sdVarMad = mad / SD_VAR_HIST;
+  sdTransient = (sdVarMean > 0) && ((sdVarMad * 100) >= (sdVarMean * sdVarMinPct));
+}
 inline uint32_t sdSampleClock = 0;
 inline uint32_t sdLastOnsetMs = 0;
 inline bool     sdArmed = true;
@@ -340,14 +382,19 @@ inline uint32_t sdProcessBlock(const int32_t* raw, int count, int gainShift) {
     // Threshold as a Q8 multiply rather than a divide: the factor is constant for the whole
     // block, so computing it per sample cost a 64-bit multiply AND divide every sample. Together
     // with the timestamp below that was 1.2ms per frame -- more than the entire FFT.
-    int32_t thr = ((sdRef * thrMulQ8) >> 8) + 8;
+    // Soft refractory: the threshold is lifted 4x by a beat and decays back over ~130ms, so a
+    // candidate arriving early is made harder rather than impossible. Shift only, no divide.
+    if (sdBoost > 256) sdBoost -= (sdBoost - 256) >> sdBoostShift;
+    int32_t thr = ((((sdRef * thrMulQ8) >> 8) * sdBoost) >> 8) + 8;
 
-    if (sdArmed && sdEnv > thr) {
+    // sdTransient is the variance gate: level alone is not a beat, the envelope has to be moving.
+    if (sdArmed && sdTransient && sdEnv > thr) {
       // Timestamp only when something actually fires, not for every sample.
       uint32_t tms = (uint32_t)(((uint64_t)sdSampleClock * 1000ULL) / SAMPLING_FREQUENCY);
       if ((uint32_t)(tms - sdLastOnsetMs) > (uint32_t)sdLockoutMs) {
         sdArmed = false;
         sdLastOnsetMs = tms;
+        sdBoost = sdBoostMaxQ8;
         fired = tms;
         sdOnsetsThisFrame++;
       }
@@ -747,6 +794,7 @@ void pollAudioEngine() {
       }
       micPeak = peak; micClipCount = clips;
       // Continuous-time onset detection on the same block the FFT just consumed.
+      sdUpdateTransient();   // block-level: is the envelope moving, or just loud?
       sdOnsetMs = sdEnabled ? sdProcessBlock(raw_samples, FFT_N, tuneInputGainShift) : 0;
       fftRun();
       fftLastUs = micros() - t0;

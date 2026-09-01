@@ -37,6 +37,9 @@ void saveAudioPrefs() {
     prefs.putInt("a_fg", tuneFftGainShift);
     prefs.putInt("a_ig", tuneInputGainShift);
     prefs.putInt("a_tw", tempoWindowMs);
+    prefs.putInt("a_vmp", sdVarMinPct);
+    prefs.putInt("a_bst", sdBoostMaxQ8);
+    prefs.putInt("a_bsh", sdBoostShift);
     prefs.putInt("a_db", tuneDetBass);
     prefs.putInt("a_dm", tuneDetMid);
     prefs.putInt("a_dh", tuneDetHigh);
@@ -76,6 +79,9 @@ void loadAudioPrefs() {
     tuneFftGainShift = prefs.getInt("a_fg", tuneFftGainShift);
     tuneInputGainShift = prefs.getInt("a_ig", tuneInputGainShift);
     tempoWindowMs = prefs.getInt("a_tw", tempoWindowMs);
+    sdVarMinPct = prefs.getInt("a_vmp", sdVarMinPct);
+    sdBoostMaxQ8 = prefs.getInt("a_bst", sdBoostMaxQ8);
+    sdBoostShift = prefs.getInt("a_bsh", sdBoostShift);
     tuneDetBass = prefs.getInt("a_db", tuneDetBass);
     tuneDetMid  = prefs.getInt("a_dm", tuneDetMid);
     tuneDetHigh = prefs.getInt("a_dh", tuneDetHigh);
@@ -619,6 +625,9 @@ void setupAPI() {
     if (server.hasArg("fg"))  tuneFftGainShift = constrain(server.arg("fg").toInt(), 0, 10);
     if (server.hasArg("ig"))  tuneInputGainShift = constrain(server.arg("ig").toInt(), 0, 5);
     if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 1000, 10000);
+    if (server.hasArg("vmp")) sdVarMinPct   = constrain(server.arg("vmp").toInt(), 0, 200);
+    if (server.hasArg("bst")) sdBoostMaxQ8  = constrain(server.arg("bst").toInt(), 256, 4096);
+    if (server.hasArg("bsh")) sdBoostShift  = constrain(server.arg("bsh").toInt(), 6, 14);
     server.send(200, "OK");
   });
 
