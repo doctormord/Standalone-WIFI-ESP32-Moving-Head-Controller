@@ -4450,3 +4450,25 @@ Kandidat für den nächsten Test.
 
 **Status: kompiliert und syntaxgeprüft, nicht auf Hardware getestet** — die Anlage war aus.
 Firmware 92,8 % Flash, RAM 18,3 %.
+
+### Nachtrag 2026-09-01: geflasht und am Gerät verifiziert
+
+Firmware und Filesystem per USB aufgespielt. Messwerte gegen die Vorhersagen:
+
+| | vorhergesagt | gemessen |
+|---|---|---|
+| FFT pro Frame (N=512) | ~900 µs | **892 µs** |
+| Audio-Poll gesamt | — | 948 µs = **3,0 % CPU** |
+| `loopMax` | nicht schlechter | **8 ms** (vorher 13–14) |
+| Spektrum | 256 Bins bis 8 kHz | 256 Bins bis 7936 Hz |
+
+Die Loop ist mit der doppelt so großen FFT sogar ruhiger geworden. `/api/spectrum` liefert
+das Array vollständig (256 Werte geparst) — die Puffervergrößerung von 1100 auf 2600 Byte
+war nötig, mit der alten Größe wäre das JSON stillschweigend abgeschnitten worden und hätte
+bis zur Schnittstelle trotzdem gültig ausgesehen.
+
+Detektor-Vorgaben stehen wie beabsichtigt (Bass=Energie, Mid=Flux, High=Flux). Die
+**Bandgrenzen kamen aus NVS** und haben die neuen Compile-Vorgaben überschrieben — korrektes
+Verhalten, aber mit der Folge, dass das High-Band weiterhin bei Bin 127 (≈4 kHz) endet und
+den neu verfügbaren Bereich bis 8 kHz nicht nutzt. Wer ihn will, zieht die obere Grenze im
+AUDIO-Tab hoch. Presets haben beide Flash-Vorgänge überstanden.
