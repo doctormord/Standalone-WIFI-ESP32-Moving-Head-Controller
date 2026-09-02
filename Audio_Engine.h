@@ -458,6 +458,24 @@ inline uint32_t agHighSince   = 0, agLowSince = 0, agLastChange = 0;
 inline int      agTargetPct   = 70;     // where a correction aims to put the peak
 inline int      agHighPct     = 92, agLowPct = 25;
 inline int      agDownDelayMs = 1000, agUpDelayMs = 20000, agHoldMs = 3000;
+// Winding the gain UP is not allowed just because it is quiet. Left ungated it opens all the way
+// through a pad or a breakdown and then reports room noise as onsets -- observed live 2026-09-02
+// as tempo readings of 100/170/180/140 in a section with no drums in it at all. Turning it DOWN
+// stays completely ungated: a passage that suddenly gets loud, or one that clips, must be able to
+// bring the gain back whether or not anything is being detected.
+//
+// In AUTO tempo mode the gain may climb while kicks are actually arriving. In MANUAL mode it may
+// not: there the user has taken over the tempo, so the only thing that should move the gain is
+// the user saying so. Either way a tap permits it, and that is not a convenience -- the beat gate
+// can deadlock on its own (too little gain to detect anything, therefore no reason to add gain),
+// and the tap is the way out, because it asserts that there is a beat to find.
+// Auto vs. manual tempo. Declared here rather than with the rest of the tempo state further
+// down, because updateAutoGain() below needs it and this file is read top to bottom.
+inline bool tempoAuto = true;
+inline uint32_t agLastBeatMs = 0;      // wall clock of the last detected kick
+inline uint32_t agTapArmUntil = 0;     // a tap permits winding up until this time
+#define AG_BEAT_RECENT_MS 2000         // covers 30 BPM, so it never lapses between two kicks
+#define AG_TAP_ARM_MS    15000         // long enough for several agUpDelayMs steps
 
 inline void updateAutoGain(uint32_t now) {
   // Track the recent peak whether or not auto is on, so the UI always has something honest.
@@ -480,7 +498,9 @@ inline void updateAutoGain(uint32_t now) {
       while (p > target && delta > -5) { p >>= 1; delta--; }   // straight to the right range
     }
     agLowSince = 0;
-  } else if (agPeakWin < lo && (agPeakWin << (5 - tuneInputGainShift)) > (full / 32)) {
+  } else if (agPeakWin < lo && (agPeakWin << (5 - tuneInputGainShift)) > (full / 32)
+             && (((int32_t)(agTapArmUntil - now) > 0)
+                 || (tempoAuto && (uint32_t)(now - agLastBeatMs) < AG_BEAT_RECENT_MS))) {
     // The level floor stops it winding all the way up in silence and then clipping the moment
     // the music starts. It has to be judged at FULL gain, not at the current setting: measured
     // as a plain comparison it latched up. Once a loud passage had pushed the gain down to 0,
@@ -692,7 +712,8 @@ inline int tempoCandidate = 0, tempoAgree = 0;
 // something real and only misjudged which subdivision it was. So a tap becomes an anchor: the
 // tracker keeps measuring, and its answer is folded to the nearest simple ratio of the tapped
 // value. Drift too far from every ratio and the tempo genuinely changed, so the anchor is dropped.
-inline bool tempoAuto = true;
+// (tempoAuto itself is declared further up, next to the auto-gain state, because updateAutoGain()
+// consults it: in manual mode only a tap may raise the gain.)
 // The band the reported tempo may move within, and how long a reading outside it must persist
 // before it is believed. Evaluations run once a second, so 30 is thirty seconds.
 inline int  tempoSlewPct = 15;      // the band, in percent, around the established tempo
@@ -793,6 +814,22 @@ inline void tempoEvalMedian(uint32_t nowMs) {
   }
   // Below three gaps there is nothing honest to report, so the previous answer stands.
   if (n < 3) return;
+
+  // No beats, no tempo -- hold, do not drift.
+  //
+  // Intervals expire out of the window on their own, so during a breakdown only a handful of
+  // stray gaps survive: a pad transient here, a sweep there. A handful of stray gaps is not
+  // evidence of a tempo, however tightly they happen to agree with one another -- and the
+  // agreement gate below cannot tell the difference, because they do agree. Requiring the
+  // surviving intervals to cover at least half the window states "beats are actually arriving"
+  // without inventing a beat-count threshold: it scales with the window and with the tempo.
+  //
+  // Reported live 2026-09-02: during a section with no drums the readout drifted UPWARD. For a
+  // light show that is worse than a wrong number -- it speeds up exactly where the music emptied
+  // out. When there is nothing to hear, the last thing heard is the right answer, indefinitely.
+  uint32_t covered = 0;
+  for (int i = 0; i < n; i++) covered += v[i];
+  if (covered * 2 < (uint32_t)tempoWindowMs) return;
   for (int i = 1; i < n; i++) {
     uint32_t k = v[i]; int j = i - 1;
     while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
@@ -1138,6 +1175,7 @@ void pollAudioEngine() {
       uint32_t onsetAt = sdEnabled && sdOnsetMs ? sdOnsetMs : (uint32_t)now;
       tempoPushOnsetTime(onsetAt, (uint32_t)now);
       lastBassTime = now;
+      agLastBeatMs = (uint32_t)now;   // auto-gain may only climb while these keep coming
       triggerBass = true;
       guiBass = true;
       dbgBassHit = true;

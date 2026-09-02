@@ -28,6 +28,11 @@ Die Rate war nie falsch: 0,99× / 1,00× / 0,99× über drei Sync-Teiler.
   168 BPM, also keine Rasterstufe, auf die gefaltet werden könnte. Ohne Tap meldet das Gerät den
   Puls, den der Bass tatsächlich hat (~70). Mit Tap steht es im ±8-%-Band; wer es völlig starr
   will, nimmt Manuell-Modus (Langdruck auf TAP).
+- **Stille hält das Tempo.** Ohne eintreffende Beats wird gar nichts mehr veröffentlicht — der
+  letzte Wert steht unbegrenzt. Verifiziert mit komplett gestoppter Musik.
+- **Auto-Gain regelt nur hoch, während Kicks kommen** (im Manual-Modus gar nicht, dort nur per
+  Tap). Runter regelt es immer. Ein Tap entsperrt es für 15 s — nötig, weil die Regel sich sonst
+  verklemmen kann: zu wenig Verstärkung, also keine Erkennung, also nie mehr Verstärkung.
 - **Vier-Viertel läuft ohne Tap.** Auf einem 120-BPM-Track meldet das Gerät ohne jede Eingabe 123,
   zu 93 % innerhalb von 6 % — seit die Intervall-Faltung ausgelassene Kicks als Stimmen für
   dieselbe Periode wertet statt für die doppelte.

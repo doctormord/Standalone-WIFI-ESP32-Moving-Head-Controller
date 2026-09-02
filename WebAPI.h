@@ -810,6 +810,12 @@ void setupAPI() {
       // judged from here rather than from whatever the previous anchor was measuring.
       if (t >= BPM_MIN_LIMIT && t <= BPM_MAX_LIMIT) { tapAnchorBPM = t; tapAnchorRaw = 0; tapAnchorRawMiss = 0; tapAnchorMiss = 0; }
     }
+    // A tap also permits auto-gain to climb again. The gain may otherwise only rise while
+    // kicks are being detected, which can deadlock: too little gain to detect anything, and
+    // therefore no reason to add gain. Tapping asserts that there is a beat to find.
+    agTapArmUntil = millis() + AG_TAP_ARM_MS;
+    {
+    }
     // Returns the post-write generation so the frontend can gate its optimistic tapped BPM against
     // it -- a poll landing right after a tap used to snap the displayed BPM back to the pre-tap value.
     server.send(200, "text/plain", String(bumpGen("beat")));

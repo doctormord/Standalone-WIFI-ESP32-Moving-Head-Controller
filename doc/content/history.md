@@ -5289,3 +5289,50 @@ Den ganzen Abend wurde der **veröffentlichte Wert** beobachtet und daraus auf U
 — Band, Anker, Phasenregelung. Gefunden wurde die Ursache erst, als stattdessen die
 **Eingangsgröße** gezählt wurde: Erkennungsrate und Abstandsverteilung. Beides war mit zwei
 Zeilen abfragbar und hätte den Abend halbiert.
+
+## 2026-09-02 (dritter Nachtrag): Kein Beat, kein Tempo — und Auto-Gain an Beats gebunden
+
+*„naja wenn die fläche leer ist gibt es einfach keine bpm, also kann die bpm nicht einfach iwas
+machen. das problem kommt ja zusätzlich vom auto gain, irgendwann hat er voll aufgerissen und
+misst random shit."*
+
+Der Entwurf kam vom User und war besser als der, den ich vorgeschlagen hatte. Beobachtet wurde ein
+**Aufwärtsdrift während eines Breaks** — für eine Lichtshow schlimmer als ein schlicht falscher
+Wert, weil sie ausgerechnet dort schneller wird, wo die Musik leer ist. Gemessen wurden dabei
+Ausschläge von 100/170/180/140 in einem Abschnitt ganz ohne Drums.
+
+Zwei Ursachen, die sich gegenseitig verstärkten:
+
+1. **Der Schätzer veröffentlichte weiter.** Im Break überleben nur ein paar Streuabstände im
+   Fenster — Flächen-Transienten, Sweeps. Die sind untereinander durchaus konsistent, also winkt
+   das Übereinstimmungs-Gate sie durch; es kann Konsistenz nicht von Substanz unterscheiden.
+2. **Auto-Gain riss auf.** Ohne Signal wanderte die Verstärkung nach oben, bis Raumrauschen als
+   Onsets durchkam — und die speisten dann Punkt 1.
+
+### Die Regeln, die daraus wurden
+
+- **Kein Beat, kein neues Tempo.** Eine Auswertung wird nur veröffentlicht, wenn die überlebenden
+  Intervalle zusammen mindestens die **halbe Fensterlänge** abdecken. Das sagt „es kommen
+  tatsächlich Beats" ohne eine geratene Mindestanzahl und skaliert von selbst mit Fenster und
+  Tempo. Ohne Beats steht der letzte Wert, unbegrenzt — kein Reset (der war im Mittagseintrag
+  ausgebaut worden, richtigerweise) und kein Drift.
+- **Auto-Gain darf nur hochregeln, während Kicks eintreffen** (2 s Nachlauf, deckt bis 30 BPM ab,
+  lapst also nie zwischen zwei Kicks). **Runterregeln bleibt vollständig ungebremst** — Clipping
+  und plötzlich laute Passagen müssen immer sofort greifen können.
+- **Im Manual-Modus regelt die Erkennung gar nichts**, dort bewegen nur ein Tap und Clipping die
+  Verstärkung. Der User: *„da wird gegaint wenn getappt wird, sonst nicht bzw. nur bei clipping."*
+- **Ein Tap entsperrt die Verstärkung für 15 s.** Das ist keine Bequemlichkeit, sondern notwendig:
+  Die Beat-Bedingung kann sich sonst verklemmen — zu wenig Verstärkung, also keine Erkennung, also
+  nie mehr Verstärkung. Der Tap ist der einzige Ausweg, weil er behauptet, dass es einen Beat zu
+  finden gibt. Ohne ihn wäre die Regel gefährlich statt hilfreich.
+
+`tempoAuto` musste dafür im Header nach oben wandern, weil `updateAutoGain()` es nun auswertet und
+die Datei von oben nach unten gelesen wird (Arduino-Konkatenation).
+
+### Verifikation
+
+Simulator: alle acht Tempi von 90 bis 174 unverändert, keine Regression. Am Gerät über 70 s:
+BPM-Median 122, `ig` konstant auf 1 — kein Wandern der Verstärkung mehr.
+
+Den entscheidenden Test hat der User gemacht, und zwar den härtestmöglichen: **Musik komplett
+gestoppt.** *„es hält. ich habe musik gestoppt, er bleibt wie eine eins drauf."*
