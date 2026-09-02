@@ -69,6 +69,10 @@ unsigned long beatCount = 0;
 // the beat-sync/BPM logic itself -- is a contributor to observed timing glitches.
 unsigned long loopLastMs = 0;
 unsigned long loopMaxMs = 0;
+// Escape hatch and, more usefully, an A/B switch: set it and the output frame is rebuilt on every
+// loop pass again, exactly as before. Flipping it on a running device and watching engUs/lps is
+// the only honest way to measure what the change is actually worth here.
+bool dmxAssembleEveryLoop = false;
 uint32_t loopsPerSec = 0;   // measured loop rate, see loop()
 unsigned long loopMaxWindowStart = 0;
 const float syncBeats[7] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125};
@@ -518,22 +522,41 @@ void updateEngines(unsigned long now) {
     }
   }
 
-  byte outDmx[513]; memset(outDmx, 0, 513); 
-  for(int f=0; f<numFixtures; f++) {
-      int base = fixtures[f].addr - 1; if (base < 0 || base + 18 > 512) continue; 
-      for(int c=1; c<=18; c++) outDmx[base + c] = dmxData[c]; 
-      int pOut = centerPan16, tOut = centerTilt16;
-      if (moveFX.active) moveFX.getValues(centerPan16, centerTilt16, fixtures[f].phase, fixtures[f].invP, fixtures[f].invT, pOut, tOut); else { if (fixtures[f].invP) pOut = 65535 - pOut; if (fixtures[f].invT) tOut = 65535 - tOut; }
-      // The tilt fold-avoidance fix now lives inside MovementEngine::getValues() itself (shifts
-      // the pattern's center instead of reflecting individual samples -- see FX_Engine.h for why).
-      // Not applied here to manual/joystick tilt, which has no pattern shape to protect.
-      if (f == 0) { liveOutPan0 = pOut; liveOutTilt0 = tOut; }
-      outDmx[base + CH_PAN] = pOut >> 8; outDmx[base + CH_PAN_FINE] = pOut & 0xFF; outDmx[base + CH_TILT] = tOut >> 8; outDmx[base + CH_TILT_FINE] = tOut & 0xFF;
-      if (bumpBlackout) outDmx[base + CH_DIMMER] = 0; else if (bumpBlinder) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 255; outDmx[base + CH_COLOR] = 0; } else if (bumpStrobeF) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 247; } else if (bumpStrobe50) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 120; }
-  }
-  memcpy((void*)dmxBuffer, outDmx, 513);
-
+  // Output assembly runs at the DMX cadence, not every loop iteration.
+  //
+  // It used to run on every pass: the 513-byte clear and copy, getValues() per fixture (where all
+  // the soft-float trigonometry is, on a chip with no FPU), and the per-channel composition -- all
+  // to build a frame that is only sent every 30ms. With the loop running at roughly 420Hz (delay(2)
+  // at the bottom of loop() sets that floor) that is about 13 frames built for every one sent.
+  // Measured cost was 274us per call with effects running, i.e. around 11% of wall time, and it
+  // scales with fixture count -- which is what would make eight fixtures uncomfortable.
+  //
+  // Safe because getValues() is stateless and everything above this point integrates on dt (see
+  // the dt computed at the top of this function), so the trajectories are unchanged; only how
+  // often they are sampled changes, and 33Hz is far beyond what a moving head can follow.
+  //
+  // Deliberately NOT moved: the joystick smoothing and the .process() calls above. Those decide
+  // how quickly the head answers the operator, and running them at 33Hz would put up to 30ms
+  // between a stick movement and the response -- about a video frame, and noticeable by hand.
   static unsigned long lastDmxOut = 0;
+  const bool assembleNow = (now - lastDmxOut >= 30) || dmxAssembleEveryLoop;
+  if (assembleNow) {
+    byte outDmx[513]; memset(outDmx, 0, 513); 
+    for(int f=0; f<numFixtures; f++) {
+        int base = fixtures[f].addr - 1; if (base < 0 || base + 18 > 512) continue; 
+        for(int c=1; c<=18; c++) outDmx[base + c] = dmxData[c]; 
+        int pOut = centerPan16, tOut = centerTilt16;
+        if (moveFX.active) moveFX.getValues(centerPan16, centerTilt16, fixtures[f].phase, fixtures[f].invP, fixtures[f].invT, pOut, tOut); else { if (fixtures[f].invP) pOut = 65535 - pOut; if (fixtures[f].invT) tOut = 65535 - tOut; }
+        // The tilt fold-avoidance fix now lives inside MovementEngine::getValues() itself (shifts
+        // the pattern's center instead of reflecting individual samples -- see FX_Engine.h for why).
+        // Not applied here to manual/joystick tilt, which has no pattern shape to protect.
+        if (f == 0) { liveOutPan0 = pOut; liveOutTilt0 = tOut; }
+        outDmx[base + CH_PAN] = pOut >> 8; outDmx[base + CH_PAN_FINE] = pOut & 0xFF; outDmx[base + CH_TILT] = tOut >> 8; outDmx[base + CH_TILT_FINE] = tOut & 0xFF;
+        if (bumpBlackout) outDmx[base + CH_DIMMER] = 0; else if (bumpBlinder) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 255; outDmx[base + CH_COLOR] = 0; } else if (bumpStrobeF) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 247; } else if (bumpStrobe50) { outDmx[base + CH_DIMMER] = 255; outDmx[base + CH_STROBE] = 120; }
+    }
+    memcpy((void*)dmxBuffer, outDmx, 513);
+  }
+
   if (now - lastDmxOut >= 30) {
       lastDmxOut = now; uart_set_line_inverse(DMX_UART, UART_SIGNAL_TXD_INV); delayMicroseconds(120); uart_set_line_inverse(DMX_UART, UART_SIGNAL_INV_DISABLE); delayMicroseconds(12); uart_write_bytes(DMX_UART, (const char*)dmxBuffer, maxDmxChannel + 1);
   }

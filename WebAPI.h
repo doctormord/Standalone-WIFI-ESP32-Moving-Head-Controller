@@ -244,7 +244,7 @@ void setupAPI() {
     // pre-smoothing median-detected value and most recent accepted (possibly octave-folded)
     // interval, loopMax is the worst main-loop gap in the last 5s -- pull these live via curl
     // to check the BPM detection and loop-jitter theories against real audio instead of guessing.
-    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec)
+    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec) + ",\"asmEvery\":" + String(dmxAssembleEveryLoop ? 1 : 0)
             + ",\"audUs\":" + String(audioLastUs) + ",\"audMax\":" + String(audioMaxUs)
             + ",\"fftUs\":" + String(fftLastUs)
             + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs)
@@ -531,6 +531,13 @@ void setupAPI() {
   server.on("/autofade", []() { fadeDuration = constrain(server.arg("t").toInt(), 1, 3600000); fadeCurve = server.arg("c").toInt(); fadeStateOut = !fadeStateOut; fadeStartTime = millis(); autoFading = true; server.send(200, "text/plain", String(bumpGen("autofade"))); });
   server.on("/unmute", []() { autoFading = false; fadeStateOut = false; fadeMultiplier = 1.0f; server.send(200, "text/plain", String(bumpGen("unmute"))); });
   server.on("/trans", []() { dipToBlack = (server.arg("dip") == "1"); prefs.begin("sys", false); prefs.putBool("dip", dipToBlack); prefs.end(); server.send(200, "text/plain", String(bumpGen("trans"))); });
+  // A/B switch for the output-assembly cadence, so the change can be measured on the device
+  // rather than argued about. ?every=1 restores the old every-loop behaviour.
+  server.on("/api/asmmode", []() {
+    if (server.hasArg("every")) dmxAssembleEveryLoop = (server.arg("every") == "1");
+    server.send(200, "text/plain", String(dmxAssembleEveryLoop ? 1 : 0));
+  });
+
   server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); markAudioPrefsDirty(); server.send(200, "text/plain", String(bumpGen("hwaudio"))); });
 
   // Live band-energy telemetry for the AUDIO DEBUG tab's scrolling graph. Polled fast (frontend
