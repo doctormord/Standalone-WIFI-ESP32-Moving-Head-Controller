@@ -4924,3 +4924,60 @@ durchgegangen wären. Erst nach `rm simbeat` und Neubau waren die Zahlen echt.
   Header weiß gemacht hätte.
 - **Clipping- und Pegelanzeige im Header**, auf allen Tabs, gespeist aus der ohnehin laufenden
   Telemetrie — also ohne einen einzigen zusätzlichen Request.
+
+### 2026-09-02 (2) — Der Test am Fixture
+
+Erster geführter Durchlauf am echten Gerät nach dem Umbau. Aufteilung: der User macht das
+Physische und beurteilt das Sichtbare, die Messung läuft über die API.
+
+**Was der Prüfplan bestätigt hat:**
+
+- **Uhrenabweichung 0 ppt** über 100 s. Der Abhol-Fix vom Vortag hält auf Hardware — das Gerät
+  verliert kein Audio mehr, und die Sample-Uhr taugt als Zeitbasis. Das war das Abbruchkriterium.
+- **Kadenz-Umbau real gemessen**, per Laufzeitschalter im A/B: `engUs` 283 µs (alt) gegen 137 µs
+  (neu) bei 320 Schleifendurchläufen/s, also **9,0 % → 4,0 % der Wanduhr**. Meine Vorhersage lautete
+  10,6 Punkte, real sind es 5 — Faktor 2 zu optimistisch, weil ich die Schleifenrate mit 421 statt
+  320 angesetzt und die gesamten 274 µs der Assemblierung zugerechnet hatte. Tatsächlich sind nur
+  ~158 µs Assemblierung, der Rest ist Integration, die bewusst jede Schleife läuft.
+- **Bedarfsgesteuerte FFT**: mit geschlossenem AUDIO-Tab `fftUs = 0`, Schleife bei 322 Hz; mit
+  offenem Tab 2458 µs und 186 Hz. Die Einsparung ist damit belegt, nicht nur plausibel.
+- **Erkennung statt Oszillation**: Onset-Median 385 ms bei einer Sperre von 60 ms.
+- **Bandtrennung** 2,3× und 2,79× auf Material mit Hi-Hats.
+
+**Der Prüfstein Block E — zwei von drei Tracks, und ein sauber diagnostizierter Strukturfehler.**
+Ohne eine einzige Einstellung anzufassen: Techno 156 ✓, House 119 ✓, Hip-Hop 98 ✗ (gemeldet 128).
+Der Fehler ist erklärt und nicht behebbar durch Einstellung: bei 98 BPM ist der Beat 612 ms, der
+Detektor rastet auf 454 ms ein — **¾ Beat auf 1 % genau**. Der Median aufeinanderfolgender
+Kick-Abstände *kann* auf synkopiertem Material nicht den Beat finden, weil die Abstände dort
+selbst ¾, ½ und 1¼ Beats sind. Details und der nötige Ansatz stehen im Backlog.
+
+**Was der Test nebenbei aufgedeckt hat — teils gravierender als das Geplante:**
+
+- **Der Joystick hatte keinen Totmannschalter.** Ein verlorenes Loslass-Paket ließ den Kopf bis an
+  den mechanischen Anschlag fahren: gemessen fuhr `/joy_in?x=0.2` ohne Stopp die Pan-Achse in unter
+  drei Sekunden von der Mitte auf null, und sie stand nur, weil der Weg zu Ende war. Behoben
+  beidseitig — Lebenszeichen alle 150 ms aus der Oberfläche, Selbstabschaltung nach 500 ms im Gerät.
+- **Drei unabhängige Bremsen wirkten auf dieselbe Bewegung**, ohne voneinander zu wissen: unsere
+  Momentum-Glättung, die fixture-eigene auf CH5 (ab Werk auf 128, also halb angezogen) und eine
+  Sollgeschwindigkeit ohne jeden Bezug zur Mechanik. Die Frage des Users „ist an CH5 nicht unser
+  max speed gekoppelt?" hat die zweite überhaupt erst aufgedeckt.
+- **Pan/Tilt-Geschwindigkeit gemessen**: 330°/s Pan, 165°/s Tilt, beide 40000 Einheiten/s. Das
+  Verfahren dorthin war lehrreich — der erste Ansatz leitete die Grenze daraus ab, wo das
+  Nachlaufen verschwindet, und lag damit um **Faktor 2 zu niedrig**: kein Nachlauf beweist nur,
+  dass die Mechanik *mindestens* so schnell ist. Der User hörte sofort, dass der Kopf langsamer
+  geworden war. Das taugliche Messgerät war sein Ohr am Motor.
+- **Der SYNC-Knopf im PROGRAMMER-Tab war nie verdrahtet** — gleiche Optik wie der funktionierende
+  im LIVE-Tab, aber ohne `onClick`.
+- **TAP und SYNC quittierten den Druck nicht.** Bei TAP besonders schlecht, weil man beim Tappen
+  aufs Licht schaut und nicht auf den Bildschirm.
+- **Der Auto-Gain konnte sich bei 0 verklemmen.** Die Pegeluntergrenze, die das Hochdrehen in
+  Stille verhindert, verglich den Pegel *nach* der Verstärkung. Einmal von einer lauten Stelle
+  heruntergeregelt, sah normale Musik dann wie Stille aus — weil die Verstärkung niedrig war, also
+  genau das, was korrigiert werden sollte. Der Detektor war auf 0,7 Onsets/s ausgehungert und das
+  Tempo wurde Rauschen. Die Grenze wird jetzt bei voller Verstärkung beurteilt.
+
+**Methodischer Rückfall, dreimal am selben Tag.** Schwellenfaktor, dann `agr=30`, dann fast wieder:
+jedes Mal Werte an *einem* laufenden Track eingestellt und als allgemeingültig behandelt, jedes Mal
+beim nächsten Track als trackspezifisch entlarvt. Der Simulator existiert genau dafür und wurde
+dabei nicht benutzt. Die Regel für künftige Sessions: **Parametersuche gehört in `sim/`, am Gerät
+wird verifiziert, nicht gesucht.**
