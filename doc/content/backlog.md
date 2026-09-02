@@ -100,6 +100,12 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   *Inkonsistenz der Konvention selbst* bleibt aber bestehen — Foot-Gun beim
   nächsten Refactor, wenn jemand die Guards kopiert statt neu herleitet.
   Vereinheitlichen wäre ein reiner Architektur-Cleanup, kein Bugfix mehr.
+- **Entscheidung 2026-09-02: Jog bleibt vorerst liegen.** Am Fixture erneut aufgefallen
+  („genauso JOG+-"), Ursache bestätigt wie unten beschrieben. Bewusst nicht heute gebaut, weil
+  zuerst zu klären ist, *worauf* das Rad überhaupt wirken soll — Pan-Feinversatz, ein
+  Tempo-Bend wie am CDJ, oder Gobo-Index. Das sind drei verschiedene Features mit demselben
+  Bedienelement, und keines davon ist ein Zweizeiler.
+
 - **`jogBend` ist toter Code.** In `/jog` gesetzt (`WebAPI.h`), nirgends
   in `FX_Engine.h` oder der DMX-Ausgabe gelesen. Der Jog-Regler bewegt das
   Fixture aktuell **nicht** (auch in `README.md` als offener Punkt
