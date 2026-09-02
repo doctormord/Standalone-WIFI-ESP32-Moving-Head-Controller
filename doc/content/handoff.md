@@ -28,6 +28,9 @@ Die Rate war nie falsch: 0,99× / 1,00× / 0,99× über drei Sync-Teiler.
   168 BPM, also keine Rasterstufe, auf die gefaltet werden könnte. Ohne Tap meldet das Gerät den
   Puls, den der Bass tatsächlich hat (~70). Mit Tap steht es im ±8-%-Band; wer es völlig starr
   will, nimmt Manuell-Modus (Langdruck auf TAP).
+- **Vier-Viertel läuft ohne Tap.** Auf einem 120-BPM-Track meldet das Gerät ohne jede Eingabe 123,
+  zu 93 % innerhalb von 6 % — seit die Intervall-Faltung ausgelassene Kicks als Stimmen für
+  dieselbe Periode wertet statt für die doppelte.
 
 ## Der Simulator, und was er wert ist
 
@@ -43,6 +46,19 @@ ohne Tap versagt sie auf diesem Material ebenso. Das vorhandene Ratio-Folding l�
 Die Lehre daraus ist wichtiger als das Ergebnis: **der Simulator ist notwendig, nicht
 hinreichend.** Er findet Bugs und schließt Verfahren aus; er entscheidet nicht, was am echten
 Signal gewinnt.
+
+## Wenn wieder etwas am Tempo nicht stimmt: erst die Eingangsgröße messen
+
+Das ist die teuerste Lehre des Tages. Einen ganzen Abend wurde vom **angezeigten Wert** auf
+Ursachen geschlossen; gefunden wurde sie erst beim Zählen der **Abstände selbst**:
+
+    # Erkennungsrate und Abstandsverteilung -- zwei Minuten, sagt mehr als jede Theorie
+    # xb aus /api/audio_debug hochfrequent pollen, Abstaende histogrammieren:
+    #   ~1 Beat / ~2 Beats / zu kurz  in Prozent
+    # 80 % korrekt bei 9 % Doppeln sah aus wie ein kaputter Detektor -- er war zu 96 % richtig.
+
+Ist die Verteilung sauber und der gemeldete Wert trotzdem falsch, liegt es am Schätzer. Ist die
+Verteilung breit, liegt es an Pegel oder Empfindlichkeit. Diese Unterscheidung zuerst treffen.
 
 ## Was als Nächstes ansteht
 

@@ -806,7 +806,9 @@ void setupAPI() {
     // switch, and treating it as one cost the user automatic tracking for a whole set.
     if (server.hasArg("bpm")) {
       int t = server.arg("bpm").toInt();
-      if (t >= BPM_MIN_LIMIT && t <= BPM_MAX_LIMIT) tapAnchorBPM = t;
+      // Re-capture the raw measurement this anchor is being set against, so its expiry is
+      // judged from here rather than from whatever the previous anchor was measuring.
+      if (t >= BPM_MIN_LIMIT && t <= BPM_MAX_LIMIT) { tapAnchorBPM = t; tapAnchorRaw = 0; tapAnchorRawMiss = 0; tapAnchorMiss = 0; }
     }
     // Returns the post-write generation so the frontend can gate its optimistic tapped BPM against
     // it -- a poll landing right after a tap used to snap the displayed BPM back to the pre-tap value.

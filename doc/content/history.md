@@ -5209,3 +5209,83 @@ auf 70 mehr; alles liegt im vorgesehenen ±8-%-Band um den Anker.
 **Für die Praxis:** Die verbleibenden ±8 % sind Absicht — der Anker legt die Stufe fest, den Wert
 liefert weiterhin der Tracker. Wer bei D&B einen völlig starren Wert will, nimmt den
 Manuell-Modus (Langdruck auf TAP); dann steht der getappte Wert ohne Nachregelung.
+
+## 2026-09-02 (zweiter Nachtrag): Die eigentliche Ursache — Konsistenz schlug Mehrheit
+
+*„habe jetzt 120bpm sound an und er hängt einfach fröhlich bei 164-183 ab. kein reset iwann auf
+die korrekten werte. dein code ist einfach schlecht und wieder irgendwie hingetuned, oder?"*
+
+Die Kritik saß, und sie war berechtigt: Der ganze Abend ging für Band, Anker und Phasenlage drauf
+— alles reale Fehler, aber keiner davon war **diese** Ursache.
+
+### Zwei getrennte Befunde
+
+**1. Der Anker hatte kein Ablaufkriterium, das unabhängig von der Faltung ist.** Auf dem 120er
+Track mit Anker 174 liegt die Rohmessung bei 125, und `125/174 = 0,72` trifft die Rasterstufe ¾
+auf 4 % genau. Die Faltung **gelingt** also jedes Mal, `tapAnchorMiss` zählt nie hoch, der Anker
+läuft nie ab — er faltet den neuen Track fröhlich auf den alten hoch. Ergänzt: `tapAnchorRaw`
+merkt sich die **rohe** Messung, gegen die getappt wurde, und verwirft den Anker, wenn sie sich
+dauerhaft (30 Auswertungen) um mehr als 15 % davon entfernt hat. Kleine Abweichungen ziehen die
+Referenz langsam nach, damit Drift nichts auslöst; ein Material wie D&B, dessen Rohwert nur
+gelegentlich wegspringt, setzt den Zähler immer wieder zurück und behält den Anker.
+
+Ein erster Testversuch dafür war **ungültig**: Der Anker wurde *nach* dem Trackwechsel gesetzt,
+womit `tapAnchorRaw` direkt auf den neuen Track kalibriert war und es nichts zu erkennen gab.
+Reproduziert wurde damit der Fehltap-Fall, nicht der Trackwechsel.
+
+### 2. Und dann die eigentliche Ursache
+
+Gemessen wurde, was bis dahin niemand gezählt hatte — nicht der angezeigte Wert, sondern die
+Abstände selbst:
+
+    Kick-Onsets: 116 in 60s = 1,93/s   (erwartet bei 120 BPM: 2,00/s)  -> 96 % erkannt
+    Abstaende: Median 488 ms, 25 % = 473, 75 % = 511
+      ~1 Beat (400-600 ms)   80 %
+      ~2 Beats (800-1200)     9 %
+      kuerzer als 400         8 %
+
+**Der Detektor war nie das Problem.** 96 % der Kicks werden erkannt, 80 % der Abstände sind
+korrekt — und trotzdem meldete das Gerät 61–83.
+
+Ein ausgelassener Kick erzeugt keinen falschen Abstand, sondern **zwei Beats am Stück**. Diese
+Doppel bilden eine zweite, in sich konsistente Population, und das Übereinstimmungs-Gate
+(Streuung ≤ 20 %) bevorzugt sie dann: Ein gemischtes Fenster streut und wird verworfen, ein
+kurzer sauberer Lauf von Doppeln ist eng und wird **angenommen**. Der Schätzer stellte damit
+Konsistenz über Mehrheit — 9 % schlugen 80 %, sobald sie am Stück auftraten. Genau das erzeugte
+das bimodale Springen zwischen ~122 und ~61.
+
+**Der Fix:** Vor dem Median wird jeder Abstand, der nahe an einem ganzzahligen Vielfachen der
+Basisperiode liegt, durch dieses Vielfache geteilt. Ein ausgelassener Kick stimmt dann für
+dieselbe Periode wie ein erkannter.
+
+Zur Ehrlichkeit, weil der User zu Recht nachfragte (*„Standardverfahren bei Beat-Trackern -->
+halozinierst du?"*): Das **Prinzip** ist etabliert — Dixons IOI-Clustering in BeatRoot behandelt
+ganzzahlige Vielfache als Stimmen für dieselbe Grundperiode, und die harmonische Summierung in
+autokorrelationsbasierter Tempo-Induktion ist derselbe Gedanke; im eigenen Simulator war genau
+sie am Vormittag der Grund, warum Autokorrelation durch Synkopen hindurchsah. Die hier
+implementierte Form ist eine **Vereinfachung davon, keine Literaturstelle**, und das hätte beim
+ersten Mal getrennt gesagt werden müssen.
+
+Die Basisperiode kommt aus dem **unteren Quartil des Fensters selbst**, nicht aus der vorherigen
+Schätzung. Auf die vorherige zu falten wäre selbstverstärkend: Säße der Tracker einmal auf der
+falschen Oktave, würde jedes Intervall passend gefaltet und er käme nie wieder heraus. Das
+Quartil hat kein Gedächtnis und liegt robust über den ~8 % zu kurzen Abständen.
+
+### Ergebnis
+
+Simulator, Vier-Viertel über den Tempobereich — die Verbesserung liegt genau dort, wo Kicks
+fehlen: 140 BPM vorher 134, jetzt **139**; 174 BPM (nur 68 % Vollständigkeit) vorher 166, jetzt
+**170**. Alle acht Tempi innerhalb ~3 %. Synkopiertes Material unverändert.
+
+Am Gerät, gleicher 120-BPM-Track, **ohne jeden Tap**:
+
+    vorher:   bpm 61..122, Median 82,  sprang dauernd auf 61-83
+    nachher:  bpm 120..171, Median 123, von 8 s bis 79 s konstant 122-125
+    innerhalb 6 % von 120: 93 %
+
+### Die Lehre
+
+Den ganzen Abend wurde der **veröffentlichte Wert** beobachtet und daraus auf Ursachen geschlossen
+— Band, Anker, Phasenregelung. Gefunden wurde die Ursache erst, als stattdessen die
+**Eingangsgröße** gezählt wurde: Erkennungsrate und Abstandsverteilung. Beides war mit zwei
+Zeilen abfragbar und hätte den Abend halbiert.

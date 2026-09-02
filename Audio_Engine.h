@@ -698,6 +698,14 @@ inline bool tempoAuto = true;
 inline int  tempoSlewPct = 15;      // the band, in percent, around the established tempo
 inline int  tempoJumpConfirm = 30;  // evaluations of agreement before adopting outside it
 inline int  tapAnchorMiss = 0;   // consecutive evaluations fitting no rung
+// The raw, unfolded measurement that was current when the anchor was tapped, and how long the
+// current one has disagreed with it. This is the anchor's expiry criterion, and it deliberately
+// does NOT depend on the fold: a stale anchor can keep folding successfully forever. Measured
+// live 2026-09-02 -- a 120 BPM track under an anchor of 174 reads 125 raw, and 125/174 = 0.72 is
+// within 4% of the 3/4 rung, so it was folded up to 183 and published, every single evaluation,
+// with tapAnchorMiss never once incrementing. The music had changed and nothing could notice.
+inline int  tapAnchorRaw = 0;      // 0 = capture it on the next evaluation
+inline int  tapAnchorRawMiss = 0;
 // Which tempo evaluation the anchor has already been reconciled against. The fold below lives in
 // pollAudioEngine(), which runs once per audio block -- about 31 times a second -- while
 // trackedBPM is only recomputed once a second by tempoEvalMedian(). Without this sequence check
@@ -790,6 +798,47 @@ inline void tempoEvalMedian(uint32_t nowMs) {
     while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
     v[j+1] = k;
   }
+
+  // Fold integer multiples back onto the base period before taking the median.
+  //
+  // A missed kick does not produce a wrong interval, it produces exactly two beats' worth stuck
+  // together. Left alone those doubles form a second, internally consistent population, and the
+  // agreement gate below then PREFERS them: a mixed window scatters and gets rejected, while a
+  // short clean run of doubles is tight and gets accepted. So a small minority beats a large
+  // majority whenever it happens to arrive in a run. Measured on a 120 BPM track 2026-09-02:
+  // 96% of kicks detected, 80% of gaps at ~488ms and only 9% at ~900ms -- and a reported tempo
+  // bouncing between 122 and 61.
+  //
+  // Clustering inter-onset intervals and treating integer multiples of one another as votes for
+  // the same period is the established idea (Dixon's IOI clustering in BeatRoot; the harmonic
+  // summing used in autocorrelation-based tempo induction is the same thought, and this project's
+  // own simulator measured it working -- harmonic summing was what let autocorrelation see
+  // through syncopation at all). What follows is a simplification of that, not a citation.
+  //
+  // The base period is taken from the window's own lower quartile rather than from the previous
+  // estimate. Folding onto the previous estimate would be self-reinforcing: once the tracker sat
+  // on the wrong octave, every interval would be folded to agree with it and it could never get
+  // out. The quartile carries no such memory, and it is robust to the ~8% of gaps that are too
+  // short (double triggers) because those sit below it.
+  uint32_t base = v[n / 4];
+  if (base >= (uint32_t)TEMPO_IVL_MIN) {
+    for (int i = 0; i < n; i++) {
+      uint32_t k = (v[i] + base / 2) / base;        // nearest integer multiple of the base
+      if (k < 2) continue;                          // already the base period, or shorter
+      uint32_t folded = v[i] / k;
+      uint32_t off = folded > base ? folded - base : base - folded;
+      // Only when it genuinely lands back on the base period. Otherwise this is a different
+      // interval, not a run of missed beats, and forcing it would invent an agreement that is
+      // not there -- which is exactly the failure being fixed, in the other direction.
+      if (folded >= (uint32_t)TEMPO_IVL_MIN && off * 4 <= base) v[i] = folded;
+    }
+    for (int i = 1; i < n; i++) {
+      uint32_t k = v[i]; int j = i - 1;
+      while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
+      v[j+1] = k;
+    }
+  }
+
   uint32_t med = v[n / 2];
   if (med == 0) return;
 
@@ -1317,6 +1366,24 @@ void pollAudioEngine() {
     // trackedBPM in place, so re-running it on an unchanged value would achieve nothing anyway.
     if (tapAnchorBPM >= BPM_MIN_LIMIT && tempoEvalSeq != tapAnchorSeq) {
       tapAnchorSeq = tempoEvalSeq;
+      // Expiry, judged on the raw measurement before any folding. An anchor describes the track
+      // that was playing when it was tapped; when the underlying measurement has settled
+      // somewhere else for half a minute, that track is over. Small differences still move the
+      // reference along, so a track that merely drifts does not trip this -- and a measurement
+      // that only jumps away now and then (drum & bass swings between the half-time pulse and the
+      // full one) keeps resetting the counter, which is why the anchor survives there.
+      int rawTracked = trackedBPM;
+      if (tapAnchorRaw <= 0) tapAnchorRaw = rawTracked;
+      int rawGap = abs(rawTracked - tapAnchorRaw) * 100 / tapAnchorRaw;
+      if (rawGap <= tempoSlewPct) {
+        tapAnchorRawMiss = 0;
+        tapAnchorRaw += (rawTracked - tapAnchorRaw) / 8;
+      } else if (++tapAnchorRawMiss > tempoJumpConfirm) {
+        tapAnchorBPM = 0; tapAnchorRaw = 0; tapAnchorRawMiss = 0; tapAnchorMiss = 0;
+      }
+      // Nested, not a second top-level `if`: the fold must run once per new measurement, never
+      // once per audio block. Guarded again because the expiry above may just have dropped it.
+      if (tapAnchorBPM >= BPM_MIN_LIMIT) {
       static const float kRatios[] = { 0.5f, 2.0f/3.0f, 0.75f, 1.0f, 4.0f/3.0f, 1.5f, 2.0f };
       float r = (float)trackedBPM / (float)tapAnchorBPM;
       float best = 0; float bestErr = 1e9f;
@@ -1330,7 +1397,8 @@ void pollAudioEngine() {
       // An anchor describes the track that was playing when it was tapped. Once the measurement
       // has fitted none of the rungs for a while the music has moved on, and holding on would
       // force the new tempo onto the old track's grid. Drop it and go back to plain tracking.
-      else if (++tapAnchorMiss > 20) { tapAnchorBPM = 0; tapAnchorMiss = 0; }
+      else if (++tapAnchorMiss > 20) { tapAnchorBPM = 0; tapAnchorMiss = 0; tapAnchorRaw = 0; tapAnchorRawMiss = 0; }
+      }
     }
     int shown = trackedBPM;
     // The override is ignored rather than clamped when it would leave the valid range --
