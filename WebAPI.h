@@ -47,6 +47,7 @@ void saveAudioPrefs() {
     prefs.putInt("a_pmw", sdPeakMaxWaitMs);
     prefs.putInt("a_agr", tempoAgreeMaxPct);
     prefs.putBool("a_ag", autoGain);
+    prefs.putBool("a_auto", tempoAuto);
     prefs.putInt("a_agt", agTargetPct);
     prefs.putInt("a_agu", agUpDelayMs);
     prefs.putInt("a_agd", agDownDelayMs);
@@ -125,6 +126,10 @@ void loadAudioPrefs() {
     sdRefShift = prefs.getInt("a_brf", sdRefShift);
     sdLockoutMs = prefs.getInt("a_blk", sdLockoutMs);
     hwAudioEnabled = prefs.getBool("a_en", hwAudioEnabled);
+    // Must be read while the handle is still open. It previously sat below prefs.end(),
+    // where a read silently returns the default instead of failing -- so the tempo mode
+    // looked stored but came back as "auto" after every restart.
+    tempoAuto = prefs.getBool("a_auto", true);
   prefs.end();
   // Defensive: a corrupt or hand-edited NVS value must not be able to make a band inverted or
   // point past the spectrum, which would read out of bounds in fftBand()/fftFlux().
@@ -137,7 +142,11 @@ void loadAudioPrefs() {
   // and that tapped value does not survive a reboot. Restoring the lock without it left the
   // device holding globalBPM at its 120 startup value forever while the tracker, working
   // correctly in the background, was never allowed through. Observed live 2026-09-01.
-  tempoTapLock = false;
+  // Auto is the resting state and must survive a restart. The old code forced the latch off at
+  // boot because the tapped value it existed for did not survive one; now the MODE persists and
+  // the anchor does not, which is the right way round.
+  tempoTapLock = !tempoAuto;
+  tapAnchorBPM = 0;
   tuneDetBass = constrain(tuneDetBass, 0, 1);
   tuneDetMid  = constrain(tuneDetMid, 0, 1);
   tuneDetHigh = constrain(tuneDetHigh, 0, 1);
@@ -248,7 +257,7 @@ void setupAPI() {
     // pre-smoothing median-detected value and most recent accepted (possibly octave-folded)
     // interval, loopMax is the worst main-loop gap in the last 5s -- pull these live via curl
     // to check the BPM detection and loop-jitter theories against real audio instead of guessing.
-    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec) + ",\"asmEvery\":" + String(dmxAssembleEveryLoop ? 1 : 0) + ",\"joyWd\":" + String(joyWatchdogTrips)
+    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec) + ",\"asmEvery\":" + String(dmxAssembleEveryLoop ? 1 : 0) + ",\"joyWd\":" + String(joyWatchdogTrips) + ",\"tAuto\":" + String(tempoAuto ? 1 : 0) + ",\"tAnchor\":" + String(tapAnchorBPM)
             + ",\"audUs\":" + String(audioLastUs) + ",\"audMax\":" + String(audioMaxUs)
             + ",\"fftUs\":" + String(fftLastUs)
             + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs)
@@ -650,7 +659,9 @@ void setupAPI() {
     if (server.hasArg("dm")) tuneDetMid  = constrain(server.arg("dm").toInt(), 0, 1);
     if (server.hasArg("dh")) tuneDetHigh = constrain(server.arg("dh").toInt(), 0, 1);
     if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
-    if (server.hasArg("tap")) tempoTapLock = (server.arg("tap") == "1");
+    if (server.hasArg("tap")) { tempoTapLock = (server.arg("tap") == "1"); tempoAuto = !tempoTapLock; markAudioPrefsDirty(); }
+    if (server.hasArg("auto")) { tempoAuto = (server.arg("auto") == "1"); tempoTapLock = !tempoAuto;
+                                 if (tempoAuto) tapAnchorBPM = 0; markAudioPrefsDirty(); }
     // Sample-rate onset detector (the DJM-style continuous-time chain). blo/bhi are the two
     // one-pole shifts forming the bandpass, brl the envelope release, brf how slowly the
     // comparator reference tracks, blk the pulse window in ms.
@@ -783,9 +794,14 @@ void setupAPI() {
       lastBeatTime = now - interval;
     }
     manualTap = true;
-    // A tap is an explicit statement of the tempo, so it takes over from the tracker until the
-    // user hands control back (/audio_tune?tap=0, or the AUDIO tab's Tempo control).
-    if (server.hasArg("bpm")) { tempoTapLock = true; markAudioPrefsDirty(); }
+    // A tap anchors the tracker rather than shutting it off. In auto mode the tracker keeps
+    // measuring and its answer is folded onto the rung this tap identified; in manual mode the
+    // tapped value simply stands. Either way the mode is unchanged -- tapping is not a mode
+    // switch, and treating it as one cost the user automatic tracking for a whole set.
+    if (server.hasArg("bpm")) {
+      int t = server.arg("bpm").toInt();
+      if (t >= BPM_MIN_LIMIT && t <= BPM_MAX_LIMIT) tapAnchorBPM = t;
+    }
     // Returns the post-write generation so the frontend can gate its optimistic tapped BPM against
     // it -- a poll landing right after a tap used to snap the displayed BPM back to the pre-tap value.
     server.send(200, "text/plain", String(bumpGen("beat")));

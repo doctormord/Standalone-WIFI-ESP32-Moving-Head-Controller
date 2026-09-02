@@ -1014,6 +1014,26 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   // from one that did not -- and a tap tempo is only as good as the taps you trust. Kept as a
   // plain style poke rather than component state: these fire several times a second and a
   // re-render per press would be the wrong trade.
+  // TAP does two jobs, split by how long it is held. A short press taps the tempo. A long press
+  // toggles between automatic tracking and manual, which previously had no control at all outside
+  // the AUDIO tab -- and since a tap used to latch into manual, a single tap on the LIVE tab could
+  // cost you automatic tracking for the rest of the night with no visible sign and no way back
+  // from that tab. The button now glows while automatic is running, so the mode is readable at a
+  // glance instead of being invisible state.
+  function makeTapHandlers(tap, tempoAuto, onToggleAuto, colour) {
+    let timer = null, fired = false;
+    return {
+      onPointerDown: (e) => {
+        pressFlash(e, colour);
+        fired = false;
+        timer = setTimeout(() => { fired = true; timer = null; onToggleAuto(!tempoAuto); }, 600);
+      },
+      onPointerUp: () => { if (timer) { clearTimeout(timer); timer = null; if (!fired) tap(); } },
+      onPointerLeave: () => { if (timer) { clearTimeout(timer); timer = null; } },
+      onPointerCancel: () => { if (timer) { clearTimeout(timer); timer = null; } },
+    };
+  }
+
   function pressFlash(e, colour) {
     const el = e.currentTarget;
     const bg = el.style.background, tr = el.style.transform;
@@ -1026,13 +1046,13 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     }, 110);
   }
 
-  Object.assign(window, { pressFlash, Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, PresetGrid, SaveCenterButton, FX_HUE, MOVE_SYNCS });
+  Object.assign(window, { pressFlash, makeTapHandlers, Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, PresetGrid, SaveCenterButton, FX_HUE, MOVE_SYNCS });
 })();
 </script>
 <script type="text/babel">
 // horizon-live.jsx
 (function () {
-  function LiveTab({ accent, joystickSize, state, setState, bpm, tap, muted, onUnmute, keyJoyRef, onJog, onJogRelease, onKillAll, onHardSync, onMicToggle, micOn, hwSens, setHwSens, onPresetRecall, onPresetSave, onBlackout, onJoystick }) {
+  function LiveTab({ accent, joystickSize, state, setState, bpm, tap, tempoAuto, onToggleAuto, muted, onUnmute, keyJoyRef, onJog, onJogRelease, onKillAll, onHardSync, onMicToggle, micOn, hwSens, setHwSens, onPresetRecall, onPresetSave, onBlackout, onJoystick }) {
     const presetNames = state.presetNames; const presetActive = state.presetActive;
     return (
       <div className="live-grid">
@@ -1047,7 +1067,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <button onClick={onKillAll} style={{ padding: '11px 0', background: 'rgba(127,29,29,0.32)', border: '1px solid rgba(220,38,38,0.4)', borderRadius: 11, color: '#fca5a5', fontWeight: 700, fontSize: 12, letterSpacing: 1, cursor: 'pointer', textTransform: 'uppercase' }}>◼ Kill All FX · Stop Show</button>
           <Panel title="Tempo & sync · audio" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-              <button onPointerDown={(e) => { pressFlash(e, 'rgba(59,130,246,0.55)'); tap(); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 10, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>TAP · {bpm}</button>
+              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ boxShadow: tempoAuto ? '0 0 0 1px rgba(59,130,246,0.55), 0 0 12px rgba(59,130,246,0.45)' : 'none', padding: '11px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 10, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>TAP · {bpm}</button>
               <button onPointerDown={(e) => { pressFlash(e, 'rgba(20,184,166,0.55)'); onHardSync(); }} style={{ padding: '11px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 10, color: '#5eead4', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>SYNC PHASE</button>
               <button onClick={onMicToggle} style={{ padding: '11px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 10, color: '#86efac', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{micOn ? <LED color="#22c55e" pulse size={7} /> : null} HW MIC</button>
             </div>
@@ -1271,7 +1291,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     'rgSt', 'rgEn', 'rgHo', 'rgTr', 'rgSy', 'rgFxRunning', 'rgSc', 'rgSp',
   ];
 
-  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync }) {
+  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, tempoAuto, onToggleAuto, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync }) {
     // Tracks "has anything changed since the last recall/save" via a per-field
     // baseline snapshot (not just a boolean) so a partial save -- e.g. Save
     // Center, which only persists pan/tilt -- can clear just the fields it
@@ -1316,7 +1336,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           
           <Panel title="Tempo & sync" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
-              <button onPointerDown={(e) => { pressFlash(e, 'rgba(59,130,246,0.55)'); tap(); }} style={{ padding: '9px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>TAP · {bpm}</button>
+              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ boxShadow: tempoAuto ? '0 0 0 1px rgba(59,130,246,0.55), 0 0 12px rgba(59,130,246,0.45)' : 'none', padding: '9px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>TAP · {bpm}</button>
               {/* This had no onClick at all -- a button that looked live and did nothing. The LIVE
                   tab's identical one was wired to /sync all along, so pressing SYNC here while
                   setting up FX triggers, which is where you would reach for it, silently did
@@ -2449,6 +2469,10 @@ const isReceiving = useRef(false);
 
     const handleMic = useCallback(() => { const next = !micOn; armPending('micOn'); fetch(`/hwaudio?en=${next ? 1 : 0}&sens=${hwSens}`).then((r) => r.text()).then(markPending('micOn')).catch(() => {}); setMicOn(next); }, [micOn, hwSens]);
     useEffect(() => { try { localStorage.setItem('hz_hwsens', hwSens); } catch(e) {} if (micOn) { fetch(`/hwaudio?en=1&sens=${hwSens}`).catch(() => {}); } }, [hwSens]);
+    // Tempo mode, read back from the device so it survives a reload and a second browser sees it.
+    const tempoAuto = tele.raw ? tele.raw.tAuto !== 0 : true;
+    const setTempoAuto = useCallback((v) => { fetch('/audio_tune?auto=' + (v ? 1 : 0)).catch(() => {}); }, []);
+
     const tapWithFirmware = useCallback(() => { const tapped = tap(); armPending('bpm'); fetch('/beat' + (tapped ? ('?bpm=' + tapped) : '')).then((r) => r.text()).then(markPending('bpm')).catch(() => {}); }, [tap]);
     const hardSync = useCallback(() => { fetch('/sync'); }, []);
     const handleJog = useCallback((v) => { tFetch('/jog?v=' + v, 'jog'); }, []);
@@ -2490,9 +2514,9 @@ const isReceiving = useRef(false);
         <StatusBar accent={accent} onAccentChange={handleAccentChange} night={night} onNightToggle={() => setNight(n => { const next = !n; try { localStorage.setItem('hz_night', next ? '1' : '0'); } catch(e) {} return next; })} telemetry={tele} bpm={bpm} micOn={micOn} fixtureCount={fixtureCount} uiScale={uiScale} onUiScaleChange={setUiScale} />
         <Tabs tab={tab} setTab={setTab} accent={accent} tabs={['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH']} />
         <div className="tab-scroll">
-          {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
+          {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
           {tab === 'FOLLOWSPOT' && <HorizonFollowspotTab accent={accent} joystickSize={195} state={state} setState={setState} onJoystick={joystickHandler} onMapTap={handleMapTap} keyJoyRef={keyJoyRef} />}
-          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
+          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'AUDIO' && <HorizonAudioDebugTab accent={accent} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'PATCH' && <HorizonPatchTab accent={accent} />}
         </div>

@@ -680,7 +680,23 @@ inline int tempoCandidate = 0, tempoAgree = 0;
 // simply ineffective whenever the mic was on -- which reads as "tapping is jumpy" rather than as
 // the override it actually was. Tapping now holds the tempo and the audio keeps supplying phase
 // through the beat-clock correction, which is how a lighting desk is normally driven.
-inline bool tempoTapLock = false;
+// Tempo mode. Auto is the resting state and survives a restart; a tap does NOT leave it.
+//
+// This used to be a latch: one tap set tempoTapLock and the tracker was shut out until the user
+// found /audio_tune?tap=0, which only the AUDIO tab exposes. Tapping is something you do mid-set,
+// on the light, and it silently cost you automatic tracking for the rest of the night.
+//
+// A tap is better understood as ground truth about the OCTAVE than as a tempo to obey. The
+// tracker's own failure mode is landing on a real periodicity at the wrong rung of the ladder --
+// measured on hip-hop at 98 BPM it locked to 132, which is 4/3 of the beat. It had found
+// something real and only misjudged which subdivision it was. So a tap becomes an anchor: the
+// tracker keeps measuring, and its answer is folded to the nearest simple ratio of the tapped
+// value. Drift too far from every ratio and the tempo genuinely changed, so the anchor is dropped.
+inline bool tempoAuto = true;
+inline int  tapAnchorMiss = 0;   // consecutive evaluations fitting no rung
+inline int  tapAnchorBPM = 0;      // last tapped tempo, 0 = none. Deliberately not persisted:
+                                   // it is a statement about the music playing now.
+inline bool tempoTapLock = false;  // kept as the inverse of tempoAuto for the existing API
 inline bool audioUseTracker = true;
 // Manual octave override for the tracker's result: 0 = as measured, 1 = double, 2 = halve.
 // Deliberately a user decision, not a heuristic. The tracker reports the pulse the bass
@@ -1242,7 +1258,24 @@ void pollAudioEngine() {
   // Held per 5s window so a single outlier cannot hide behind an average.
   // Applied outside the beat-detected block on purpose: the tracker does not need an onset
   // to have just fired, it works off the rolling flux history.
-  if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled && !tempoTapLock) {
+  if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled && tempoAuto) {
+    // Fold the measurement onto the rung the tap identified, when there is one and it fits.
+    if (tapAnchorBPM >= BPM_MIN_LIMIT) {
+      static const float kRatios[] = { 0.5f, 2.0f/3.0f, 0.75f, 1.0f, 4.0f/3.0f, 1.5f, 2.0f };
+      float r = (float)trackedBPM / (float)tapAnchorBPM;
+      float best = 0; float bestErr = 1e9f;
+      for (float k : kRatios) {
+        float e = fabsf(r - k) / k;
+        if (e < bestErr) { bestErr = e; best = k; }
+      }
+      // 8% is wide enough to absorb the tracker's own scatter, narrow enough that a real tempo
+      // change lands between rungs and is passed through untouched instead of being forced.
+      if (bestErr < 0.08f) { trackedBPM = (int)((float)trackedBPM / best + 0.5f); tapAnchorMiss = 0; }
+      // An anchor describes the track that was playing when it was tapped. Once the measurement
+      // has fitted none of the rungs for a while the music has moved on, and holding on would
+      // force the new tempo onto the old track's grid. Drop it and go back to plain tracking.
+      else if (++tapAnchorMiss > 20) { tapAnchorBPM = 0; tapAnchorMiss = 0; }
+    }
     int shown = trackedBPM;
     // The override is ignored rather than clamped when it would leave the valid range --
     // clamping would silently show a tempo that is neither the measurement nor its octave.
