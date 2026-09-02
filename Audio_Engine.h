@@ -1203,7 +1203,19 @@ void pollAudioEngine() {
     }
 
     if (now - lastBassTime > SILENCE_TIMEOUT_MS) {
-        globalBPM = BPM_DEFAULT_FALLBACK;
+        // Hold the tempo through quiet passages instead of discarding it.
+        //
+        // This used to force globalBPM to a fixed 120 after 2.5s without a kick, straight past
+        // the band that everything else goes through, and wipe the interval history with it. A
+        // breakdown routinely runs longer than 2.5s, so the tempo was being reset mid-track --
+        // which is what "it drops during the quiet part" actually was: not a mismeasurement but
+        // a reset. And the fixed 120 was arbitrary; it happened to be invisible on a 120 BPM
+        // track and wrong on every other one.
+        //
+        // When there is nothing to hear, the last thing heard is the best information available,
+        // and for lighting it is also what you want -- the pulse should carry on through the
+        // breakdown at the tempo of the track, ready for the drop. The virtual beat below keeps
+        // running on exactly that.
         for(int i=0; i<BPM_HISTORY_SIZE; i++) beatIntervals[i] = 0;
         beatIdx = 0;
 
