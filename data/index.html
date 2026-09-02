@@ -1040,17 +1040,28 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     };
   }
 
+  // The hold timer lives outside the render cycle on purpose. makeTapHandlers runs on every
+  // render, so a timer kept in its closure belongs to the render that started it -- and a tap
+  // changes the BPM, which re-renders, so the pointerup that follows comes from a NEW closure
+  // whose timer is null. The old one is never cleared, fires 600ms later and toggles the mode:
+  // two quick taps silently switched to manual. Only one button can be held at a time, so a
+  // single module-level pair is both sufficient and immune to re-rendering.
+  let tapHoldTimer = null, tapHoldFired = false;
+
   function makeTapHandlers(tap, tempoAuto, onToggleAuto, colour) {
-    let timer = null, fired = false;
+    const cancel = () => { if (tapHoldTimer) { clearTimeout(tapHoldTimer); tapHoldTimer = null; } };
     return {
       onPointerDown: (e) => {
         pressFlash(e, colour);
-        fired = false;
-        timer = setTimeout(() => { fired = true; timer = null; onToggleAuto(!tempoAuto); }, 600);
+        cancel();
+        tapHoldFired = false;
+        tapHoldTimer = setTimeout(() => {
+          tapHoldTimer = null; tapHoldFired = true; onToggleAuto(!tempoAuto);
+        }, 600);
       },
-      onPointerUp: () => { if (timer) { clearTimeout(timer); timer = null; if (!fired) tap(); } },
-      onPointerLeave: () => { if (timer) { clearTimeout(timer); timer = null; } },
-      onPointerCancel: () => { if (timer) { clearTimeout(timer); timer = null; } },
+      onPointerUp: () => { cancel(); if (!tapHoldFired) tap(); tapHoldFired = false; },
+      onPointerLeave: () => { cancel(); tapHoldFired = false; },
+      onPointerCancel: () => { cancel(); tapHoldFired = false; },
     };
   }
 
@@ -1087,7 +1098,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <button onClick={onKillAll} style={{ padding: '11px 0', background: 'rgba(127,29,29,0.32)', border: '1px solid rgba(220,38,38,0.4)', borderRadius: 11, color: '#fca5a5', fontWeight: 700, fontSize: 12, letterSpacing: 1, cursor: 'pointer', textTransform: 'uppercase' }}>◼ Kill All FX · Stop Show</button>
           <Panel title="Tempo & sync · audio" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '11px 0', borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · {bpm}</button>
+              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '11px 0', borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · <span style={{ display: 'inline-block', minWidth: '3ch', textAlign: 'left', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{bpm}</span></button>
               <button onPointerDown={(e) => { pressFlash(e, 'rgba(20,184,166,0.55)'); onHardSync(); }} style={{ padding: '11px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 10, color: '#5eead4', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>SYNC PHASE</button>
               <button onClick={onMicToggle} style={{ padding: '11px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 10, color: '#86efac', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{micOn ? <LED color="#22c55e" pulse size={7} /> : null} HW MIC</button>
             </div>
@@ -1356,7 +1367,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           
           <Panel title="Tempo & sync" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
-              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '9px 0', borderRadius: 9, fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · {bpm}</button>
+              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '9px 0', borderRadius: 9, fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · <span style={{ display: 'inline-block', minWidth: '3ch', textAlign: 'left', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{bpm}</span></button>
               {/* This had no onClick at all -- a button that looked live and did nothing. The LIVE
                   tab's identical one was wired to /sync all along, so pressing SYNC here while
                   setting up FX triggers, which is where you would reach for it, silently did
