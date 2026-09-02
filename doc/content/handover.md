@@ -152,6 +152,40 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   mehrstufigem Ramping (Shift/Alt-Modifier), sendet `joyInputX/Y` an
   `/joy_in`.
 
+## Beat-Erkennung (Stand 2026-09-02)
+
+Erkennung läuft auf **Sample-Ebene**, nicht auf FFT-Frames. Ein Frame dauert 32 ms, der
+Anschlag einer Bassdrum 5–20 ms — frame-basierte Erkennung kann einen Onset also nur auf
+Frame-Grenzen zeitstempeln, was bei einem 460-ms-Beat ±7 % Jitter bedeutet, bevor irgendein
+Schätzer anfängt. Nachgebaut ist die analoge Topologie des Pioneer DJM-500, pro Sample bei
+16 kHz:
+
+**Bandpass → Hüllkurve → Komparator gegen rollende Referenz → Gipfelwahl → Intervall-Median**
+
+- **Drei unabhängige Bänder** (`sdBass` 40–159 Hz, `sdMid` 159–637 Hz, `sdHigh` über 1273 Hz,
+  alle in `Audio_Engine.h`). Jeder FX kann von jedem Band getriggert werden — Movement auf dem
+  Kick, Dimmer auf den Hats. Jedes Band hat eine **eigene Erholzeit**: ein Kick kommt einmal
+  pro Beat und seine Nachbarn sollen unterdrückt werden, Hats laufen auf Achteln oder
+  Sechzehnteln und das Band muss lange vorher wieder scharf sein.
+- **Die Schwelle ist eine Position im Dynamikbereich**, `Untergrenze + Anteil × (Spitze −
+  Untergrenze)`, kein Vielfaches eines Mittelwerts. Damit ist der Empfindlichkeitsregler
+  dimensionslos und muss bei Pegelwechsel nicht nachgestellt werden. Die Untergrenze ist der
+  **Median** des Fensters, nicht der Mittelwert — ein Mittelwert wird von genau den Spitzen
+  hochgezogen, gegen die er messen soll.
+- **Der Onset wird am Gipfel genommen**, nicht am Schwellendurchgang. Ein Durchgang wandert mit
+  dem Pegel, ein Gipfel nicht; Peak-zu-Peak gemessene Abstände sind deutlich wiederholgenauer.
+- **Tempo ist der Median der Kick-Abstände.** Abstände außerhalb 60–200 BPM werden am Eingang
+  verworfen — das ersetzt jede Oktav- und Faltungslogik. Ein Wert wird nur ausgegeben, wenn die
+  Abstände untereinander übereinstimmen, sonst gilt der alte weiter.
+- **`drift` ist die Gesundheitsprüfung** des Ganzen: `sdSampleClock` zählt nur *verarbeitete*
+  Samples, und die Beat-Abstände werden darauf gemessen. Verliert die Abholung Audio, geht die
+  Uhr nach und **jedes Tempo fällt zu hoch aus**. Muss bei ~0 Promille stehen.
+
+Verifiziert gegen synthetische Musik mit exakt bekannter Beat-Position (`sim/`): F-Maß 0,99
+bei 100 % Treffergenauigkeit und ~7 ms Zeitfehler bei 130 BPM, Tempo über 90–174 BPM auf 2 BPM
+genau, stabil über einen 50-fachen Pegelbereich. Zum Vergleich: Dixon (DAFx-06) misst für das
+beste von acht Verfahren F = 0,964 bei 8,8 ms über 106.054 Onsets.
+
 ## Performance & Skalierung
 
 - **Kein FPU am ESP32-C3** (RV32IMC, 1 Core @ 160 MHz). Jedes
@@ -173,6 +207,14 @@ Dieses Repository (`Moving_Head_Horizon`) ist das Ergebnis eines Merges
   integrieren und `getValues()` zustandslos ist (33 Hz reicht für einen
   Moving Head locker). Macht 8 Fixtures + Hardware-Joystick entspannt —
   siehe `backlog.md`.
+- **Audio-Pfad (überarbeitet 2026-09-02).** Gemessen lag `audUs` bei 1200–2400 µs pro
+  32-ms-Frame, davon `fftUs` 1127–1207 — die FFT war der mit Abstand größte Einzelposten.
+  Sie ist **nicht mehr Teil der Erkennung** (die Sample-Raten-Kette arbeitet auf Rohsamples)
+  und läuft nur noch, solange jemand `/api/audio_debug` abfragt, also den AUDIO-Tab offen hat.
+  Ebenso laufen Mid und High nur, wenn ein FX auf sie geroutet ist. Der Normalfall — live
+  spielen, Browser zu, Movement auf Kick und Dimmer auf Hats — fährt damit **zwei Detektoren
+  und keine FFT**, wo vorher ein Detektor und die FFT bedingungslos liefen. Am Gerät noch zu
+  bestätigen: `audUs`/`fftUs`/`loopMax` einmal mit geschlossenem und einmal mit offenem Tab.
 - **Kleinere Wins:** Rotationsmatrix (`cosf/sinf(rRad)`) ist über alle
   Fixtures identisch, wird aber pro Fixture neu berechnet — einmal pro
   Frame reicht. JSON-String-Bauen in `/api/get_dmx` churnt Heap, läuft aber
@@ -222,6 +264,28 @@ aktuell absehbare Skalierung, ohne Hardware-Wechsel.
   Movement-only-Recall darf statische DMX-/Color-Werte und Dimmer NICHT
   anfassen — dort liegt die eigentliche Refactoring-Arbeit. Partielle
   Recall-Endpunkte oder eine Feldgruppen-Maske statt eines atomaren Apply.
+
+## Test ohne Hardware
+
+`sim/` übersetzt das echte `Audio_Engine.h` nativ gegen ein nachgebautes `Arduino.h` und einen
+nachgebauten I2S-Treiber und fährt es gegen synthetische Musik mit **exakt bekannter**
+Beat-Position — oder gegen eine `.wav`-Datei. Modelliert werden die DMA-Ringtiefe, die
+Abtastrate und der Jitter der Hauptschleife; `simI2sDropped` zählt Samples, für die im Ring kein
+Platz war.
+
+Der Grund für seine Existenz: drei Einmessreihen auf Hardware wurden dadurch wertlos, dass die
+Musik während der Messung weiterlief, und eine davon erzeugte einen falschen „Durchbruch" — ein
+freilaufender Oszillator sah wie ein funktionierender Detektor aus, weil seine Sperre auf das
+Beat-Intervall eingemessen worden war. Der Simulator fand bei seinen ersten Läufen drei echte
+Fehler, darunter eine dauerhafte Stummschaltung nach dem ersten Onset.
+
+**Er ersetzt die Hardware nicht.** Kein Mikrofon, kein Raum, keine PA-Kompression, und die
+Kick/Bass-Balance des Kunsttracks ist erfunden. Ein Ergebnis dort ist notwendig, nicht
+hinreichend. Details in `sim/README.md`.
+
+Dazu `scripts/check_ui.sh`: transpiliert alle Babel-Blöcke aus `data/index.html` mit dem
+ohnehin mitgelieferten Babel, damit ein Syntaxfehler hier auffällt statt als weiße Seite auf dem
+Gerät. Es gibt keinen Build-Schritt für die UI, also prüft sonst nichts.
 
 ## Setup & Flashen
 

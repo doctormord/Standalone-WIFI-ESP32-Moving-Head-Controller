@@ -1,101 +1,75 @@
 # NEXT CHAT STARTS HERE
 
-Stand 2026-09-01, Ende. Branch `worktree-audio-panel` im Worktree `audio-panel`,
-7 Commits noch nicht nach `future` gepusht.
+Stand 2026-09-02. Branch `future`.
 
 ## Wo wir stehen
 
-Der Beat-Detektor wurde vollständig umgebaut. Vorher lagen fünf Tempo-Schätzer übereinander,
-von denen zwei unabhängig `globalBPM` schrieben; darunter ein Komparator, dessen rollende
-Referenz wegen einer Integer-Totzone **nie funktioniert hat**. Alle Einmessungen der Tage davor
-waren dadurch bedeutungslos.
+Die Beat-Erkennung wurde von Grund auf ersetzt. Vorher lagen fünf Tempo-Schätzer übereinander,
+von denen zwei unabhängig `globalBPM` schrieben; darunter ein Komparator, dessen rollende Referenz
+wegen einer Integer-Totzone **nie funktioniert hat**. Sämtliche Einmessungen davor waren dadurch
+bedeutungslos.
 
-Jetzt: **eine** Kette. Bass 40–160 Hz → Hüllkurve (Release ~128 ms) → Schwelle im
-Dynamikbereich gegen einen **Median** → Varianz-Gate → Onset **am Gipfel** → Intervall-Median
-über ein Zeitfenster → Konsistenzprüfung → 60–200 BPM.
+Jetzt: **eine** Kette, dreimal instanziiert. Pro Band Bandpass → Hüllkurve → Komparator gegen eine
+Schwelle *im Dynamikbereich* über einem **Median** → Varianz-Gate → Onset **am Gipfel** →
+Intervall-Median → Konsistenzprüfung, Bereich 60–200 BPM. Bass 40–159 Hz, Mid 159–637 Hz, High
+über 1273 Hz, jedes mit eigener Erholzeit. Architekturbeschreibung in `handover.md`, Parameter in
+`functions.md`.
 
-**Alles ab Commit `b6bcc92` ist auf Hardware unverifiziert.** Verifiziert ist nur der Stand
-davor: Onset-Median 456 ms = 131,5 BPM gegen wahre 133, ohne einen einzigen Abstand unter
-200 ms bei 120 ms Sperre.
+**Im Simulator verifiziert, auf Hardware nicht.** Alles ab Commit `b6bcc92` hat nie auf dem Gerät
+gelaufen.
 
-## Zuerst flashen
+## Zuerst flashen und setzen
 
-Gerät hat alte Werte in NVS, die die neuen Standardwerte überschreiben. Nach dem Flashen setzen:
+NVS hält alte Werte, die die neuen Standardwerte überschreiben. Nach dem Flashen:
 
     /hwaudio?en=1&sens=60
-    /audio_tune?ig=3&blk=60&blo=6&bhi=4&brl=11&tw=6000&vmp=25&pfp=70&pmw=60&agr=20
+    /audio_tune?ig=3&ag=1&blk=60&brl=8&brf=14&tw=6000&vmp=10&mrp=25&pfp=70&pmw=60&agr=20&sab=1
 
-`hwAudioEnabled` steht nach einem Reboot auf 0 — Audio muss explizit eingeschaltet werden.
-
-## Vor dem Gerät: der Simulator
-
-`sim/` fährt den echten Detektorcode nativ gegen synthetische Musik mit **exakt bekannter**
-Beat-Position. Bauen und laufen lassen:
-
-    cd sim && c++ -std=c++17 -O2 -I fake -I .. -o simbeat sim.cpp
-    ./simbeat --mode tempo --sens 60        # 90..174 BPM
-    ./simbeat --mode level --auto           # 50-facher Pegelbereich
-
-Aktueller Stand dort: F = 0,988 bei 130 BPM, Treffergenauigkeit 100 %, Zeitfehler 6,9 ms,
-Tempo über 90–174 BPM auf 2 BPM genau, null verworfene Samples, null Uhrenabweichung.
-Der Simulator hat drei echte Fehler gefunden, die sonst erst am Gerät aufgefallen wären —
-darunter eine dauerhafte Stummschaltung nach dem ersten Onset.
-
-**Er ersetzt die Hardware nicht.** Kein Mikrofon, kein Raum, keine PA-Kompression, und die
-Kick/Bass-Balance des Kunsttracks ist erfunden. Ein Ergebnis dort ist notwendig, nicht
-hinreichend.
+`hwAudioEnabled` steht nach jedem Reboot auf 0 — Audio muss explizit eingeschaltet werden.
 
 ## Prüfplan, in dieser Reihenfolge
 
-**0. Zuerst die Uhr prüfen — das ist der wichtigste Test.** `drift` auf `/api/audio_debug` ist
-die Abweichung der Sample-Uhr von der Wanduhr in Promille. Sie **muss bei etwa null liegen**.
-Steht dort ein zweistelliger positiver Wert, verliert die Abholung immer noch Audio, die
-Sample-Uhr geht nach, und **jedes gemessene Tempo fällt zu hoch aus** — genau der Fehler, der
-diese Session über für einen Schätzerfehler gehalten wurde. Alle folgenden Schritte sind
-wertlos, solange dieser Wert nicht stimmt.
+**0. Die Uhr — wichtigster Test.** `drift` auf `/api/audio_debug` ist die Abweichung der
+Sample-Uhr von der Wanduhr in Promille und **muss bei etwa null liegen**. Steht dort ein
+zweistelliger positiver Wert, verliert die Abholung Audio, die Sample-Uhr geht nach, und **jedes
+gemessene Tempo fällt zu hoch aus** — genau der Fehler, der lange für Schätzerschwäche gehalten
+wurde. Alle weiteren Schritte sind wertlos, solange das nicht stimmt.
 
-**Vorher: feste Referenzaufnahme besorgen.** Loop oder Metronom bei bekanntem Tempo, mehrere
-Minuten konstant. Ohne das ist Schritt 3 sinnlos — dreimal in einer Session daran gescheitert,
-dass der Track währenddessen weiterlief. Siehe `history.md` Einträge 5 und 6.
+**1. CPU, zweimal messen.** `audUs`/`fftUs`/`loopMax` auf `/api/state`, **einmal mit geschlossenem
+Browser und einmal mit offenem AUDIO-Tab.** Bei geschlossenem Tab muss `fftUs` **0** sein und es
+dürfen nur die Bänder laufen, auf die ein FX geroutet ist. Referenz vorher: `audUs` 1200–2400 µs
+pro 32-ms-Frame, davon `fftUs` 1127–1207. Bleibt `loopMax` unter ~25 ms, ist alles gut.
+Notausgang: `/audio_tune?sab=0`.
 
-1. **CPU zuerst — und zwar zweimal messen.** `audUs`/`fftUs`/`loopMax` auf `/api/state`,
-   **einmal mit geschlossenem Browser und einmal mit offenem AUDIO-Tab.** Die beiden Werte
-   müssen sich deutlich unterscheiden: bei geschlossenem Tab läuft die FFT gar nicht mehr
-   (`fftUs` muss 0 sein) und es laufen nur die Bänder, auf die tatsächlich ein FX geroutet ist.
-   Bei offenem Tab läuft alles. Referenz von vorher: `audUs` 1200–2400 µs pro 32-ms-Frame,
-   davon `fftUs` 1127–1207. Bleibt `loopMax` unter ~25 ms, ist alles gut.
-   Notausgang: `/audio_tune?sab=0` schaltet Mid/High auf den alten Bandvergleich zurück.
+**2. Erkennt er, oder oszilliert er?** Die Sperre steht auf 60 ms. Liegt der Onset-Median bei
+~100 ms, ist es ein freilaufender Oszillator (dieser Fall hat schon einmal wie ein Erfolg
+ausgesehen). Liegt er beim Beat, erkennt er. Das ist der einzige Test, der die beiden trennt.
 
-2. **Erkennt er überhaupt?** Sperre steht auf 60 ms. Liegt der Onset-Median bei ~100 ms, ist es
-   wieder ein freilaufender Oszillator. Liegt er beim Beat, erkennt er. Das ist der einzige
-   Test, der zwischen den beiden unterscheidet.
-3. **Gipfel statt Flanke** — der Kern dieses Umbaus. Onset-Streuung gegen den Stand von
-   Commit `6abd2d8` vergleichen. Sie muss sinken; tut sie das nicht, hat das Peak-Tracking
-   keinen Effekt und `pfp`/`pmw` sind falsch dimensioniert.
-4. **Der eine verbliebene Regler**: `sens` positioniert die Schwelle im Dynamikbereich
-   (100 = 30 % hoch, 0 = 90 %). Gegen die Referenzaufnahme einmessen, **einmal**.
-   **Vorher Auto-Gain abschalten** (`/audio_tune?ag=0`, oder im Dropdown eine feste Stufe
-   wählen — ein explizites `ig=` schaltet Auto ohnehin ab). Sonst verstellt die automatische
-   Bereichswahl während der Messreihe den Pegel und die Reihe misst zwei Dinge gleichzeitig.
-5. **Gegenprobe an zwei fremden Tracks.** Der Sinn der ganzen Übung ist, dass Schritt 3 danach
-   nicht wiederholt werden muss. Tut er es doch, ist die Schwelle immer noch nicht skalenfrei.
+**3. Die neuen Trigger.** Movement FX auf `bass`, Dimmer FX auf `high`. Der Dimmer muss auf den
+Hats blitzen, nicht auf dem Kick. Im Simulator am 145-BPM-Track: Bass 2,35/s auf der Viertel,
+High 4,33/s auf der Achtel, nur 1–2 % Überlappung.
 
-6. **Auto-Gain im Betrieb**: laut aufdrehen bis es clippt — die Kopfzeile muss rot werden und
-   der Pegel innerhalb von ~1 s von selbst zurückgehen. Dann leise drehen: hoch geht es
-   absichtlich erst nach ~20 s, damit ein Breakdown die Verstärkung nicht aufreißt.
+**4. Auto-Gain.** Laut aufdrehen bis es clippt — die Kopfzeile wird rot, der Pegel geht innerhalb
+~1 s von selbst zurück. Dann leise drehen: hoch geht es absichtlich erst nach ~20 s.
 
-7. **Die neuen Trigger ausprobieren** — der eigentliche Zweck: Movement FX auf `bass`, Dimmer FX
-   auf `high`. Der Dimmer muss dann auf den Hats blitzen, nicht auf dem Kick. Im Simulator
-   gemessen (145-BPM-Trance): Bass 2,35/s auf der Viertel, High 4,33/s auf der Achtel.
+**5. Gegenprobe an zwei fremden Tracks, ohne etwas nachzustellen.** Das ist der eigentliche
+Prüfstein — die skalenfreie Schwelle soll genau das leisten. Muss doch nachjustiert werden, ist
+sie es nicht.
 
-Neue Diagnosefelder auf `/api/audio_debug`: `drift`, `sdFloor`, `sdPeak`, `sdMad`, `sdTrans`,
-`agree`, `agrMax`, `pfp`, `pmw`, `vmp`, `ag`, `agPk`, `tw`.
+Für eine Feineinmessung von `sens`: **feste Referenzaufnahme** (Loop oder Metronom, mehrere Minuten
+konstant), kein laufendes Set. Daran sind am 2026-09-01 drei Messreihen gescheitert, siehe
+`history.md`.
 
-`/api/spectrum` gibt es nicht mehr — das Spektrum kommt jetzt über
-`/api/audio_debug?spec=1` in derselben Antwort. Messskripte, die nur Bandwerte brauchen,
-lassen `spec=1` weg und zahlen nichts für die 256 Bins.
+## Werkzeuge
+
+- `cd sim && c++ -std=c++17 -O2 -I fake -I .. -o simbeat sim.cpp` — Detektor ohne Hardware testen,
+  gegen synthetische Musik oder eine `.wav`. `--mode tempo|sens|level|bands|trace|csv`.
+  `LC_ALL=C` setzen, wenn die Ausgabe mit awk geparst wird. Details in `sim/README.md`.
+- `./scripts/check_ui.sh` — prüft `data/index.html` vor dem Hochladen auf Syntaxfehler.
+- `pio run` / `pio run -t buildfs` — Firmware- und Dateisystem-Prüfung.
 
 ## Danach
 
-Preset-Engine-Split (Layer) — die eigentlich anstehende Funktion, braucht kein neues
-NVS-Format. Siehe `backlog.md`.
+Preset-Engine-Split (Layer) — die eigentlich anstehende Funktion, braucht kein neues NVS-Format.
+Siehe `backlog.md`. Flash steht bei 93,7 %, also ~83 KB frei; das ist die Decke, gegen die zu
+planen ist.

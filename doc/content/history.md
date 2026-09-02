@@ -4785,3 +4785,142 @@ Maximums und überschreibt sie in Zeile 31 sofort.
 
 **Stand:** kompiliert, Flash 93,4 %. **Auf Hardware unverifiziert** — Gerät ab 2026-09-02 wieder
 verfügbar. Prüfplan siehe `handoff.md`.
+
+## 2026-09-02
+
+### Der Detektor wird ohne Hardware testbar
+
+Der User: „kannst du den beat detektor nicht iwie abstrahieren und mit fake musik testen ohne den
+mikrocontroller? … die verarbeitungsgeschwindigkeit oder limitation des controllers kannst du
+doch auch easy abbilden." Die produktivste Idee der Session — und eine, die früher hätte kommen
+müssen.
+
+Nichts wurde abstrahiert: `sim/` übersetzt das **echte** `Audio_Engine.h` unverändert nativ,
+gegen ein nachgebautes `Arduino.h` und einen nachgebauten I2S-Treiber, dessen Ring mit der echten
+Abtastrate gegen eine simulierte Uhr gefüllt wird. Modelliert sind DMA-Ringtiefe, Blockstruktur
+und der Jitter der Hauptschleife (~1 ms, gelegentlich 15 ms). Der Kunsttrack enthält absichtlich
+das, was auf echter Musik gestört hat: eine gehaltene Basslinie zwischen den Kicks, Hats und eine
+Snare in den unteren Mitten.
+
+**Drei echte Fehler in den ersten Läufen:**
+
+1. *Das Dynamik-Tor war unerfüllbar.* `sdMinLevel = floor × 2` — übernommen aus
+   `gibbedy/BeatDetector` — verlangte 20382, während die Hüllkurve im ganzen Fenster nur 16977
+   erreichte. Gibbedys Mittelwert ist eine FFT-Bin-Magnitude, die zwischen Beats fast auf null
+   fällt; unsere Bezugsgröße ist der Median einer Hüllkurve mit langem Abfall, die das nie tut.
+   Die Regel wurde übernommen, ohne zu prüfen, ob die zugrundeliegende Größe vergleichbar ist —
+   exakt der Fehler, vor dem im Eintrag davor bei den Magic Numbers gewarnt wurde.
+2. *Die weiche Sperre klang nie ab.* `sdBoost -= (sdBoost - 256) >> 11` schiebt in Q8 einen
+   Wertebereich von 768 um 11 Bit — das Ergebnis ist immer 0. Die Schwelle blieb für immer auf dem
+   Vierfachen, **der Detektor war nach dem ersten Onset dauerhaft taub.** Dieselbe
+   Integer-Totzone, die Stunden zuvor die Komparator-Referenz eingefroren hatte, in anderer Form
+   wieder eingebaut. Jetzt in Q16 geführt und erst bei der Verwendung auf Q8 gekürzt.
+3. *Die Abfallzeit war für schnelle Musik falsch.* Über 90–174 BPM gemessen: 16 ms Release hat
+   den schlechtesten Fall F = 0,939, die 128-ms-Variante 0,656 — letztere verpasste bei 174 BPM
+   jeden zweiten Beat und meldete die halbe Geschwindigkeit. Das revidiert eine Änderung vom
+   Vortag, deren Begründung damals **nicht falsch war**: mit eingefrorener Referenz feuerte ein
+   kurzer Release tatsächlich durchgehend. Mit Median-Bezug und Dynamikbereich-Schwelle gilt das
+   nicht mehr. Wieder eine Schlussfolgerung, die nur wegen eines Bugs richtig aussah.
+
+Stand danach: F = 0,988 bei 130 BPM, 100 % Treffergenauigkeit, 6,9 ms Zeitfehler, Tempo über
+90–174 BPM auf 2 BPM genau, null verworfene Samples, null Uhrenabweichung. Damit ist auch der
+Abhol-Fix vom Vortag **belegt** statt nur plausibel. Der Auto-Gain hält F zwischen 0,965 und 0,988
+über einen 50-fachen Pegelbereich, während feste Verstärkung schon beim 2,5-fachen auf 0,233
+einbricht.
+
+### Blindtest an einem echten Track — und ein Fehler, den nur die Gegenprobe fand
+
+Der User lieferte `trance-drop-kick-bass_xyzbpm.wav` (Tempo im Dateinamen verschleiert) mit der
+Aufgabe, die BPM aus Bass, Mid und High zu bestimmen. Erster Durchlauf: überzeugende 129,9 BPM
+aus allen drei Bändern.
+
+**Falsch.** Der Ladeblock für die Datei stand im Quelltext hinter der Modus-Verzweigung, die
+Datei wurde nie geladen, und gemessen wurde der Synthesizer mit seinem Vorgabewert 130. Aufgefallen
+ist es nur, weil parallel eine unabhängige Autokorrelation in numpy auf der Originaldatei
+widersprach.
+
+Die Lehre gehört ins Protokoll: **Einigkeit zwischen den drei Bändern hatte null Beweiswert**,
+weil alle drei denselben Schätzer und denselben Intervallfilter benutzen. Drei übereinstimmende
+Antworten aus einer Quelle sind eine Antwort. Der Simulator bricht jetzt ab, wenn eine Datei
+genannt, aber nicht geladen wurde.
+
+Nach der Korrektur: alle drei Bänder 414 ms = **144,9 BPM**. Unabhängig bestätigt durch
+Autokorrelation der Originaldatei: Spitze bei 415 ms (144,6 BPM, r = 0,932), Rohanschläge bei
+207 ms — also Achtel. Saubere Hierarchie 207 / 414 / 827 ms. **Der Track hat 145 BPM.**
+
+### Mid und High bekommen eigene Detektoren
+
+Frage des Users: ob Dimmer-FX auf die Highs und Movement auf den Kick gehen. Die Verdrahtung gab
+es längst (jeder FX kann von `bass`/`mid`/`high` getriggert werden) — aber **nur der Bass lief auf
+der neuen Kette.** Mid und High entschieden weiter über den Frame-Vergleich gegen ein geglättetes
+Mittel, also genau den Pfad, der diese Session über als untauglich nachgewiesen wurde. Deshalb saß
+ein Dimmer auf „high" nie sauber auf den Hats.
+
+Der Detektorzustand ist jetzt eine Struktur mit drei Instanzen über denselben Samples; Verstärkung
+und Begrenzung werden pro Sample einmal gerechnet und geteilt. Die bestehenden globalen Namen
+bleiben als **Referenzen** auf die Bass-Instanz, damit API, Debug-JSON und Simulator unverändert
+weiterlaufen.
+
+Entscheidend war die **bandspezifische Erholzeit**. Im ersten Versuch feuerten alle drei mit
+derselben Rate — sie hatten die Kick-Sperre geerbt (4× Schwelle, 128 ms), die für Hats viel zu
+träge ist. Mit rollengerechten Werten (Bass 4,0×/128 ms, Mid 3,0×/64 ms, High 2,0×/32 ms) am
+145-BPM-Track gemessen:
+
+| Band | Rate | Abstand | |
+|---|---|---|---|
+| Bass | 2,35/s | 414 ms | Viertel — Movement |
+| Mid  | 4,75/s | 207 ms | Achtel |
+| High | 4,33/s | 207 ms | Achtel — Dimmer |
+
+`globalBPM` bleibt bei 144, weil der Tempo-Schätzer allein am Bass hängt. Die Phasenanalyse (jetzt
+feste Ausgabe des Simulators) zeigt: **nur 1–2 % der Mid/High-Onsets fallen auf die Kick-Position**,
+der Rest sitzt offbeat dazwischen. Das ist allerdings eine Eigenschaft des Materials, nicht des
+Detektors — bei Hats auf der Zählzeit fielen die Bänder zusammen.
+
+### Aufräumen: was nichts mehr liest, wird nicht mehr gerechnet
+
+- **Die FFT ist keine Erkennung mehr.** Alle drei Bänder kommen aus der Sample-Raten-Kette, die
+  auf Rohsamples arbeitet. Übrig als Verbraucher: die AUDIO-Tab-Anzeige und der Rückfallpfad. Sie
+  läuft jetzt nur noch, solange `/api/audio_debug` abgefragt wird (2-Sekunden-Lizenz). Gemessen war
+  sie mit 1127–1207 µs von 1212–2438 µs pro Frame der größte Einzelposten.
+- **Mid und High laufen nur bei tatsächlichem Routing.** Der `.ino` prüft zweimal pro Sekunde die
+  sieben FX-Objekte — er ist die einzige Stelle, die es kann, weil die FX-Globals nach dem
+  Einbinden von `Audio_Engine.h` deklariert werden.
+- **Der tote Phasen-DFT-Apparat ist entfernt** (`tempoTrackerEval`, `tempoPlainAvg`,
+  `tempoHarmAvg`, `onsetRing`, `onsetW`, `pushOnset`, `tempoSinTab`). Rund 1,1 KB Arrays plus ein
+  Schreibvorgang pro Onset in einen Ring, den seit der Ablösung niemand mehr auslas.
+
+Netto fährt der Normalfall — live spielen, Browser zu, Movement auf Kick, Dimmer auf Hats — jetzt
+**zwei Detektoren und keine FFT**, wo vorher ein Detektor und die FFT bedingungslos liefen. Im
+Simulator verifiziert, der genau diese Ruhekonfiguration ausführt: Bandergebnisse und der
+90–174-BPM-Durchlauf sind identisch.
+
+Beinahe wäre das schiefgegangen: die Übersetzung des Simulators schlug nach dem Löschen der
+Ringpuffer fehl, und das **alte Binary** lieferte weiter Ergebnisse, die fast als Bestätigung
+durchgegangen wären. Erst nach `rm simbeat` und Neubau waren die Zahlen echt.
+
+### Weitere Korrekturen
+
+- **Der Pegelmesser unterscheidet jetzt zwei Fehler.** Auf den Einwand des Users („wenn es clippt,
+  sehen wir einfach 32768, also wissen wir nicht, wie weit wir runter müssen?!"): für *unsere*
+  Übersteuerung stimmt der Einwand nicht — `s = (raw >> 16) << gain` ist eine int32-Rechnung, die
+  nicht sättigt, belegt durch einen gemessenen Spitzenwert von 95904 (293 %). Für Sättigung **am
+  Mikrofon** stimmt er vollständig: dort kommt `raw_samples` bereits oben abgeschnitten an, der
+  Überschuss ist unbekannt, und Herunterregeln heilt nichts. Wird jetzt getrennt gezählt (`rclip`),
+  als `MIC SAT` angezeigt, und die automatische Bereichswahl hält in dem Fall still.
+- **Automatische Bereichswahl** für den Eingangspegel, bewusst asymmetrisch: runter nach ~1 s und
+  gleich mehrere Stufen (weil der Überschuss messbar ist), hoch erst nach ~20 s und einstufig (weil
+  ein Breakdown normale Musik ist). Stabil, weil das Fenster 25–92 % (Faktor 3,7) breiter ist als
+  eine Stufe (Faktor 2). Bei einem Stufenwechsel wird der gesamte Filterzustand mitskaliert, sodass
+  im Moment des Wechsels nichts passiert. Der gewählte Wert wird **nicht** persistiert — er stellt
+  sich in Sekunden wieder ein, und NVS-Schreibzugriffe bei jeder Pegeländerung wären Verschleiß.
+- **`/api/spectrum` ist in `/api/audio_debug?spec=1` aufgegangen.** Der Webserver arbeitet
+  Anfragen einzeln aus der Hauptschleife ab, bei diesen Nutzlasten dominiert also der Fixkostenanteil
+  pro Anfrage. Zwei Endpunkte mit 15 und 10 Hz waren die Ursache der Sekundenausschläge in der
+  Ping-Anzeige. Ein Endpunkt trägt jetzt beides, der Tab läuft mit **25 Hz bei weniger Anfragen**.
+- **`scripts/check_ui.sh`** transpiliert alle Babel-Blöcke mit dem mitgelieferten Babel. Es gibt
+  keinen Build-Schritt für die UI, also prüft sonst nichts — die Fehlerklasse hat schon einmal den
+  AUDIO-Tab geleert. Fing beim ersten Einsatz sofort eine doppelte `micOn`-Deklaration ab, die den
+  Header weiß gemacht hätte.
+- **Clipping- und Pegelanzeige im Header**, auf allen Tabs, gespeist aus der ohnehin laufenden
+  Telemetrie — also ohne einen einzigen zusätzlichen Request.

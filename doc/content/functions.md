@@ -235,6 +235,24 @@ Parametric pan/tilt pattern generator (circles, figure-8s, etc.).
 
 ## `Audio_Engine.h`
 
+### Beat detection overview (2026-09-02)
+
+Detection runs at the sample rate, not on FFT frames — an FFT frame is 32ms while a kick's
+attack is 5–20ms, so frame-based detection can only timestamp on a frame boundary. The chain
+per band is: bandpass (difference of two one-pole lowpasses) → envelope (fast attack, short
+release) → comparator against a threshold placed *within* the window's dynamic range, measured
+against its **median** → peak pick (the onset is timestamped at the envelope's maximum, not at
+the threshold crossing) → interval median for tempo.
+
+Three bands run over the same samples (`sdBass`, `sdMid`, `sdHigh` in `Audio_Engine.h`), each
+with its own recovery time, so any effect can be triggered from any of them. The FFT is no
+longer part of detection and runs only while `/api/audio_debug` is being polled; Mid and High
+run only if an effect is routed to them (`sdMidWanted`/`sdHighWanted`, set from the `.ino`).
+
+`drift` on `/api/audio_debug` is the health check for the whole thing: `sdSampleClock` counts
+only samples that were actually processed, and beat intervals are measured on it, so any audio
+the DMA ring drops makes the clock run slow and every tempo read high. It must sit near zero.
+
 ### `void pollAudioEngine()`
 No parameters. Called every `loop()` iteration; internally rate-limited to
 once per `AUDIO_POLL_INTERVAL_MS` (40 ms) and no-ops entirely if
@@ -334,9 +352,9 @@ previously replied `server.send(200, "OK")`, which is the two-argument overload 
 | `/autofade` | GET | `t` (fade duration ms), `c` (fade curve: 0=linear/1=quad/3=cosine) | Toggles `fadeStateOut` and starts an auto-fade (mute/unmute) with the given duration and curve. |
 | `/unmute` | GET | — | Immediately cancels any active fade and forces full brightness (`fadeMultiplier = 1.0`). |
 | `/trans` | GET | `dip` (`"1"`=enable) | Sets `dipToBlack` (fade-to-black before preset/chaser loads) and persists to NVS `"sys"`. |
-| `/hwaudio` | GET | `en` (`"1"`=enable), `sens` (0–100 sensitivity) | Enables/disables the I2S audio-reactive engine and sets its sensitivity. |
-| `/api/audio_debug` | GET | — | Returns live band energies (`lo`/`mi`/`hi`), the live bass threshold (`th`), one-shot latched beat-hit flags (`xb`/`xm`/`xh`, cleared on read), and every current `tune*` value (`nf`/`fa`/`fd`/`ma`/`md`/`sa`/`sd`/`mtd`/`htd`) plus `sens`. Built with a fixed-buffer `snprintf` (not this file's usual sequential `String +=`) since the AUDIO DEBUG tab polls it at ~15Hz. Added 2026-08-20 for the AUDIO DEBUG tab's scrolling graph. |
-| `/audio_tune` | GET | `nf` (0–2000), `fa`/`fd`/`ma`/`md`/`sa`/`sd` (0–10, attack/decay bit-shifts), `mtd`/`htd` (0–10, threshold divisor shifts) — all optional, each only applied if present | Sets the runtime-tunable envelope-follower parameters in `Audio_Engine.h` (`tuneFastAttackShift` etc.) that used to be compile-time `#define`s. Added 2026-08-20 alongside `/api/audio_debug`. |
+| `/hwaudio` | GET | `en` (`"1"`=enable), `sens` (0–100 sensitivity) | Enables/disables the I2S audio-reactive engine and sets its sensitivity. `sens` positions the detection threshold **within the measured dynamic range** (100 puts it 30% of the way from the window's floor to its peak, 0 at 90%), rather than scaling a gain — which is what makes one setting hold across material of different levels. Note `hwAudioEnabled` is not persisted and starts false after every restart. |
+| `/api/audio_debug` | GET | `spec` (`"1"` to include the spectrum) | Live detector state as JSON: band levels (`lo`/`mi`/`hi`) and thresholds (`th`/`thM`/`thH`), one-shot latched beat-hit flags (`xb`/`xm`/`xh`, cleared on read), the sample-rate detector's envelope/threshold/floor/window-peak/spread (`sdEnv`/`sdThr`/`sdFloor`/`sdPeak`/`sdMad`/`sdTrans`), tempo state (`tBPM`, `tLag`, `agree`/`agrMax`), input state (`pk` true pre-clamp peak, `clip`, `rclip` samples saturated at the microphone itself, `ag`/`agPk`), `drift` (sample clock against wall clock in parts per thousand — see below), and every current tuning value. With `spec=1` the 256-bin spectrum rides along in the same response as `n`/`hz`/`b[]`. Built with a fixed-buffer `snprintf` rather than this file's usual sequential `String +=`, since the AUDIO tab polls it at 25Hz. **Requesting this endpoint renews a two-second lease on the FFT**, which is otherwise not run at all — detection does not need it. It replaced a separate `/api/spectrum` on 2026-09-02: the server handles requests one at a time from the main loop, so for payloads this small the per-request overhead dominated, and two endpoints at 15Hz and 10Hz were putting second-long spikes into the ping display. |
+| `/audio_tune` | GET | All optional, each applied only if present. **Sample-rate detector:** `bsd` (0/1 enable), `sab` (0/1 run Mid+High as well as Bass), `blo`/`bhi` (2–10 / 1–9, the bandpass edges as one-pole shifts; fc = 16000 / (2π·2^k)), `brl` (2–12, envelope release), `brf` (6–14, reference time constant), `blk` (60–600ms, hard refractory floor), `vmp` (0–200%, MAD required as a share of the mean), `mrp` (0–400%, range required as a share of the floor), `bst` (256–4096, Q8 threshold lift after an onset), `bsh` (6–14, its decay), `pfp` (10–99%, commit the onset once the envelope falls to this share of its peak), `pmw` (10–200ms, or after this long). **Tempo:** `tw` (1000–10000ms, median window), `agr` (5–100%, spread the gaps may have and still count as agreeing), `tap` (0/1 tap lock), `tmul` (0/1/2 octave override). **Input:** `ig` (0–5 gain shift; setting it switches auto off), `ag` (0/1 automatic range), `agt` (30–90%, where a correction aims), `agu` (2000–120000ms, delay before raising), `agd` (100–10000ms, before lowering). **Legacy/FFT path:** `nf`, `fa`/`fd`/`ma`/`md`/`sa`/`sd`, `mtd`/`htd`, `fft`, `flux`, `fg`, `dts`, `db`/`dm`/`dh`, band edges `bbl`/`bbh`/`bml`/`bmh`/`bhl`/`bhh`. | Sets every runtime-tunable audio parameter. All are persisted to NVS through a 1.5s debounce (`markAudioPrefsDirty()`/`flushAudioPrefs()`) so a slider drag is one write, not fifty. Note sensitivity is **not** here — it lives on `/hwaudio`. |
 | `/colfx` | GET | `a`, `st`/`en` (wheel index range), `ho` (hold time ms), `tr`, `sy`, `mv` (manual CH6 value to restore on stop) | Configures `colFX` (color wheel `StepFX`); auto-derives `step` (1 or 2) from start/end parity so odd/even wheel positions aren't mixed. |
 | `/sgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch), `spd`/`rng` (shake rate/intensity), `mv` (manual CH7 value to restore on stop) | Configures `sgobFX` (static gobo `StepFX`). |
 | `/rgobfx` | GET | `a`, `st`/`en`, `ho`, `tr`, `sy`, `sc` (`"1"`=scratch), `spd` (shake stage 1–5), `mv` (manual CH8 value to restore on stop) | Configures `rgobFX` (rotating gobo `StepFX`). |

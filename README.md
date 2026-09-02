@@ -150,10 +150,11 @@ The deep-dive configuration layer for building scenes and tweaking modulators.
 ![Programmer tab GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_3.png)
 
 ### 4. AUDIO Tab (Diagnostics Mode)
-A live oscilloscope-style view into the mic-reactive pipeline, added to make the "fake FFT" (three envelope followers standing in for a real frequency split) actually observable and tunable instead of a black box.
-* **Live Band Graph:** Scrolling ~15Hz canvas plot of the Low/Mid/High energy bands plus the live bass detection threshold, with beat-hit tick marks.
-* **Sensitivity Control:** Same mic sensitivity/on-off control as Live and Programmer, shared state across tabs.
-* **Fake-FFT Tuning:** Live sliders for each band's attack/decay speed, the mid/high threshold divisors, and the noise floor — previously hardcoded `#define`s, now adjustable without a reflash via `/audio_tune`.
+A live view into the mic-reactive pipeline, so beat detection is observable and tunable rather than a black box.
+* **Spectrum + Band Graph:** 256-bin spectrum with the three band ranges shaded and labelled, alongside a scrolling plot of the Low/Mid/High levels and their live thresholds, with beat-hit marks for all three bands. One request at 25Hz carries both.
+* **Mic Level Meter:** True pre-clamp peak with a clipping indicator, so a badly set input is visible instead of guessed at. Also mirrored in the header on every tab.
+* **Input Range:** `AUTO` by default (see below), or a fixed gain step.
+* **Detector Tuning:** Every parameter of the detection chain — band edges, envelope release, reference time constant, threshold position, refractory behaviour, peak-picking, and the tempo window — live-settable via `/audio_tune` without a reflash, mostly as labelled dropdowns rather than sliders.
 
 ---
 
@@ -183,6 +184,23 @@ The core of the console relies on an object-oriented C++ backend calculating DMX
 
 ![FX GUI](https://github.com/doctormord/Standalone-WIFI-ESP32-Moving-Head-Controller/blob/main/images/gui_v1_6.png)
 
+
+---
+
+## 🥁 Beat Detection
+
+Detection runs at the **sample rate**, not on FFT frames. An FFT frame is 32ms, but a kick's attack lasts 5–20ms, so frame-based detection can only ever timestamp on a frame boundary — ±32ms of jitter at a ~460ms beat, before any tempo estimator starts. The chain is modelled on the analogue topology of the Pioneer DJM-500, run per sample at 16kHz:
+
+**bandpass → envelope → comparator against a rolling reference → peak pick → interval median**
+
+* **Three independent bands.** Bass (40–159Hz, the kick), Mid (159–637Hz), High (above 1273Hz, hats and the snare's crack). Any effect can be triggered from any of them, so movement can sit on the kick while the dimmer flashes on the hats. Each band has its own recovery time, because a kick arrives once a beat while hats run at eighths or sixteenths.
+* **The threshold is a position in the dynamic range**, `floor + fraction × (peak − floor)`, not a multiple of an average. That makes the sensitivity control dimensionless, so it does not have to be recalibrated when the material changes level. The floor is the window's **median**, not its mean — a mean is dragged upward by the very peaks it is supposed to measure against.
+* **Onsets are taken at the envelope's peak**, not where it crosses the threshold: a crossing moves with the signal level, a peak does not, so intervals measured peak-to-peak are far more repeatable.
+* **Tempo is the median gap between kicks**, with implausible gaps (outside 60–200 BPM) discarded at the input, which removes the need for any octave or folding logic. A reading is only published when the gaps agree with each other; otherwise the previous value stands.
+* **Automatic input range.** The gain shift is selected automatically: down within a second when clipping (and straight to the right range in one step, since the level is measured before the clamp), up only after twenty seconds below range, because a quiet passage is ordinary music. Saturation *at the microphone* is detected separately and reported as `MIC SAT` — turning the gain down cannot undo it.
+* **Cost is paid only when used.** The FFT is not part of detection any more and runs only while the AUDIO tab is open; Mid and High only run if an effect is actually routed to them.
+
+Measured against synthesised audio with exactly known beat positions (see `sim/`): F-measure 0.99 with 100% precision and ~7ms timing error at 130 BPM, tempo correct within 2 BPM from 90 to 174 BPM, and detection holding across a 50× change in input level.
 
 ---
 
@@ -231,7 +249,12 @@ A `platformio.ini` is also included for command-line compile checks without the 
 - `pio run` — compiles the firmware.
 - `pio run -t buildfs` — builds the LittleFS filesystem image from `data/` and verifies it actually fits the ~1.4MB LittleFS partition (fails loudly instead of silently truncating).
 
-Both are compile/size checks only, not a substitute for testing on real hardware.
+Two further checks run entirely on the host:
+
+- `./scripts/check_ui.sh` — transpiles every `<script type="text/babel">` block in `data/index.html` with the Babel already vendored in `data/vendor`, so a syntax error surfaces here instead of as a blank page on the device. There is no build step for the UI, so nothing else catches one. Needs only `node`.
+- `cd sim && c++ -std=c++17 -O2 -I fake -I .. -o simbeat sim.cpp` — builds a host simulator that compiles the real `Audio_Engine.h` against a fake Arduino and a fake I2S driver, then drives it from either a synthesised track with exactly known beat positions or a `.wav` file. It models the DMA ring, the sample rate and the main loop's jitter, and reports precision/recall/F-measure and timing error. See `sim/README.md`.
+
+All of these are compile/size/behaviour checks on the host, not a substitute for testing on real hardware — the simulator in particular knows nothing about microphones, rooms or PA compression.
 
 ## 📋 Known Issues
 
@@ -246,6 +269,8 @@ In-depth project documentation lives under `doc/content/` (in German — see `CL
 - `handoff.md` — current session snapshot for picking up work.
 - `history.md` — append-only chronological development log.
 - `functions.md` — full function/HTTP-API reference (English).
+
+`sim/README.md` (English) documents the host simulator for the beat detector: how to run it, what it models, and — importantly — what it does not.
 
 `CLAUDE.md` at the repo root has build/architecture guidance for AI coding assistants (Claude Code) working in this repository.
 

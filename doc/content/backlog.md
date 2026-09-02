@@ -40,16 +40,20 @@ Konzept statt pro-Feld-Generation-Tracking.
 > die Lehre daraus ist: Bei diesem Problemfeld den *geteilten Pfad* fixen, nicht das
 > gemeldete Feld.
 
-**Offen: Mic-BPM-Oktave-Korrektur braucht Live-Test mit echtem Audio (2026-08-19).** Siehe
-„Kürzlich gefixt" unten — Fix ist gebaut und kompiliert/geflasht, aber ohne Mikrofon-Input in
-dieser Umgebung nicht verifizierbar. `rawBPM`/`rawMs` in `/api/state` beobachten, während Musik
-läuft: `rawBPM` sollte sich nach ein paar Takten auf den echten Tempo-Wert einpendeln, nicht
-dauerhaft bei der Hälfte hängen bleiben. Falls immer noch zu langsam: weitere Tuning-Iteration
-nötig (z. B. `BPM_DEVIATION_TOLERANCE_DIVISOR` lockern oder `MIN_BEAT_INTERVAL_MS`/Schwellwert-
-Empfindlichkeit prüfen), nicht blind vorwegnehmen.
+**Erledigt (2026-09-02): Mic-BPM-Oktave-Korrektur.** Hinfällig — der gesamte Schätzer wurde
+ersetzt. Abstände außerhalb 60–200 BPM werden jetzt am Eingang verworfen, was jede Oktav- und
+Faltungslogik überflüssig macht; das Tempo ist der Median der verbleibenden Abstände. Verifiziert
+gegen synthetische Musik mit exakt bekannter Beat-Position: über 90–174 BPM auf 2 BPM genau
+(`sim/`, `--mode tempo`). Die alten Konstanten `BPM_DEVIATION_TOLERANCE_DIVISOR` und der
+Phasen-DFT-Apparat sind entfernt.
 
-**Offen: Mic-Sensitivity-Bereich ggf. zu grob (Noise-Floor dominiert bei niedrigem
-`dynThreshold`).** Live per curl bestätigt, dass die Sensitivity den Threshold tatsächlich
+**Erledigt (2026-09-02): Mic-Sensitivity-Bereich.** `sens` positioniert die Schwelle jetzt
+**innerhalb des gemessenen Dynamikbereichs** (100 = 30 % von der Untergrenze zur Spitze, 0 =
+90 %) statt eine Verstärkung zu skalieren. Damit ist der Regler dimensionslos und der Noise
+Floor kann ihn nicht mehr dominieren — er verschiebt Unter- und Obergrenze gleichermaßen. Der
+alte Absatz zur Wirkungsprüfung darunter ist historisch:
+
+**Historisch (2026-08-20):** Live per curl bestätigt, dass die Sensitivity den Threshold tatsächlich
 verschiebt (`sens=0` → `th≈100`, `sens=100` → `th≈60`, bei stabilem Ambient-Rauschen) — die
 Regler-Verdrahtung selbst ist also korrekt (siehe „Kürzlich gefixt" für die zwei tatsächlichen
 Audio-Debug-Bugs, die das ursprünglich verdeckt hatten). Ob der Wertebereich subjektiv „genug"
@@ -109,8 +113,10 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   Fragile Kopplung, entkoppeln (z. B. getrennte Variable für Dip-Fades).
 - **Output-Build-Kadenz (Perf-Hebel, jetzt mit Messwert unterlegt).** Am 2026-08-28
   gemessen: `updateEngines()` braucht 274 µs pro Aufruf mit Spitzen bis **2701 µs** —
-  rund das Siebenfache der neuen FFT (397 µs) und damit der mit Abstand größte
-  CPU-Posten. Live abrufbar über `engUs`/`engMax` in `/api/state`. `updateEngines()`
+  rund das Siebenfache der damaligen FFT (397 µs) und damit der mit Abstand größte
+  CPU-Posten. **Stand 2026-09-02 gilt der Vergleich so nicht mehr:** die FFT lief zuletzt bei
+  1127–1207 µs (16 kHz, N=512) und läuft seitdem nur noch bei offenem AUDIO-Tab, `updateEngines()`
+  ist damit unbestritten der größte verbleibende Posten. Live abrufbar über `engUs`/`engMax` in `/api/state`. `updateEngines()`
   baut Output-Buffer + `getValues()` in *jedem* Loop-Durchlauf (Hunderte Hz),
   gesendet wird nur alle 30 ms (~15× Overhead). In den
   `if (now - lastDmxOut >= 30)`-Block ziehen → Movement-Soft-Float-Last
@@ -138,6 +144,25 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   (nur Warnung), sollte aber vor einem künftigen ESP-IDF-/
   arduino-esp32-Versionssprung migriert werden, falls die alten APIs
   entfernt werden.
+
+### Offen aus der Audio-Überarbeitung (2026-09-02)
+
+- **CPU-Messung am Gerät steht aus.** Drei Detektorbänder statt einem sind dreifache Last pro
+  Sample; im Gegenzug läuft die FFT nur noch bei offenem AUDIO-Tab und Mid/High nur bei
+  tatsächlichem Routing. Netto sollte es günstiger sein als vorher, ist aber **nicht gemessen**.
+  `audUs`/`fftUs`/`loopMax` je einmal mit geschlossenem und offenem Browser prüfen. Notausgang:
+  `/audio_tune?sab=0`.
+- **Alles ab Commit `b6bcc92` ist auf Hardware unverifiziert.** Verifiziert ist nur der Stand
+  davor (Onset-Median 456 ms gegen wahre 451). Prüfplan in `handoff.md`, Schritt 0 ist `drift`.
+- **Schwellenfaktor gegen echte Musik nicht abschließend eingemessen.** Im Simulator ist er
+  unkritisch, weil dessen Kunsttrack sauber ist; bei absichtlich basslastigem Material fällt die
+  Treffergenauigkeit auf 27–64 % (das Tempo bleibt richtig, weil der Intervallfilter die
+  Fehltrigger verwirft). Für die Feinabstimmung braucht es eine **feste Referenzaufnahme**, kein
+  laufendes Set — siehe `history.md`, Einträge 5 bis 7 vom 2026-09-01.
+- **Mikrofon-Sättigung ist erkennbar, aber nicht behebbar.** `rclip` zählt Samples, die schon am
+  Wandler oben abgeschnitten ankommen; die Anzeige sagt `MIC SAT` und die automatische
+  Bereichswahl hält still, weil Herunterregeln hier nichts heilt. Offen ist nur, ob das im
+  Livebetrieb je auftritt.
 
 ## 🚀 Zukünftige Features (Feature Requests)
 
