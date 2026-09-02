@@ -1254,7 +1254,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     'rgSt', 'rgEn', 'rgHo', 'rgTr', 'rgSy', 'rgFxRunning', 'rgSc', 'rgSp',
   ];
 
-  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave }) {
+  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync }) {
     // Tracks "has anything changed since the last recall/save" via a per-field
     // baseline snapshot (not just a boolean) so a partial save -- e.g. Save
     // Center, which only persists pan/tilt -- can clear just the fields it
@@ -1300,7 +1300,11 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <Panel title="Tempo & sync" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
               <button onPointerDown={tap} style={{ padding: '9px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>TAP · {bpm}</button>
-              <button style={{ padding: '9px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 9, color: '#5eead4', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>SYNC</button>
+              {/* This had no onClick at all -- a button that looked live and did nothing. The LIVE
+                  tab's identical one was wired to /sync all along, so pressing SYNC here while
+                  setting up FX triggers, which is where you would reach for it, silently did
+                  nothing. Reported from the fixture 2026-09-02. */}
+              <button onClick={onHardSync} style={{ padding: '9px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 9, color: '#5eead4', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>SYNC</button>
               <button onClick={onMicToggle} style={{ padding: '9px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 9, color: '#86efac', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>{micOn ? <LED color="#22c55e" pulse size={6} /> : null} HW MIC</button>
             </div>
             <div style={{ marginTop: 8 }}><LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact /><JogDial value={state.jog || 0} accent={accent} onChange={(v) => { setState((s) => ({ ...s, jog: v })); fetch('/jog?v=' + v); }} onRelease={() => { setState((s) => ({ ...s, jog: 0 })); fetch('/jog?v=0'); }} /></div>
@@ -2471,7 +2475,7 @@ const isReceiving = useRef(false);
         <div className="tab-scroll">
           {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
           {tab === 'FOLLOWSPOT' && <HorizonFollowspotTab accent={accent} joystickSize={195} state={state} setState={setState} onJoystick={joystickHandler} onMapTap={handleMapTap} keyJoyRef={keyJoyRef} />}
-          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
+          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'AUDIO' && <HorizonAudioDebugTab accent={accent} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'PATCH' && <HorizonPatchTab accent={accent} />}
         </div>
