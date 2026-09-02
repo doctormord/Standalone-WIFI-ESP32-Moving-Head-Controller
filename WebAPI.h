@@ -345,6 +345,8 @@ void setupAPI() {
 
   server.on("/joy_cfg", []() {
     joyMaxSpeed = constrain(server.arg("spd").toInt(), 1, 20000);
+    if (server.hasArg("ratep")) ptMaxRatePan  = constrain(server.arg("ratep").toInt(), 2000, 200000);
+    if (server.hasArg("ratet")) ptMaxRateTilt = constrain(server.arg("ratet").toInt(), 2000, 200000);
     joyCurve = constrain(server.arg("crv").toFloat(), 0.0f, 5.0f);
     joyMomentum = constrain(server.arg("mom").toFloat(), 0.0f, 99.0f) / 100.0f;
     joyPanRev = server.arg("pr") == "1"; joyTiltRev = server.arg("tr") == "1";
@@ -356,7 +358,7 @@ void setupAPI() {
     axisLimits(server.arg("pmin"), server.arg("pmax"), panMinLimit, panMaxLimit);
     axisLimits(server.arg("tmin"), server.arg("tmax"), tiltMinLimit, tiltMaxLimit);
     prefs.begin("sys", false);
-    prefs.putInt("j_msp", joyMaxSpeed); prefs.putFloat("j_crv", joyCurve); prefs.putFloat("j_mom", joyMomentum);
+    prefs.putInt("j_msp", joyMaxSpeed); prefs.putInt("j_rtp", ptMaxRatePan); prefs.putInt("j_rtt", ptMaxRateTilt); prefs.putFloat("j_crv", joyCurve); prefs.putFloat("j_mom", joyMomentum);
     prefs.putBool("j_prv", joyPanRev); prefs.putBool("j_trv", joyTiltRev);
     prefs.putInt("j_pmi", panMinLimit); prefs.putInt("j_pma", panMaxLimit);
     prefs.putInt("j_tmi", tiltMinLimit); prefs.putInt("j_tma", tiltMaxLimit);
@@ -374,7 +376,7 @@ void setupAPI() {
   // momentum as a percentage, the pan/tilt limits as the 0-255 bytes the UI works in (they are
   // stored internally as 16-bit, see axisLimits above).
   server.on("/api/joycfg", []() {
-    String json = "{\"spd\":" + String(joyMaxSpeed) + ",\"crv\":" + String(joyCurve, 2) +
+    String json = "{\"ratep\":" + String(ptMaxRatePan) + ",\"ratet\":" + String(ptMaxRateTilt) + ",\"spd\":" + String(joyMaxSpeed) + ",\"crv\":" + String(joyCurve, 2) +
                   ",\"mom\":" + String(joyMomentum * 100.0f, 0) +
                   ",\"prv\":" + String(joyPanRev ? 1 : 0) + ",\"trv\":" + String(joyTiltRev ? 1 : 0) +
                   ",\"pmin\":" + String(panMinLimit >> 8) + ",\"pmax\":" + String(panMaxLimit >> 8) +

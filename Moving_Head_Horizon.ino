@@ -134,6 +134,38 @@ uint32_t joyWatchdogTrips = 0;
 #define JOY_INPUT_TIMEOUT_MS 500   // three missed 150ms keep-alives before we stop by ourselves
 float joySmoothX = 0.0f, joySmoothY = 0.0f;
 int joyMaxSpeed = 2000;
+// Hard ceiling on how fast the pan/tilt setpoint may travel, in 16-bit units per second.
+//
+// A moving head has a mechanical top speed and DMX gives no position feedback, so commanding
+// faster than the head can move does not make it move faster -- it makes the setpoint run away
+// from it. Every second held at twice the fixture's speed leaves a second of travel still to be
+// completed after the stick is released, which reads exactly as the head "running on". Measured
+// here 2026-09-02: joyMaxSpeed 2518 commands 62950 units/s, about 519 deg/s over a 540 deg pan,
+// against maybe 200 deg/s of actual mechanism -- and the user confirmed the run-on grows with
+// the setting, which is the signature of accumulated lag rather than of any smoothing.
+//
+// Clamping the setpoint's rate removes the lag at the source: the head is then never more than
+// one frame behind, so releasing the stick stops it. joyMaxSpeed keeps its meaning below this
+// ceiling.
+//
+// Separate per axis, because the cap is in 16-bit units per second while the two axes cover
+// different arcs: 65535 units is 540 degrees of pan but only 270 of tilt, so one number brakes
+// tilt twice as hard in angular terms. Observed on the fixture with a single shared value --
+// tilt stopped dead while pan was still braking on a ramp, which is exactly that factor of two.
+//
+// The values below were MEASURED on the fixture 2026-09-02, by ear: the same traverse was driven
+// at rising ceilings while listening to the motor, and the value kept is the last one at which it
+// still audibly got faster. Both axes came out at 40000 units/s -- 330 deg/s in pan across its
+// 540 degrees, 165 deg/s in tilt across 270, i.e. the full 16-bit range in about 1.6s either way,
+// which is what identical motors on two different arcs should give.
+//
+// Inferring this from "no run-on" instead, as was tried first, gave half the truth: an absence of
+// lag only proves the mechanism is at least that fast, never that it is not faster. It set pan to
+// 165 deg/s against a real 330 and was immediately and correctly rejected as making the head
+// slower than it had been. With no position feedback anywhere in DMX, the motor's pitch is the
+// only honest instrument available.
+int ptMaxRatePan  = 40000;
+int ptMaxRateTilt = 40000;
 float joyCurve = 1.5f;
 float joyMomentum = 0.7f;
 bool joyPanRev = false, joyTiltRev = false;
@@ -373,7 +405,16 @@ void updateEngines(unsigned long now) {
         joyHoldTime += dt;
         joyAccelMul = (joyCurve <= 0.05f) ? 1.0f : constrain(joyHoldTime / joyCurve, 0.0f, 1.0f);
       } else joyHoldTime = 0.0f;
-      float pD = joySmoothX * joyAccelMul * (joyMaxSpeed * 25.0f) * dt; float tD = joySmoothY * joyAccelMul * (joyMaxSpeed * 25.0f) * dt;
+      // The ceiling limits the SCALE, not the finished step. Clamping the step destroys
+      // proportional control: with a high Max Speed even a quarter of stick deflection already
+      // computes past the ceiling, so every deflection would deliver full capped speed and the
+      // stick becomes a switch. Reported immediately on the fixture. Clamping the scale keeps
+      // full deflection at the ceiling and half deflection at half of it, which is the point.
+      float ptScaleP = joyMaxSpeed * 25.0f, ptScaleT = ptScaleP;
+      if (ptScaleP > (float)ptMaxRatePan)  ptScaleP = (float)ptMaxRatePan;
+      if (ptScaleT > (float)ptMaxRateTilt) ptScaleT = (float)ptMaxRateTilt;
+      float pD = joySmoothX * joyAccelMul * ptScaleP * dt;
+      float tD = joySmoothY * joyAccelMul * ptScaleT * dt;
       
       exactPan += (joyPanRev ? pD : -pD); exactTilt += (joyTiltRev ? -tD : tD);
       exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
@@ -385,7 +426,10 @@ void updateEngines(unsigned long now) {
       float diffP = mapTargetPan - exactPan; float diffT = mapTargetTilt - exactTilt;
       float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 10.0f);
       float stepP = diffP * blend; float stepT = diffT * blend;
-      float maxStep = (joyMaxSpeed * 25.0f) * dt; if (fabsf(stepP) > maxStep) stepP = (stepP > 0 ? maxStep : -maxStep); if (fabsf(stepT) > maxStep) stepT = (stepT > 0 ? maxStep : -maxStep);
+      float maxStep = (joyMaxSpeed * 25.0f) * dt;
+      // Map-go moves both axes together, so it takes the stricter of the two ceilings.
+      float mgCap = (float)(ptMaxRatePan < ptMaxRateTilt ? ptMaxRatePan : ptMaxRateTilt) * dt;
+      if (maxStep > mgCap) maxStep = mgCap; if (fabsf(stepP) > maxStep) stepP = (stepP > 0 ? maxStep : -maxStep); if (fabsf(stepT) > maxStep) stepT = (stepT > 0 ? maxStep : -maxStep);
       
       exactPan += stepP; exactTilt += stepT; 
       exactPan = constrain(exactPan, (float)panMinLimit, (float)panMaxLimit); exactTilt = constrain(exactTilt, (float)tiltMinLimit, (float)tiltMaxLimit);
@@ -585,7 +629,7 @@ void setup() {
   Serial.begin(115200); if(!LittleFS.begin(true)) Serial.println("FS Error");
   prefs.begin("sys", true); String sta_ssid = prefs.getString("ssid", ""), sta_pass = prefs.getString("pass", ""); 
   dimSmoothVal = constrain(prefs.getInt("ds", 0), 0, 100); masterBrightness = prefs.getFloat("mdim", 1.0f); dipToBlack = prefs.getBool("dip", false);
-  joyMaxSpeed = prefs.getInt("j_msp", 2000); joyCurve = prefs.getFloat("j_crv", 1.5f); joyMomentum = prefs.getFloat("j_mom", 0.7f); joyPanRev = prefs.getBool("j_prv", false); joyTiltRev = prefs.getBool("j_trv", false); panMinLimit = prefs.getInt("j_pmi", 0); panMaxLimit = prefs.getInt("j_pma", 65535); tiltMinLimit = prefs.getInt("j_tmi", 0); tiltMaxLimit = prefs.getInt("j_tma", 65535);
+  joyMaxSpeed = prefs.getInt("j_msp", 2000); ptMaxRatePan = prefs.getInt("j_rtp", 40000); ptMaxRateTilt = prefs.getInt("j_rtt", 40000); joyCurve = prefs.getFloat("j_crv", 1.5f); joyMomentum = prefs.getFloat("j_mom", 0.7f); joyPanRev = prefs.getBool("j_prv", false); joyTiltRev = prefs.getBool("j_trv", false); panMinLimit = prefs.getInt("j_pmi", 0); panMaxLimit = prefs.getInt("j_pma", 65535); tiltMinLimit = prefs.getInt("j_tmi", 0); tiltMaxLimit = prefs.getInt("j_tma", 65535);
   chaserStartSlot = prefs.getInt("c_st", 0); chaserEndSlot = prefs.getInt("c_en", 3); fadeTime = prefs.getInt("c_fd", 2000); holdTime = prefs.getInt("c_hd", 2000); chaserTrigger = prefs.getInt("c_tr", 0); chaserSync = prefs.getInt("c_sy", 3); chaserOrder = prefs.getInt("c_or", 0); chaserFadeTrigger = prefs.getInt("c_ftr", 0); chaserFadeSync = prefs.getInt("c_fsy", 3); prefs.end();
   // presetNames[] is populated by loadAllChaserScenes() below — no need to read it separately here first.
   prefs.begin("patch", true); numFixtures = prefs.getInt("n", 1); if (numFixtures < 1 || numFixtures > 8) numFixtures = 1;
