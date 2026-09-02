@@ -244,7 +244,7 @@ void setupAPI() {
     // pre-smoothing median-detected value and most recent accepted (possibly octave-folded)
     // interval, loopMax is the worst main-loop gap in the last 5s -- pull these live via curl
     // to check the BPM detection and loop-jitter theories against real audio instead of guessing.
-    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs)
+    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec)
             + ",\"audUs\":" + String(audioLastUs) + ",\"audMax\":" + String(audioMaxUs)
             + ",\"fftUs\":" + String(fftLastUs)
             + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs)

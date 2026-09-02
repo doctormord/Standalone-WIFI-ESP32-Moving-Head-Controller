@@ -69,6 +69,7 @@ unsigned long beatCount = 0;
 // the beat-sync/BPM logic itself -- is a contributor to observed timing glitches.
 unsigned long loopLastMs = 0;
 unsigned long loopMaxMs = 0;
+uint32_t loopsPerSec = 0;   // measured loop rate, see loop()
 unsigned long loopMaxWindowStart = 0;
 const float syncBeats[7] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125};
 // Movement patterns take real time to trace (pan/tilt slew is finite) — a
@@ -586,6 +587,19 @@ void loop() {
     else if (delta > loopMaxMs) loopMaxMs = delta;
   }
   loopLastMs = loopNow;
+  // Loop iterations per second. Every per-loop cost has to be multiplied by this to become a
+  // share of wall time, so without it any statement about what the loop costs is arithmetic on
+  // an unknown. Note delay(2) at the bottom of loop() sets the floor: the rate is roughly
+  // 1 / (2ms + work), not "as fast as the chip goes".
+  {
+    static unsigned long loopRateWindow = 0;
+    static uint32_t loopTicks = 0;
+    loopTicks++;
+    if (loopNow - loopRateWindow >= 1000) {
+      loopsPerSec = (loopNow - loopRateWindow) ? (uint32_t)((uint64_t)loopTicks * 1000UL / (loopNow - loopRateWindow)) : loopTicks;
+      loopRateWindow = loopNow; loopTicks = 0;
+    }
+  }
 
   server.handleClient();
   ArduinoOTA.handle();
