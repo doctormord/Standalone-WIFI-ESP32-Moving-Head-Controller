@@ -4981,3 +4981,74 @@ jedes Mal Werte an *einem* laufenden Track eingestellt und als allgemeingültig 
 beim nächsten Track als trackspezifisch entlarvt. Der Simulator existiert genau dafür und wurde
 dabei nicht benutzt. Die Regel für künftige Sessions: **Parametersuche gehört in `sim/`, am Gerät
 wird verifiziert, nicht gesucht.**
+
+### 2026-09-02 (3) — Tempo-Anzeige: Tap als Anker, Band statt Sprünge, und ein Reset
+
+Nach dem Prüfplan kam die Praxis, und die förderte drei Dinge zutage, von denen keines eine
+Frage der Erkennung war — die läuft laut User „bei House erstmal gut". Es ging durchweg um das,
+was mit dem Messwert danach passiert.
+
+**Der Tap sperrte den Tracker dauerhaft aus.** Ein einziger Tap setzte `tempoTapLock`, und der
+einzige Weg zurück war `/audio_tune?tap=0` — nur im AUDIO-Tab erreichbar. Tappen macht man
+mitten im Set, auf das Licht schauend; ein Tap kostete also die automatische Verfolgung für den
+Rest des Abends, aus einem Tab heraus, der keinen Rückweg anbietet. **Das war meiner zu finden:**
+ich hatte genau diese Sperre am Vortag in der Hand, festgestellt, dass sie fälschlich in NVS
+landete, das behoben — und nie gefragt, ob Sperren überhaupt der richtige Entwurf ist. Der
+Kommentar im Code behauptete es, und ich habe die Behauptung als Begründung akzeptiert.
+
+Neu: **ein Tap ankert, er sperrt nicht.** Er ist weit bessere Auskunft über die *Stufe der
+Taktleiter* als über die Zahl — und auf der falschen Stufe zu landen ist die charakteristische
+Schwäche des Trackers (Hip-Hop 98 → gemeldet 132, also 4/3). Der Tracker misst also weiter, und
+sein Ergebnis wird auf das nächstliegende einfache Verhältnis (½, ⅔, ¾, 1, 4/3, 3/2, 2) zum
+getappten Wert gefaltet, sofern es innerhalb von 8 % passt. Passt gar nichts, hat sich das Tempo
+wirklich geändert und der Anker verfällt nach 20 Auswertungen. Arbeitsteilung: **der Mensch ist
+besser in der Stufe, das Gerät im Feinwert.**
+
+Der Modus ist jetzt explizit, wird persistiert und startet auf Auto. Der TAP-Knopf trägt ihn:
+kurzer Druck tappt, langer Druck schaltet um, und er leuchtet, solange automatisch verfolgt wird.
+
+**Zwei Fehler beim Bauen, beide lehrreich.** Der NVS-Lesezugriff landete fünfzehn Zeilen
+*unterhalb* von `prefs.end()`, wo ein Lesevorgang nicht scheitert, sondern still den Vorgabewert
+liefert — der Modus sah gespeichert aus und kam nach jedem Neustart als „auto" zurück. Und der
+Halte-Timer für den langen Druck lag im Abschluss einer Funktion, die bei *jedem* Rendern neu
+läuft; ein Tap ändert die BPM, löst ein Rendern aus, und das folgende `pointerup` stammte aus
+einem neuen Abschluss, dessen Timer null war. Der alte lief weiter und schaltete um: **zwei
+schnelle Taps schalteten die Automatik ab.** Also ausgerechnet beim Tempo-Tappen, das per
+Definition aus schnellen Folgedrücken besteht.
+
+**Das Tempo sprang: 120 → 83 → 136 innerhalb von Sekunden.** Der User formulierte die fehlende
+Regel: *„ein Wechsel von 120 auf 83 ist einfach unrealistisch. also ±15 % okay, ansonsten per
+Hand neues Grund-BPM tappen."* Genau so gebaut — der gemeldete Wert lebt in einem Band um den
+etablierten, außerhalb wird nicht veröffentlicht. Ergänzt um eine Neuerfassung nach 30 Sekunden
+durchgängiger Abweichung, damit die Anzeige nach einem echten Trackwechsel nicht stumm festhängt.
+
+**Und dann die eigentliche Ursache, die alles davor überlagert hatte.** Ein zweiter Schreiber auf
+`globalBPM` ging am Band vorbei:
+
+```c
+if (now - lastBassTime > SILENCE_TIMEOUT_MS) {   // 2500 ms
+    globalBPM = BPM_DEFAULT_FALLBACK;            // 120
+```
+
+Nach 2,5 Sekunden ohne Kick wurde das Tempo auf einen fest verdrahteten Wert gesetzt und die
+Intervall-Historie gelöscht. Ein House-Breakdown läuft routinemäßig länger. **Das „fällt in
+ruhigen Stellen ab" war also kein Messfehler, sondern ein Reset** — und die 120 waren beliebig:
+auf einem 120er-Track unsichtbar, auf jedem anderen falsch. Bei Stille ist das zuletzt Gehörte
+die beste verfügbare Information, und fürs Licht auch die gewünschte: der Puls läuft im
+Breakdown im Tempo des Tracks weiter, bereit für den Drop.
+
+Gemessen gegen einen bestätigten 118–122-BPM-House-Track: Schwankung **68 → 28 BPM**, gemeldeter
+Wert zu über der Hälfte fest auf 119. Der Rest liegt planmäßig innerhalb des ±15-%-Bandes.
+
+### Methodik: zweimal gegen eine ungültige Wahrheit gemessen
+
+Eine Messreihe über 90 s ergab „Schwankung 4 BPM" — abgefragt wurde dabei nur `/api/state`, wo
+der Pegel gar nicht enthalten ist. Ob überhaupt Musik lief, war damit unbelegt; der User äußerte
+den Verdacht, und widerlegen ließ er sich nicht mehr. Kurz darauf verglich ich eine Messung gegen
+„120 BPM" aus einer früheren Nachricht, während längst ein anderer Abschnitt lief — auch das
+entwertete der User zu Recht mit *„vielleicht waren es auch einfach echte 111"*.
+
+**Regel daraus: Wahrheit wird zum Zeitpunkt der Messung erhoben, nicht erinnert.** Der Tap-Anker
+taugt dafür als Instrument — der User tappt ein paar Takte, und `tAnchor` gegen `tBPM` auf
+`/api/state` liefert Wahrheit und Messung im selben Moment, ohne Rückfrage. Und jede
+Tempomessung führt Pegel und Onset-Rate mit, sonst ist sie nicht deutbar.

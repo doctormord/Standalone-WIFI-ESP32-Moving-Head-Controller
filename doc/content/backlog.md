@@ -153,6 +153,17 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ### Offen aus der Audio-Überarbeitung (2026-09-02)
 
+- **Kurzes Clipping trotz Auto-Gain beobachtet.** Bei einer Messung tauchte ein Pegel von 111 %
+  auf; die automatische Bereichswahl hat nicht rechtzeitig heruntergeregelt. Ihr Abwärtspfad
+  wartet 1 s auf Bestätigung, was für einen einzelnen lauten Transienten zu träge ist. Zu klären,
+  ob das in der Praxis stört — Clipping schadet der Erkennung nachweislich, aber ein einzelnes
+  übersteuertes Frame vermutlich nicht.
+
+- **Tempo-Restschwankung liegt planmäßig im Band.** Nach dem Entfernen des Stille-Resets bleiben
+  auf House ±15 % Bewegung, also z. B. ein 138er-Ausschlag bei einer Basis von 121. Das ist keine
+  Fehlfunktion, sondern die vom User gewählte Bandbreite. Falls es im Betrieb zu unruhig wirkt,
+  ist `/audio_tune?slew=10` die naheliegende Verschärfung — bewusst nicht vorweggenommen.
+
 - **Der Intervall-Median scheitert an synkopiertem Material — strukturell, nicht durch
   Einstellung.** Am Gerät gemessen auf einem Hip-Hop-Track mit 98 BPM (Beat = 612 ms): der
   Detektor rastet auf **454 ms** ein, und das ist mit 1 % Genauigkeit **¾ Beat** (459 ms). Die
