@@ -159,10 +159,11 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   ob das in der Praxis stört — Clipping schadet der Erkennung nachweislich, aber ein einzelnes
   übersteuertes Frame vermutlich nicht.
 
-- **Tempo-Restschwankung liegt planmäßig im Band.** Nach dem Entfernen des Stille-Resets bleiben
-  auf House ±15 % Bewegung, also z. B. ein 138er-Ausschlag bei einer Basis von 121. Das ist keine
-  Fehlfunktion, sondern die vom User gewählte Bandbreite. Falls es im Betrieb zu unruhig wirkt,
-  ist `/audio_tune?slew=10` die naheliegende Verschärfung — bewusst nicht vorweggenommen.
+- ~~**Tempo-Restschwankung liegt planmäßig im Band.**~~ **Erledigt 2026-09-02 abends** — und die
+  Einschätzung war falsch. Das „Band" prüfte gegen den zuletzt akzeptierten Wert und war damit ein
+  Schrittbegrenzer: jede Sekunde 15 % weiter, vier Schritte von 122 auf 66. Gemessen 68..163 über
+  eine Minute. Es liegt jetzt um eine langsam driftende Referenz bzw. um den Tap-Anker; danach
+  112..149 ohne Anker. Siehe `history.md`, vierter Eintrag vom 2026-09-02.
 
 - **Der Intervall-Median scheitert an synkopiertem Material — strukturell, nicht durch
   Einstellung.** Am Gerät gemessen auf einem Hip-Hop-Track mit 98 BPM (Beat = 612 ms): der
@@ -182,17 +183,35 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   Das war richtig: er lief auf den unbrauchbaren Onsets des damals defekten Komparators. Mit den
   jetzt sauberen Onsets wäre er das passende Werkzeug und gehört neu gebaut.
 
-  **Im Simulator entwickeln, nicht am Gerät.** `sim/` braucht dafür einen synkopierten Kick als
-  Testmuster; dort gibt es exakte Wahrheit und wiederholbare Läufe. Am laufenden Track wurden
-  heute dreimal Werte eingestellt, die sich als trackspezifisch herausstellten.
+  **Aufgearbeitet 2026-09-02 abends.** `sim/` hat jetzt synkopierte Muster und einen
+  `compare`-Modus; über 5 Muster × 6 Tempi erreicht der Intervall-Median 31 %, harmonisch
+  summierte Autokorrelation über alle drei Bänder 81 %, mit Anker 100 %. **Am echten Track
+  erreichte die Variante ohne Anker aber nur 7 %** — der Prior bei 120 BPM zieht dort zur
+  falschen Antwort. Deshalb wurde nichts portiert: der Mehrwert wäre Betrieb ohne Tap, und genau
+  dort versagt das Verfahren ebenfalls. Das vorhandene Ratio-Folding auf den Anker löst den Fall
+  (`tBPM 129`, `bpm 98` auf 97-BPM-Hip-Hop). Bleibt offen **als Option**, falls je tapfreier
+  Betrieb auf synkopiertem Material gefordert wird — mit realistischem Aufwand: 8-s-Onset-Ring,
+  ~180k MAC pro Auswertung, geschätzt 4–5 ms einmal pro Sekunde, ungemessen.
 
 - **CPU-Messung am Gerät steht aus.** Drei Detektorbänder statt einem sind dreifache Last pro
   Sample; im Gegenzug läuft die FFT nur noch bei offenem AUDIO-Tab und Mid/High nur bei
   tatsächlichem Routing. Netto sollte es günstiger sein als vorher, ist aber **nicht gemessen**.
   `audUs`/`fftUs`/`loopMax` je einmal mit geschlossenem und offenem Browser prüfen. Notausgang:
   `/audio_tune?sab=0`.
-- **Alles ab Commit `b6bcc92` ist auf Hardware unverifiziert.** Verifiziert ist nur der Stand
-  davor (Onset-Median 456 ms gegen wahre 451). Prüfplan in `handoff.md`, Schritt 0 ist `drift`.
+- ~~**Alles ab Commit `b6bcc92` ist auf Hardware unverifiziert.**~~ **Erledigt** — der
+  Prüfplan wurde am Fixture durchgespielt, und die Beat-Uhr am 2026-09-02 abends zusätzlich am
+  DMX-Ausgang vermessen (Zykluslänge, Phasenlage der Kicks im Effektzyklus, A/B mit und ohne
+  Audio). Offen bleibt allein die CPU-Messung, siehe unten.
+
+- **Ein Fehltap ist eine Falle, die sich nicht automatisch auflösen lässt.** Ein Tap von 82 bei
+  echten 120 ergibt 1,46; die Rasterstufe 3/2 liegt 2,4 % daneben, die Faltung gelingt also
+  dauerhaft und der Anker verfällt nie. Dieses Signal ist von dem gewollten Fall (Hip-Hop, Anker
+  faltet dauerhaft mit 4/3) **nicht unterscheidbar** — jede Automatik dagegen würde die
+  Synkopen-Erkennung mit zerstören. Ausweg ist ein neuer Tap oder zweimal Langdruck auf TAP.
+  Ein Vorschlag, den Ankerwert in der UI sichtbar zu machen, wurde bewusst abgelehnt.
+
+- **FX-Zustand und Tap-Anker überleben keinen Neustart.** Nach jedem Flash einmal tappen und die
+  Effekte wieder einschalten. Zweimal hat das eine Messung entwertet, bevor es auffiel.
 - **Schwellenfaktor gegen echte Musik nicht abschließend eingemessen.** Im Simulator ist er
   unkritisch, weil dessen Kunsttrack sauber ist; bei absichtlich basslastigem Material fällt die
   Treffergenauigkeit auf 27–64 % (das Tempo bleibt richtig, weil der Intervallfilter die

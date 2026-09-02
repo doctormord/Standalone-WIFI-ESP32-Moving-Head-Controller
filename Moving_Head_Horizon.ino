@@ -439,7 +439,24 @@ void updateEngines(unsigned long now) {
       if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; }
   }
 
-  if (globalBPM > 0) { unsigned long beatInterval = 60000 / globalBPM; if (now - lastBeatTime >= beatInterval) { lastBeatTime = now; beatTriggered = true; beatCount++; } }
+  // Signed comparison, because the audio phase-lock is allowed to place lastBeatTime slightly in
+  // the FUTURE (see Audio_Engine.h). Unsigned, such a value underflows to ~4 billion and fires
+  // this metronome on every single loop iteration.
+  if (globalBPM > 0) {
+    long beatInterval = 60000L / globalBPM;
+    if ((long)(now - lastBeatTime) >= beatInterval) {
+      // Advance the grid by exactly one interval instead of snapping to `now`. Snapping threw the
+      // sub-interval phase away on every beat, which left the audio phase-lock with nothing to
+      // measure against: it could only ever see onsets arriving BEFORE the next grid point, so it
+      // pulled the grid earlier and never later, and a grid running slightly fast drifted away
+      // from the music unchecked. Keeping the grid as a real clock makes the phase error signed.
+      lastBeatTime += (unsigned long)beatInterval;
+      // More than a whole beat behind means a genuine stall (or a tempo that just jumped); catch
+      // up in one step rather than firing repeatedly to work through the backlog.
+      if ((long)(now - lastBeatTime) >= beatInterval) lastBeatTime = now;
+      beatTriggered = true; beatCount++;
+    }
+  }
   // Trigger==1 (BPM sync) FX derive their phase from the shared beatCount/lastBeatTime clock every
   // tick (see Modulator::process()/MovementEngine::process()), not from their own .phase/.modPhase
   // field -- a per-FX phase=0 write here used to be silently discarded the very next updateEngines()
@@ -455,7 +472,9 @@ void updateEngines(unsigned long now) {
   // replaced (now - masterSyncTime) % interval. beatCount only advances on confirmed whole beats;
   // the fractional term interpolates smoothly within the current beat.
   float beatIntervalMsF = globalBPM > 0 ? 60000.0f / (float)globalBPM : 500.0f;
-  float beatsElapsedTotal = (float)beatCount + constrain((float)(now - lastBeatTime) / beatIntervalMsF, 0.0f, 1.0f);
+  // Signed for the same reason; a beat clock momentarily ahead of `now` contributes a fractional
+  // part of 0, which is correct -- that beat has been counted and no time has elapsed into it yet.
+  float beatsElapsedTotal = (float)beatCount + constrain((float)(long)(now - lastBeatTime) / beatIntervalMsF, 0.0f, 1.0f);
 
   if (moveFX.active) moveFX.process(now, beatsElapsedTotal, moveSyncBeats);
 

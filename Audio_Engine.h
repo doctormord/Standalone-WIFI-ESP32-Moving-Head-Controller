@@ -698,6 +698,18 @@ inline bool tempoAuto = true;
 inline int  tempoSlewPct = 15;      // the band, in percent, around the established tempo
 inline int  tempoJumpConfirm = 30;  // evaluations of agreement before adopting outside it
 inline int  tapAnchorMiss = 0;   // consecutive evaluations fitting no rung
+// Which tempo evaluation the anchor has already been reconciled against. The fold below lives in
+// pollAudioEngine(), which runs once per audio block -- about 31 times a second -- while
+// trackedBPM is only recomputed once a second by tempoEvalMedian(). Without this sequence check
+// the SAME measurement was tested against the rungs ~31 times and each failure counted as its own
+// miss, so "20 consecutive evaluations" was really 0.64 seconds and a single measurement that
+// happened not to fit killed the anchor before the next one existed. Measured on hardware
+// 2026-09-02: six taps on a hip-hop track, six anchors, lifetimes 0,0,0,11,0,0 seconds, and the
+// reported tempo sat at 85 instead of 100 for 92% of three minutes.
+inline int tempoRef = 0;               // slow reference the reported tempo is allowed to sit around
+inline int beatGridMiss = 0;           // consecutive onsets landing nowhere near the beat grid
+inline uint32_t tempoEvalSeq = 0;      // bumped by tempoEvalMedian on every new measurement
+inline uint32_t tapAnchorSeq = 0;      // the last one the anchor logic has seen
 inline int  tapAnchorBPM = 0;      // last tapped tempo, 0 = none. Deliberately not persisted:
                                    // it is a statement about the music playing now.
 inline bool tempoTapLock = false;  // kept as the inverse of tempoAuto for the existing API
@@ -795,6 +807,7 @@ inline void tempoEvalMedian(uint32_t nowMs) {
   trackedBPM = constrain((int)(60000UL / med), BPM_MIN_LIMIT, BPM_MAX_LIMIT);
   trackedScore = n;          // how many gaps the answer rests on, for the AUDIO tab
   dbgLagMilli = (int32_t)med;
+  tempoEvalSeq++;            // a genuinely new measurement, which is what the anchor counts
 }
 
 inline void tempoTrackerPush(int32_t flux, unsigned long now) {
@@ -1163,28 +1176,52 @@ void pollAudioEngine() {
       // PHASE, and only when it lands near where a beat was expected. Absorbing a quarter of the
       // error per beat locks on within a few beats while ignoring individual stray hits.
       {
-        unsigned long interval = (globalBPM > 0) ? (unsigned long)(MS_PER_MINUTE / globalBPM) : 500UL;
+        long interval = (globalBPM > 0) ? (long)(MS_PER_MINUTE / globalBPM) : 500L;
+        // The phase error against the running grid, folded into +/- half a beat so that it is
+        // SIGNED and symmetric: positive means the onset came after the grid beat (the grid is
+        // running fast and must be held back), negative means it came before the next one (the
+        // grid is slow and must be pulled forward).
+        //
+        // The previous form, sinceLast - interval, could only ever be negative in practice. The
+        // metronome consumes each beat the instant the grid reaches it, so an onset arriving after
+        // that point measured as almost a whole interval early and fell outside the window; the
+        // grid was correctable in one direction only. Reported live 2026-09-02: after a hard sync
+        // the effect sat right and then walked away from the music.
         long sinceLast = (long)(now - lastBeatTime);
-        long err = sinceLast - (long)interval;
+        long err = sinceLast;
+        if (err > interval / 2) err -= interval;
 
-        if (sinceLast > (long)(interval * 7 / 4)) {
-          // Grid lost -- playback just started, or beats were missed for a while. Re-establish it
-          // outright rather than crawling back a quarter of a huge error at a time.
-          lastBeatTime = now;
-          beatCount++;
-          masterSyncTime = now;
-        } else if (labs(err) <= (long)(interval * 3 / 10)) {
-          // Close to the prediction: advance exactly one beat and take a quarter of the error.
-          long adj = (long)interval + err / 4;
-          if (adj < 0) adj = 0;
-          unsigned long newLast = lastBeatTime + (unsigned long)adj;
-          // Never move the clock into the future: (now - lastBeatTime) is unsigned in the .ino,
-          // so a lastBeatTime past `now` would underflow to a huge value and fire the internal
-          // metronome immediately, every loop.
-          if (newLast > now) newLast = now;
-          lastBeatTime = newLast;
-          beatCount++;
+        // +/-15%, not +/-30%. A phase detector may only be fed onsets that plausibly ARE the beat.
+        // At 30% the window swallowed the off-beat hits of syncopated material -- a boom-bap kick
+        // sits a quarter of a beat off the grid -- and each of those dragged the grid a sixteenth
+        // of a beat in whichever direction it happened to lie. Measured at the DMX output: 8%
+        // cycle jitter at 30%, against 3% with the audio engine switched off entirely.
+        if (labs(err) <= (long)(interval * 3 / 20)) {
+          // PHASE ONLY. The beat itself is counted by the metronome in updateEngines(), which runs
+          // at globalBPM; here the grid is merely pulled a quarter of the error toward the onset.
+          //
+          // Counting the beat here was the jitter. Because that metronome consumes every beat the
+          // moment the grid reaches it, the only onsets that can still arrive in this branch are
+          // EARLY ones -- a late onset finds sinceLast just reset and falls outside the window. So
+          // every correction incremented beatCount ahead of the grid and jumped beatsElapsedTotal
+          // forward by up to the full 30% the window admits. Measured at the DMX output
+          // 2026-09-02: a one-beat dimmer cycle nominally 488ms ran as short as 336ms (0.69 --
+          // precisely that window edge), against 455..513ms with the audio engine switched off.
+          // Nudging instead of counting keeps the phase continuous: the grid drifts toward the
+          // music over a few beats and the effect never skips.
+          lastBeatTime = (unsigned long)((long)lastBeatTime + err / 4);
           masterSyncTime = lastBeatTime;
+          beatGridMiss = 0;
+        } else if (++beatGridMiss > 40) {
+          // Nothing has landed near the grid for a long while -- at a couple of onsets a second
+          // that is on the order of twenty seconds. Playback restarted, or the track changed;
+          // re-establish the downbeat outright. The threshold has to be generous now that the
+          // window is narrow, or syncopated material would force a resync it does not need. beatCount is deliberately NOT touched --
+          // it is advanced by the metronome alone, and that single ownership is what keeps the
+          // effect phase continuous instead of jumping whenever an onset arrives early.
+          lastBeatTime = now;
+          masterSyncTime = now;
+          beatGridMiss = 0;
         }
         // Otherwise: an off-grid onset. It still counts as an FX trigger above -- that is what an
         // audio trigger is for -- but it must not be allowed to drag the tempo grid with it.
@@ -1276,7 +1313,10 @@ void pollAudioEngine() {
   // to have just fired, it works off the rolling flux history.
   if (audioUseTracker && trackedBPM > 0 && hwAudioEnabled && tempoAuto) {
     // Fold the measurement onto the rung the tap identified, when there is one and it fits.
-    if (tapAnchorBPM >= BPM_MIN_LIMIT) {
+    // Once per new measurement, not once per audio block -- see tempoEvalSeq. The fold rewrites
+    // trackedBPM in place, so re-running it on an unchanged value would achieve nothing anyway.
+    if (tapAnchorBPM >= BPM_MIN_LIMIT && tempoEvalSeq != tapAnchorSeq) {
+      tapAnchorSeq = tempoEvalSeq;
       static const float kRatios[] = { 0.5f, 2.0f/3.0f, 0.75f, 1.0f, 4.0f/3.0f, 1.5f, 2.0f };
       float r = (float)trackedBPM / (float)tapAnchorBPM;
       float best = 0; float bestErr = 1e9f;
@@ -1318,14 +1358,40 @@ void pollAudioEngine() {
     // after it has said the same thing for thirty consecutive evaluations, which is thirty
     // seconds. That is nowhere near "within seconds" and it is not a dead end either. Tapping
     // remains the immediate way to set a new base, which is what a tap is for.
+    // The band has to be measured against something that does NOT move with every accepted
+    // reading. Gating against globalBPM itself made this a rate limiter, not a band: each
+    // evaluation was free to move 15%, so four of them in four seconds carried the tempo from
+    // 122 to 66 and nothing in the code objected -- every single step was "small". Measured live
+    // 2026-09-02: 66..128 over two minutes with a tap anchor standing at 122 the whole time, and
+    // 68..163 with no anchor at all. The dimmer effect faithfully followed all of it, which is
+    // what "es laeuft auseinander" and "springt auf 72 in ruhigen Stellen" actually were.
+    //
+    // A tap is the best reference there is, because it is the one number the user asserted. With
+    // no tap, a slowly-moving average of what has been accepted stands in: it still follows a
+    // genuine drift, but sixteen times slower than the readings themselves, so a run of bad
+    // evaluations in a quiet passage cannot walk the tempo away.
     static int pendCand = 0, pendCount = 0;
-    int diffPct = (globalBPM > 0) ? (abs(shown - globalBPM) * 100 / globalBPM) : 100;
-    if (diffPct <= tempoSlewPct) {
+    if (tempoRef <= 0) tempoRef = shown;
+    bool anchored = (tapAnchorBPM >= BPM_MIN_LIMIT);
+    int ref = anchored ? tapAnchorBPM : tempoRef;
+    // With an anchor the band must match the rung tolerance the fold above uses. At 15% it did
+    // not: a tap of 125 against a tracker reading 112 is 10.4% off -- too far for the fold to
+    // recognise it as the same rung, so the raw 112 passed through unfolded, yet close enough for
+    // the band to publish it. The tap was overwritten by the next evaluation, one second later.
+    // Reported live 2026-09-02: "ich tappe 125 rein und er springt sofort runter auf 112".
+    // Not a regression from the reference-band change -- the old code compared against globalBPM,
+    // which equals the tapped value right after a tap, so the arithmetic was identical.
+    int band = anchored ? 8 : tempoSlewPct;
+    int diffPct = (ref > 0) ? (abs(shown - ref) * 100 / ref) : 100;
+    if (diffPct <= band) {
       globalBPM = shown; pendCount = 0; pendCand = 0;
+      if (!anchored) tempoRef += (shown - tempoRef) / 16;   // the reference drifts, it does not chase
     } else {
-      if (pendCand > 0 && (abs(shown - pendCand) * 100 / pendCand) <= tempoSlewPct) pendCount++;
+      if (pendCand > 0 && (abs(shown - pendCand) * 100 / pendCand) <= tempoSlewPct) pendCount++;   // NOLINT
       else { pendCand = shown; pendCount = 1; }
-      if (pendCount >= tempoJumpConfirm) { globalBPM = shown; pendCount = 0; pendCand = 0; }
+      // Thirty evaluations saying the same new thing: the music really did change. Adopt it and
+      // move the reference with it, otherwise the band would keep pulling back to the old tempo.
+      if (pendCount >= tempoJumpConfirm) { globalBPM = shown; tempoRef = shown; pendCount = 0; pendCand = 0; }
     }
   }
   audioLastUs = micros() - pollT0;

@@ -874,12 +874,19 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     const raw = telemetry.raw || {};
     const micPk = raw.pk || 0, micClip = raw.clip || 0;
     const micPct = Math.round((micPk / 32767) * 100);
+    // Every label is padded to the same character count and rendered with white-space:pre in a
+    // monospace face, so the badge keeps one width from 0% to 100%. tabular-nums alone does not
+    // do this -- it aligns digits of equal count, and the problem here is that the COUNT changes
+    // (8% vs 100%), which reflows the whole header row. Same bug as the BPM readout on the TAP
+    // button, same fix. The auto-gain marker is likewise a permanent slot rather than an
+    // appearing character: it changes opacity, not the layout.
+    const micNum = String(micPct).padStart(3);
     const micState = !micOn ? { show: false }
-      : (raw.rclip || 0) > 0 ? { show: true, color: '#f87171', label: 'MIC SAT',
+      : (raw.rclip || 0) > 0 ? { show: true, color: '#f87171', label: 'MIC  SAT', auto: !!raw.ag,
           title: 'The microphone itself is saturating - the signal arrives already flat-topped, so turning the input gain down cannot recover it. Move the mic away from the speaker.' }
-      : micClip > 0 ? { show: true, color: '#f87171', label: `CLIP ${micPct}%`, title: raw.ag ? `Mic input is clipping (${micClip} saturated samples in the last frame). Auto range will bring it down within a second.` : `Mic input is clipping (${micClip} saturated samples in the last frame). Lower the input gain on the AUDIO tab, or set it to AUTO.` }
-      : micPct < 8 ? { show: true, color: '#fbbf24', label: `MIC ${micPct}%`, title: 'Mic level is very low - raise the input gain on the AUDIO tab, or beat detection will have nothing to work with.' }
-      : { show: true, color: '#4ade80', label: `MIC ${micPct}%${raw.ag ? ' A' : ''}`, title: raw.ag ? 'Mic level has headroom and is not clipping; input range is being set automatically.' : 'Mic level has headroom and is not clipping.' };
+      : micClip > 0 ? { show: true, color: '#f87171', label: `CLIP${micNum}%`, auto: !!raw.ag, title: raw.ag ? `Mic input is clipping (${micClip} saturated samples in the last frame). Auto range will bring it down within a second.` : `Mic input is clipping (${micClip} saturated samples in the last frame). Lower the input gain on the AUDIO tab, or set it to AUTO.` }
+      : micPct < 8 ? { show: true, color: '#fbbf24', label: `MIC ${micNum}%`, auto: !!raw.ag, title: 'Mic level is very low - raise the input gain on the AUDIO tab, or beat detection will have nothing to work with.' }
+      : { show: true, color: '#4ade80', label: `MIC ${micNum}%`, auto: !!raw.ag, title: raw.ag ? 'Mic level has headroom and is not clipping; input range is being set automatically.' : 'Mic level has headroom and is not clipping.' };
 
     return (
       <div style={{ height: 46, padding: '0 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.05)', background: 'rgba(255,255,255,0.015)', flex: '0 0 auto', gap: 12 }}>
@@ -908,14 +915,15 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                 <rect key={i} x={i*3-2} y={16-i*3} width="2" height={i*3} rx="1" fill={i <= qBars ? pingColor : 'rgba(255,255,255,0.12)'} />
               ))}
             </svg>
-            <span style={{ color: pingColor, fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontFamily: '"JetBrains Mono", monospace', fontSize: 10.5, letterSpacing: 0.2 }}>{connected ? `${ping}ms` : 'OFF'}</span>
+            <span style={{ color: pingColor, whiteSpace: 'pre', fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontFamily: '"JetBrains Mono", monospace', fontSize: 10.5, letterSpacing: 0.2 }}>{connected ? `${String(ping).padStart(3)}ms` : '  OFF'}</span>
           </div>
           {micState.show && (
             <div title={micState.title} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 8px', borderRadius: 7, background: `${micState.color}18`, border: `1px solid ${micState.color}40` }}>
               <svg width="11" height="11" viewBox="0 0 16 16" fill={micState.color}>
                 <rect x="6" y="1" width="4" height="8" rx="2" /><path d="M4 7v1a4 4 0 0 0 8 0V7h1.2v1a5.2 5.2 0 0 1-4.6 5.16V15H7.4v-1.84A5.2 5.2 0 0 1 2.8 8V7H4z" />
               </svg>
-              <span style={{ color: micState.color, fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontFamily: '"JetBrains Mono", monospace', fontSize: 10.5, letterSpacing: 0.2 }}>{micState.label}</span>
+              <span style={{ color: micState.color, whiteSpace: 'pre', fontVariantNumeric: 'tabular-nums', fontWeight: 600, fontFamily: '"JetBrains Mono", monospace', fontSize: 10.5, letterSpacing: 0.2 }}>{micState.label}</span>
+              <span title={micState.auto ? 'Input range is set automatically (AUTO on the AUDIO tab).' : 'Input range is set by hand on the AUDIO tab.'} style={{ color: micState.color, opacity: micState.auto ? 1 : 0.22, whiteSpace: 'pre', fontWeight: 700, fontFamily: '"JetBrains Mono", monospace', fontSize: 10.5, letterSpacing: 0.2 }}>A</span>
             </div>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>

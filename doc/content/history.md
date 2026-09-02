@@ -5052,3 +5052,130 @@ entwertete der User zu Recht mit *„vielleicht waren es auch einfach echte 111"
 taugt dafür als Instrument — der User tappt ein paar Takte, und `tAnchor` gegen `tBPM` auf
 `/api/state` liefert Wahrheit und Messung im selben Moment, ohne Rückfrage. Und jede
 Tempomessung führt Pegel und Onset-Rate mit, sonst ist sie nicht deutbar.
+
+## 2026-09-02 (vierter Eintrag): Schätzer-Vergleich im Simulator, und vier Fehler in der Beat-Uhr
+
+### Teil 1 — Der Periodensucher im Simulator
+
+`sim/` bekam synkopierte Kick-Muster (`--pattern four|hiphop|broken|dnb|half`) und einen
+`compare`-Modus, der mehrere Tempo-Schätzer auf **demselben** Onset-Strom und **denselben**
+gleitenden Fenstern gegeneinander misst. Das `hiphop`-Muster (Kicks auf 0, ¾, 1¼, 2½ Beats)
+reproduziert den Hardware-Befund exakt: der Intervall-Median rastet auf ¾ Beat ein. Damit war es
+ein Testfall und keine Erzählung.
+
+Fünf Muster × sechs Tempi, Anteil der 8-Sekunden-Fenster innerhalb 4 % der Wahrheit:
+
+    Median B    31%   Median der Abstände über Bass-Onsets — was die Firmware tat
+    ACF+H B     15%   harmonisch summierte Autokorrelation, weiterhin nur Bass
+    +Prior B    25%   ... plus log-gaußscher Tempo-Prior bei 120 BPM
+    +Prior A    81%   ... über Bass UND Mid UND High zusammen
+    +Anker A   100%   ... mit dem Prior auf den getappten Anker zentriert
+
+**Erster Befund: das Material zählte mehr als die Mathematik.** Nur Bass: 15–31 %, egal welches
+Verfahren. Dieselbe Mathematik über alle drei Bänder: 81 %. Ein Boom-Bap-Kickmuster nennt den
+Beat schlicht nicht, und nichts Nachgeschaltetes kann herausholen, was nie im Signal war. Snare
+auf 2 und 4 und Hi-Hats auf den Achteln nennen ihn deutlich — und beide werden längst detektiert,
+sie wurden dem Tempo-Schätzer nur nie gezeigt.
+
+**Zweiter Befund: die Oktave entscheidet nur der Anker.** Ein Prior allein kann es nicht: damit
+174 gegen 87 gewinnt, muss er über 123 BPM liegen, damit 90 gegen 180 gewinnt, unter 127 — ein
+4-BPM-Fenster für einen 60–200-Bereich. Ein Sweep über Zentrum 100–140 und Breite 0,6–1,8 Oktaven
+ist ein flaches Plateau bei 81 %; 120/0,9 ist bereits optimal, Tuning bringt nichts.
+
+### Und die Korrektur daran, am echten Track
+
+Auf einer Aufnahme echter Gerät-Onsets (Hip-Hop, getappte Wahrheit 97 BPM) erreichte
+„alle Bänder + Prior bei 120" nur **7 %**, nicht 81 %. Der Prior zieht dort aktiv zur falschen
+Antwort, weil 130 näher an 120 liegt als 97. Was die Bänder wirklich leisten, zeigt erst die
+Ankerspalte: 51 % (nur Bass) → 91 % (alle drei). **Der Anker ist notwendig, die Bänder machen ihn
+gut** — nicht umgekehrt, wie der Simulator vormittags nahelegte.
+
+Praktische Folge: **eine Portierung der Autokorrelation wurde nicht gemacht.** Ihr einziger
+Mehrwert wäre Betrieb ohne Tap, und ohne Tap versagt sie auf diesem Material ebenso. Das
+Ratio-Folding auf den Anker war bereits im Code und löste den Track schon (`tBPM 129`, `bpm 98`).
+
+### Teil 2 — Warum der Anker trotzdem nie wirkte
+
+Am Gerät gemessen: sechs Taps, sechs Anker, Lebensdauern **0, 0, 0, 11, 0, 0 Sekunden**. Anker
+vorhanden zu 8 % der Zeit; gemeldetes Tempo dabei Median 85 statt 100. Der User sah es unabhängig
+(*„irgendwas überschreibt gleich immer den tap"*).
+
+Ursache: der Faltungsblock steht in `pollAudioEngine()`, die pro Audioblock läuft — **31×/s**.
+`tapAnchorMiss > 20` bedeutete damit **0,64 s**, nicht 20 s wie der Kommentar daneben behauptete.
+Und weil `trackedBPM` nur einmal pro Sekunde neu entsteht, wurde derselbe Messwert ~31-mal gegen
+dasselbe Raster geprüft: passte er einmal nicht, war der Anker tot, bevor eine neue Messung
+existierte. Behoben mit einer Sequenznummer pro echter Auswertung (`tempoEvalSeq`/`tapAnchorSeq`).
+
+Verifiziert vor dem Musiktest, ohne Musikwahrheit: ein absichtlich unpassender Anker (Verhältnis
+1,17, keine Rasterstufe näher als 12 %) überlebte **40 s**; unter dem alten Code wäre er garantiert
+nach 0,64 s tot gewesen, weil `trackedBPM` in der ersten Sekunde konstant bleibt.
+
+Danach, gleiche Messung, gleiche Musik: Anker **100 %** der Zeit vorhanden, Lebensdauer **162 s
+durchgehend**, BPM-Median 100 statt 85, innerhalb ±5 % der Wahrheit **79 %** statt 25 %.
+
+### Teil 3 — Vier Fehler in der Beat-Uhr
+
+Ausgelöst durch *„dimmer fx auf global bpm sync läuft schneller als die angezeigten bpm"* und
+*„er jittert extrem"*. Gemessen wurde am DMX-Ausgang (Kanal 1), nicht am Eindruck.
+
+**Die Rate war nie falsch.** Über drei Teiler: 0,99× / 1,00× / 0,99×. Ein zwischenzeitlicher
+Verdacht auf Faktor 2 beruhte darauf, dass `dSy` zwischen Lesen und Messen wechselte — derselbe
+Methodenfehler wie am Vortag, hier rechtzeitig bemerkt. Seither setzt jedes Messskript die
+Einstellung selbst, statt sie zu lesen.
+
+1. **Beat-Zählung bei zu frühen Onsets.** Der Phasen-Lock klemmte `newLast` auf `now` (gegen
+   unsigned-Underflow) und übernahm damit den **ganzen** Frühfehler statt eines Viertels.
+   Kürzester Zyklus 336 ms bei nominal 488 — 0,69, exakt die Kante des ±30-%-Fensters. A/B:
+   7 % Jitter mit Audio, 3 % ohne.
+
+2. **Der Phasendetektor war einseitig.** `err = sinceLast - interval` konnte in der Praxis nur
+   negativ werden: das Metronom verbraucht jeden Beat, sobald das Raster ihn erreicht, also
+   maß ein später eintreffender Onset fast ein ganzes Intervall „zu früh" und fiel aus dem
+   Fenster. Das Raster ließ sich vorziehen, aber nie bremsen — *„nach einem sync passt es, aber
+   es läuft auseinander"*. Behoben: Fehler gegen den **nächstgelegenen** Rasterpunkt gefaltet
+   (±½ Beat), und das Metronom rückt um `interval` weiter statt auf `now` zu springen, damit
+   überhaupt eine Phasenreferenz existiert. Verifiziert über 3 min: Kick-Phase im Dimmer-Zyklus
+   0,96–0,00, Bündelung 0,85–0,94, Wanderung nie über ±0,06 Beat.
+
+3. **Das „±15-%-Band" war ein Schrittbegrenzer.** Es prüfte gegen `globalBPM`, den zuletzt
+   akzeptierten Wert, und setzte ihn dann neu — jede Sekunde 15 % weiter. Vier Schritte reichen
+   von 122 auf 66, und jeder einzelne war „klein". Gemessen: **68..163** über eine Minute ohne
+   Anker, 66..128 mit stehendem Anker. Behoben: das Band liegt um eine langsam driftende Referenz
+   (`tempoRef`, ⅟₁₆ pro akzeptierter Messung) bzw. um den Anker. Danach ohne Anker **112..149**.
+
+4. **Der Tap wurde nach einer Sekunde überschrieben.** Band 15 %, Rastertoleranz der Faltung 8 %:
+   ein Tap von 125 gegen eine Messung von 112 ist 10,4 % daneben — zu weit für die Faltung, nah
+   genug fürs Band. Der Rohwert kam ungefaltet durch. *Kein Regress der Bandänderung* — vorher
+   wurde gegen `globalBPM` geprüft, das direkt nach dem Tap denselben Wert hat. Behoben: bei
+   stehendem Anker ist das Band ebenfalls 8 %. Tap 125 hält seither bei 121–129.
+
+### Bewusst nicht behoben: der Fehltap als Falle
+
+Ein Tap von 82 bei echten 120 ergibt 1,46 — die Rasterstufe 3/2 liegt 2,4 % daneben, die Faltung
+**gelingt** also jedes Mal, `tapAnchorMiss` läuft nie hoch, der Anker verfällt nie von selbst.
+Dieses Signal ist von dem Fall, der oben repariert wurde, **nicht unterscheidbar**: beim Hip-Hop
+faltet der Anker dauerhaft mit 4/3, und das ist gewollt. Jede Automatik dagegen würde die
+Synkopen-Erkennung mit wegräumen. Ein Vorschlag, den Anker in der UI sichtbar zu machen, wurde
+vom User abgelehnt — *„einfach neu tappen und dann passt es ja wieder"*. Ausweg bleibt der neue
+Tap (ersetzt den Anker sofort) oder zweimal Langdruck auf TAP (Manuell und zurück löscht ihn).
+
+### Nebenbei
+
+- **Header-Layout.** `A` beim Mic-Feld und die ms-Zahl der Roundtrip-Zeit verschoben die
+  Kopfzeile. `fontVariantNumeric: tabular-nums` half nicht — es richtet Ziffern *gleicher Anzahl*
+  aus, und genau die Anzahl ändert sich (`9ms` vs `105ms`, `MIC 8%` vs `MIC 100% A`). Feste
+  Zeichenbreiten via `whiteSpace: pre` + `padStart`; das `A` ist jetzt ein dauerhafter Slot, der
+  nur die Deckkraft wechselt und damit auch aussagt, wenn Auto-Gain **aus** ist.
+- **Build-Stempel.** `/api/state` liefert `bld` (`__DATE__ " " __TIME__`). Anlass: ein Flash wurde
+  nicht verifiziert und eine anschließende Messung dadurch fast fehlinterpretiert — genau der
+  Fehler, vor dem `handoff.md` seit dem Vortag warnt.
+
+### Methodik
+
+- **Was gemessen wird, muss vorher gesetzt werden.** Zweimal wurde gegen eine Einstellung
+  gemessen, die sich zwischenzeitlich geändert hatte (`dSy`, und der nach einem Reboot
+  abgeschaltete FX). Jedes Messskript setzt seinen Zustand jetzt selbst.
+- **Zwei Endpunkte in einer Schleife halbieren die Abtastrate.** Ein Jitter von 34 % war reines
+  Messartefakt (verpasste Nulldurchgänge, Ausreißer bei fast exakt Vielfachen eines Zyklus).
+- **Reboot löscht FX-Zustand und Tap-Anker.** Nach jedem Flash einmal tappen und die Effekte
+  wieder einschalten, sonst misst man den ankerlosen Fall und hält ihn für den Normalfall.

@@ -57,6 +57,16 @@ struct Track {
   long   beatIdx = -1, eighthIdx = -1;
   std::vector<double> trueBeats;   // seconds, exact
 
+  // Where the kicks sit inside a four-beat bar, in beats. Four-on-the-floor is the case the
+  // interval median was built for and the only one it can do: every gap equals the beat, so the
+  // median of the gaps IS the beat. Everything else in this list breaks that assumption on
+  // purpose -- the gaps are then fractions and multiples of the beat, and no single gap is the
+  // answer. That is the failure seen on hardware: hip-hop at 98 BPM locked onto 454ms, which is
+  // 3/4 of the 612ms beat to within 1%.
+  std::vector<double> kickPos { 0.0, 1.0, 2.0, 3.0 };
+  long   kickSlot = -1;
+  std::vector<double> trueKicks;   // seconds, exact -- where a kick really was
+
   static double env(double t, double tau) { return t < 0 ? 0.0 : exp(-t / tau); }
 
   double next() {
@@ -66,9 +76,24 @@ struct Track {
     long bi = (long)floor(t / bp);
     if (bi != beatIdx) {                       // a beat starts here
       beatIdx = bi;
-      kickT = 0; kickPhase = 0;
       trueBeats.push_back(bi * bp);
       if (bi % 4 == 1 || bi % 4 == 3) { snareT = 0; snarePhase = 0; }
+    }
+    // Kicks follow the pattern, not the beat grid. The beat grid stays the ground truth: the
+    // question a tempo estimator has to answer is "what is the beat", and on syncopated material
+    // that is a period the kicks do not all sit on.
+    {
+      double bar = 4 * bp;
+      long barIdx = (long)floor(t / bar);
+      double inBar = t - barIdx * bar;
+      long slot = -1;
+      for (size_t k = 0; k < kickPos.size(); k++) if (inBar >= kickPos[k] * bp) slot = (long)k;
+      long id = barIdx * 64 + slot;
+      if (slot >= 0 && id != kickSlot) {
+        kickSlot = id;
+        kickT = 0; kickPhase = 0;
+        trueKicks.push_back(barIdx * bar + kickPos[slot] * bp);
+      }
     }
     long ei = (long)floor(t / (bp / 2));
     if (ei != eighthIdx) { eighthIdx = ei; hatT = 0; }
@@ -114,6 +139,163 @@ struct Track {
 };
 
 Track track;
+
+// ---------------------------------------------------------------------------
+// Kick patterns. Only the first is what the interval median assumes.
+// ---------------------------------------------------------------------------
+struct Pattern { const char* name; std::vector<double> pos; const char* note; };
+static const std::vector<Pattern> kPatterns = {
+  { "four",   { 0.0, 1.0, 2.0, 3.0 },   "Four-on-the-floor: jede Luecke ist genau ein Beat" },
+  { "hiphop", { 0.0, 0.75, 1.25, 2.5 }, "Boom-bap: Luecken 3/4, 1/2, 1 1/4, 1 1/2 Beats" },
+  { "broken", { 0.0, 1.5, 2.0, 3.25 },  "Broken: Luecken 1 1/2, 1/2, 1 1/4, 3/4 Beats" },
+  { "dnb",    { 0.0, 2.5 },             "Two-step: Luecken 2 1/2 und 1 1/2 Beats" },
+  { "half",   { 0.0, 2.0 },             "Halftime: jede Luecke zwei Beats" },
+};
+static const Pattern* findPattern(const std::string& n) {
+  for (auto& p : kPatterns) if (n == p.name) return &p;
+  return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Candidate tempo estimators, all host-side, all fed the SAME onset train the
+// firmware saw. The point is to compare methods, not implementations: whatever
+// wins here still has to be written in integer arithmetic for the C3.
+//
+// The interval median is reimplemented here rather than read out of the engine so
+// that every method sees an identical window. (It is checked against the engine's
+// own trackedBPM in the compare output -- if the two disagree, this harness is
+// wrong, not the method.)
+// ---------------------------------------------------------------------------
+static const int TB_MS      = 10;                            // bin width, ms
+static const int TB_LAG_MIN = 60000 / BPM_MAX_LIMIT / TB_MS;  //  30 bins = 300ms = 200 BPM
+static const int TB_LAG_MAX = 60000 / BPM_MIN_LIMIT / TB_MS;  // 100 bins = 1000ms = 60 BPM
+
+// Onsets -> a coarse onset-strength envelope. Placement is fractional so a 3ms timing difference
+// is not thrown away by the binning, and one round of [1 2 1] smoothing widens each impulse to
+// about +/-15ms, which is what lets autocorrelation count a near-miss as a partial hit. A hard
+// impulse train would make the ACF brittle in exactly the way real music is not.
+static std::vector<double> binOnsets(const std::vector<double>& on, double t0, double t1) {
+  int n = (int)((t1 - t0) / TB_MS) + 2;
+  if (n < 4) return {};
+  std::vector<double> x(n, 0.0);
+  for (double o : on) {
+    if (o < t0 || o > t1) continue;
+    double b = (o - t0) / TB_MS;
+    int i = (int)b; double fr = b - i;
+    if (i >= 0 && i < n) x[i] += 1.0 - fr;
+    if (i + 1 < n)       x[i + 1] += fr;
+  }
+  std::vector<double> y(n, 0.0);
+  for (int i = 0; i < n; i++) {
+    double a = i > 0 ? x[i-1] : 0.0, c = i + 1 < n ? x[i+1] : 0.0;
+    y[i] = 0.25 * a + 0.5 * x[i] + 0.25 * c;
+  }
+  return y;
+}
+
+static double acf(const std::vector<double>& x, int lag) {
+  int n = (int)x.size() - lag;
+  if (lag <= 0 || n < 8) return 0.0;
+  double s = 0;
+  for (int i = 0; i < n; i++) s += x[i] * x[i + lag];
+  return s / n;          // per-sample, or long lags lose purely for having fewer terms
+}
+
+// Harmonic summing: a period is credited with what lands on its multiples too. This is the part
+// that can see through syncopation -- the bar is a multiple of the beat, so a strong bar-length
+// periodicity votes for the beat even when no pair of kicks is one beat apart.
+static double acfHarm(const std::vector<double>& x, int lag) {
+  static const double w[4] = { 1.0, 0.5, 0.34, 0.25 };
+  double s = 0;
+  for (int h = 1; h <= 4; h++) s += w[h-1] * acf(x, lag * h);
+  return s;
+}
+
+// Ellis's log-Gaussian tempo prior, centred where dance music actually lives. It does not decide
+// anything on its own; it breaks the octave tie that autocorrelation cannot break, because a
+// period and half that period are both genuinely present in the signal.
+inline double gPriorCentre = 120.0, gPriorSigma = 0.9;
+static double prior(double bpm) {
+  double d = log2(bpm / gPriorCentre) / gPriorSigma;
+  return exp(-0.5 * d * d);
+}
+
+// The tap anchor as the prior's centre. The firmware already treats a tap as a statement about
+// the OCTAVE rather than a tempo to obey, and folds the tracker's answer to the nearest ratio
+// rung of it. Centring the prior on the anchor expresses the same idea in one mechanism instead
+// of two: autocorrelation says which periods are present, the anchor says which one the user
+// means. A tap is modelled here as the true tempo off by a few percent, which is about what
+// four taps on a phone actually achieve.
+inline double gAnchorBPM = 0.0, gAnchorSigma = 0.40;
+
+enum EstKind { EST_MEDIAN, EST_ACF, EST_ACFH, EST_ACFHP, EST_ACFHA };
+
+static int estimate(EstKind kind, const std::vector<double>& on, double t0, double t1) {
+  if (kind == EST_MEDIAN) {
+    std::vector<double> g;
+    for (size_t i = 1; i < on.size(); i++) {
+      if (on[i] < t0 || on[i] > t1) continue;
+      double d = on[i] - on[i-1];
+      if (d >= TEMPO_IVL_MIN && d <= TEMPO_IVL_MAX) g.push_back(d);
+    }
+    if (g.size() < 3) return 0;
+    if (g.size() > TEMPO_IVL_RING) g.erase(g.begin(), g.end() - TEMPO_IVL_RING);
+    std::sort(g.begin(), g.end());
+    double med = g[g.size()/2];
+    double dev = 0;
+    for (double v : g) dev += fabs(v - med);
+    dev /= g.size();
+    if (dev * 100.0 / med > tempoAgreeMaxPct) return 0;   // same agreement gate as the firmware
+    return (int)(60000.0 / med + 0.5);
+  }
+
+  std::vector<double> x = binOnsets(on, t0, t1);
+  if (x.empty()) return 0;
+  int bestLag = 0; double bestS = 0;
+  for (int lag = TB_LAG_MIN; lag <= TB_LAG_MAX; lag++) {
+    double sc = (kind == EST_ACF) ? acf(x, lag) : acfHarm(x, lag);
+    double bpmHere = 60000.0 / (lag * TB_MS);
+    if (kind == EST_ACFHP) sc *= prior(bpmHere);
+    if (kind == EST_ACFHA) {
+      double d = log2(bpmHere / (gAnchorBPM > 0 ? gAnchorBPM : gPriorCentre))
+                 / (gAnchorBPM > 0 ? gAnchorSigma : gPriorSigma);
+      sc *= exp(-0.5 * d * d);
+    }
+    if (sc > bestS) { bestS = sc; bestLag = lag; }
+  }
+  if (!bestLag || bestS <= 0) return 0;
+
+  // Parabolic interpolation around the winning bin: the true period rarely lands on a 10ms
+  // boundary, and without this the answer is quantised to ~2 BPM at 120 and ~5 BPM at 200.
+  double ym1 = (kind == EST_ACF) ? acf(x, bestLag-1) : acfHarm(x, bestLag-1);
+  double yp1 = (kind == EST_ACF) ? acf(x, bestLag+1) : acfHarm(x, bestLag+1);
+  if (kind == EST_ACFHP) {
+    ym1 *= prior(60000.0 / ((bestLag-1) * TB_MS));
+    yp1 *= prior(60000.0 / ((bestLag+1) * TB_MS));
+  }
+  // The anchor prior is deliberately NOT applied to the interpolation: it would bend the
+  // sub-bin estimate toward the tapped value and make the result partly an echo of the tap.
+
+  double den = ym1 - 2*bestS + yp1;
+  double adj = (den != 0) ? 0.5 * (ym1 - yp1) / den : 0.0;
+  if (adj < -1 || adj > 1) adj = 0;
+  double periodMs = (bestLag + adj) * TB_MS;
+  return (int)(60000.0 / periodMs + 0.5);
+}
+
+// How a reading relates to the truth. "ok" and everything else are different failures: an octave
+// error still gives a usable light show, a 3/4 error does not.
+static const char* relation(int got, double truth) {
+  if (!got) return "--";
+  static const struct { double r; const char* n; } rel[] = {
+    { 1.0, "ok" }, { 2.0, "x2" }, { 0.5, "/2" }, { 1.5, "x3/2" }, { 2.0/3, "x2/3" },
+    { 4.0/3, "x4/3" }, { 0.75, "x3/4" }, { 3.0, "x3" }, { 1.0/3, "/3" }, { 4.0, "x4" }, { 0.25, "/4" },
+  };
+  double q = got / truth;
+  for (auto& r : rel) if (fabs(q - r.r) / r.r < 0.04) return r.n;
+  return "falsch";
+}
+
 
 // ---------------------------------------------------------------------------
 // Real audio, when a file is given instead of the synthesiser. Mono-summed and
@@ -204,7 +386,12 @@ int32_t simNextSample() { return wav.loaded ? wav.next() : (int32_t)track.next()
 
 // ---------------------------------------------------------------------------
 struct Result {
-  std::vector<double> onsets;      // sample-clock ms, as the firmware timestamps them
+  std::vector<double> onsets;      // sample-clock ms, as the firmware timestamps them (bass)
+  // The same run's mid and high onsets, and the three merged. The tempo estimator has only ever
+  // been fed the bass, which is the whole reason syncopation defeats it: a boom-bap kick pattern
+  // does not state the beat, and no amount of processing can recover what is not there. The
+  // snare on 2 and 4 and the hats on the eighths state it plainly, and both are already detected.
+  std::vector<double> onsetsMid, onsetsHigh, onsetsAll;
   std::vector<int>    bpmReadings;
   long   drops = 0;
   int    drift = 0;
@@ -213,7 +400,7 @@ struct Result {
 Result run(double seconds) {
   Result r;
   std::mt19937 loopRng{99};
-  uint32_t lastOnset = 0;
+  uint32_t lastOnset = 0, lastMid = 0, lastHigh = 0;
   double nextSampleAt = 0.5;   // let the detector settle before recording anything
 
   while (simMicros < (uint64_t)(seconds * 1e6)) {
@@ -229,11 +416,28 @@ Result run(double seconds) {
       lastOnset = sdLastOnsetMs;
       if (simMicros > nextSampleAt * 1e6) r.onsets.push_back((double)sdLastOnsetMs);
     }
+    if (sdMid.lastOnsetMs != lastMid) {
+      lastMid = sdMid.lastOnsetMs;
+      if (simMicros > nextSampleAt * 1e6) r.onsetsMid.push_back((double)lastMid);
+    }
+    if (sdHigh.lastOnsetMs != lastHigh) {
+      lastHigh = sdHigh.lastOnsetMs;
+      if (simMicros > nextSampleAt * 1e6) r.onsetsHigh.push_back((double)lastHigh);
+    }
     static uint64_t lastBpmAt = 0;
     if (simMicros - lastBpmAt > 200000) { lastBpmAt = simMicros; r.bpmReadings.push_back(globalBPM); }
   }
   r.drops = simI2sDropped;
   r.drift = sdClkDriftPpt;
+  // Merged, in time order. Onsets within 25ms of one another are one event heard in two bands
+  // (a kick has high-frequency click, a snare has body) -- counting it twice would just weight
+  // that instant more heavily, which is in fact what a broadband detection function does, so
+  // they are kept. What is collapsed is only an exact duplicate timestamp.
+  r.onsetsAll = r.onsets;
+  r.onsetsAll.insert(r.onsetsAll.end(), r.onsetsMid.begin(), r.onsetsMid.end());
+  r.onsetsAll.insert(r.onsetsAll.end(), r.onsetsHigh.begin(), r.onsetsHigh.end());
+  std::sort(r.onsetsAll.begin(), r.onsetsAll.end());
+  r.onsetsAll.erase(std::unique(r.onsetsAll.begin(), r.onsetsAll.end()), r.onsetsAll.end());
   return r;
 }
 
@@ -286,6 +490,7 @@ int medianBPM(std::vector<int> v) {
 // without touching the firmware defaults. -1 means "leave at the firmware default".
 int ovRel = -1, ovRefShift = -1, ovKLo = -1, ovKHi = -1, ovLockout = -1, ovVarMin = -1;
 int ovMinRange = -1, ovBoostMax = -1, ovBoostSh = -1, ovPeakFall = -1, ovPeakWait = -1, ovWindow = -1;
+const Pattern* gPattern = nullptr;   // kick pattern, applied by resetEngine()
 
 void resetEngine(int sens, bool autogain) {
   // Fresh state for every run, so one case cannot colour the next.
@@ -318,17 +523,20 @@ void resetEngine(int sens, bool autogain) {
   if (ovPeakFall >= 0) sdPeakFallPct   = ovPeakFall;
   if (ovPeakWait >= 0) sdPeakMaxWaitMs = ovPeakWait;
   if (ovWindow   >= 0) tempoWindowMs   = ovWindow;
+  if (gPattern) track.kickPos = gPattern->pos;
 }
 
 int main(int argc, char** argv) {
   double bpm = 130, secs = 60, wavGain = 1.0;
   const char* wavPath = nullptr;
   int sens = 60; bool autogain = false; std::string mode = "single";
+  std::string patName; double winMs = 8000; bool bpmGiven = false;
+  double anchorRatio = 1.03;   // how wrong the simulated tap is
   double bassAmp = 0.55, amp = 2.0e8;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto val = [&]() { return atof(argv[++i]); };
-    if      (a == "--bpm")  bpm = val();
+    if      (a == "--bpm")  { bpm = val(); bpmGiven = true; }
     else if (a == "--secs") secs = val();
     else if (a == "--sens") sens = (int)val();
     else if (a == "--bass") bassAmp = val();
@@ -350,11 +558,98 @@ int main(int argc, char** argv) {
     else if (a == "--tw")  ovWindow   = (int)val();
     else if (a == "--file") wavPath = argv[++i];
     else if (a == "--wavgain") wavGain = val();
+    else if (a == "--pattern") patName = argv[++i];
+    else if (a == "--win") winMs = val();
+    else if (a == "--pc") gPriorCentre = val();
+    else if (a == "--ps") gPriorSigma = val();
+    else if (a == "--ar") anchorRatio = val();   // anchor = truth * this (1.03 = a good tap)
+    else if (a == "--as") gAnchorSigma = val();
   }
 
   if (wavPath) {
     if (!wav.load(wavPath)) { fprintf(stderr, "WAV konnte nicht gelesen werden: %s\n", wavPath); return 1; }
     wav.gain = wavGain;
+  }
+
+  if (!patName.empty() && mode != "compare") {
+    gPattern = findPattern(patName);
+    if (!gPattern) { fprintf(stderr, "unbekanntes Muster: %s\n", patName.c_str()); return 1; }
+  }
+
+  if (mode == "compare") {
+    // The question this mode exists to answer: on material where the kicks do NOT sit on the beat
+    // grid, which estimator still finds the beat? Every method below is handed the identical onset
+    // train from one run, evaluated over identical rolling windows, so the only difference between
+    // the columns is the method.
+    std::vector<const Pattern*> pats;
+    if (!patName.empty()) {
+      const Pattern* pp = findPattern(patName);
+      if (!pp) { fprintf(stderr, "unbekanntes Muster: %s\n", patName.c_str()); return 1; }
+      pats.push_back(pp);
+    } else for (auto& q : kPatterns) pats.push_back(&q);
+
+    std::vector<double> bpms;
+    if (bpmGiven) bpms.push_back(bpm); else bpms = { 90, 98, 120, 128, 140, 174 };
+
+    printf("Fenster %.0f ms, %.0f s pro Lauf, sens=%d%s\n\n", winMs, secs, sens,
+           autogain ? ", AUTO-GAIN" : "");
+    for (auto& q : kPatterns) printf("  %-7s %s\n", q.name, q.note);
+    printf("\n  Spalten: gemeldete BPM, Verhaeltnis zur Wahrheit, Anteil richtiger Fenster\n");
+    printf("  Firmware = trackedBPM live aus der Engine; Median = dasselbe Verfahren hier\n");
+    printf("  nachgebaut (Gegenprobe, dass dieses Testgeruest sauber misst).\n\n");
+
+    // Five methods. The last two differ from the middle two ONLY in which onsets they are given,
+    // which is the comparison that matters: method versus material.
+    const int NM = 5;
+    struct Tot { int windows = 0, ok = 0; } tot[NM];
+    const char* names[NM] = { "Median B", "ACF+H B", "+Prior B", "+Prior A", "+Anker A" };
+    EstKind kinds[NM]     = { EST_MEDIAN, EST_ACFH, EST_ACFHP, EST_ACFHP, EST_ACFHA };
+    bool    useAll[NM]    = { false, false, false, true, true };
+
+    printf("  B = nur Bass (was die Firmware heute benutzt), A = Bass + Mid + High zusammen\n\n");
+    printf("  Muster   wahr  Onsets  Firmware   ");
+    for (int k = 0; k < NM; k++) printf(" %-12s", names[k]);
+    printf("\n");
+    for (const Pattern* pp : pats) {
+      for (double b : bpms) {
+        gPattern = pp;
+        // A tap 3% off the truth -- deliberately imperfect, or the column would be measuring
+        // the ground truth being handed to the estimator rather than the anchor mechanism.
+        gAnchorBPM = b * anchorRatio;
+        resetEngine(sens, autogain);
+        track.bpm = b; track.bassAmp = bassAmp; track.masterAmp = amp;
+        Result r = run(secs);
+        int fw = trackedBPM;
+        printf("  %-7s %4.0f  %6zu  %3d %-7s", pp->name, b, r.onsets.size(), fw, relation(fw, b));
+        if (r.onsets.size() < 8 || r.onsetsAll.size() < 8) { printf(" zu wenige Onsets\n"); continue; }
+        double s0 = r.onsetsAll.front(), s1 = r.onsetsAll.back();
+        for (int k = 0; k < NM; k++) {
+          const std::vector<double>& src = useAll[k] ? r.onsetsAll : r.onsets;
+          std::vector<int> reads; int ok = 0;
+          for (double t = s0 + winMs; t <= s1; t += 500.0) {
+            int v = estimate(kinds[k], src, t - winMs, t);
+            if (!v) continue;
+            reads.push_back(v);
+            if (fabs(v - b) / b < 0.04) ok++;
+          }
+          tot[k].windows += (int)reads.size(); tot[k].ok += ok;
+          if (reads.empty()) { printf(" %-12s", "--"); continue; }
+          std::sort(reads.begin(), reads.end());
+          int med = reads[reads.size()/2];
+          char cell[40];
+          snprintf(cell, sizeof cell, "%3d %-4s%3.0f%%", med, relation(med, b),
+                   100.0 * ok / reads.size());
+          printf(" %-12s", cell);
+        }
+        printf("\n");
+      }
+      printf("\n");
+    }
+    printf("  Gesamt (Anteil richtiger Fenster ueber alle Faelle):\n");
+    for (int k = 0; k < NM; k++)
+      printf("    %-10s %3.0f%%  (%d von %d Fenstern)\n", names[k],
+             tot[k].windows ? 100.0 * tot[k].ok / tot[k].windows : 0.0, tot[k].ok, tot[k].windows);
+    return 0;
   }
 
   if (mode == "bands") {
