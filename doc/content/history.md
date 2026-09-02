@@ -5179,3 +5179,33 @@ Tap (ersetzt den Anker sofort) oder zweimal Langdruck auf TAP (Manuell und zurü
   Messartefakt (verpasste Nulldurchgänge, Ausreißer bei fast exakt Vielfachen eines Zyklus).
 - **Reboot löscht FX-Zustand und Tap-Anker.** Nach jedem Flash einmal tappen und die Effekte
   wieder einschalten, sonst misst man den ankerlosen Fall und hält ihn für den Normalfall.
+
+## 2026-09-02 (Nachtrag): Drum & Bass — Beharrlichkeit schlug Anweisung
+
+*„dnb 177bpm geht ja gar nicht"*, kurz darauf *„jetzt wieder bei 70"*. Gemessen über zwei Minuten
+mit stehendem Anker 171: gemeldete BPM **69..182, Median 72**, rund dreißig Wechsel.
+
+Auffällig war, dass `bpm` und `tBPM` in jeder Logzeile identisch waren — das Band verwarf also
+nie etwas, obwohl es bei stehendem Anker nur ±8 % durchlassen darf. Der Grund waren **zwei**
+veröffentlichende Pfade: Werte um 170 lagen im Band und wurden sofort übernommen, Werte um 70
+lagen draußen, hielten sich aber dreißig Auswertungen lang durch und wurden vom
+„der-Track-hat-gewechselt"-Pfad (`pendCount >= tempoJumpConfirm`) übernommen — **trotz Ankers**.
+
+Warum die Faltung nicht rettet: Bei D&B liegt der Intervall-Median um **860 ms**. Bei 168 BPM sind
+das 2,45 Beats, also keine der Rasterstufen (½, ⅔, ¾, 1, 4/3, 3/2, 2). Es gibt schlicht nichts,
+worauf gefaltet werden könnte, und der Rohwert bleibt stehen.
+
+Die Korrektur ist eine Bedingung: Solange ein Tap-Anker steht, übernimmt der Jump-Confirm-Pfad
+nicht. Ein Tap ist die Aussage des Users, **welcher** Puls der Beat ist; eine Messung, die auf
+einem anderen beharrt, ist genau der Fall, für den der Anker existiert — sie zu übernehmen ließe
+Beharrlichkeit über Anweisung siegen. Der Ausweg aus einem wirklich veralteten Anker bleibt
+unverändert `tapAnchorMiss`: zwanzig Auswertungen ohne passende Stufe verwerfen ihn, danach greift
+die normale Übernahme wieder.
+
+Danach, gleiche Messung, gleicher Track, Anker 168: **164..181, Median 164**, acht Wechsel statt
+dreißig, davon sieben in der ersten Minute — die letzten 63 Sekunden konstant 164. Kein Einbruch
+auf 70 mehr; alles liegt im vorgesehenen ±8-%-Band um den Anker.
+
+**Für die Praxis:** Die verbleibenden ±8 % sind Absicht — der Anker legt die Stufe fest, den Wert
+liefert weiterhin der Tracker. Wer bei D&B einen völlig starren Wert will, nimmt den
+Manuell-Modus (Langdruck auf TAP); dann steht der getappte Wert ohne Nachregelung.

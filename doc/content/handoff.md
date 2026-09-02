@@ -24,6 +24,10 @@ Die Rate war nie falsch: 0,99× / 1,00× / 0,99× über drei Sync-Teiler.
   tappen und die Effekte wieder einschalten — sonst misst man den ankerlosen Fall.
 - **Der Anker ist das Instrument für Wahrheit.** `tAnchor` gegen `tBPM` auf `/api/state` liefert
   Wahrheit und Messung im selben Moment. Ein Fehltap wird durch einen neuen Tap ersetzt.
+- **Drum & Bass braucht einen Tap.** Der Intervall-Median liegt dort um 860 ms — 2,45 Beats bei
+  168 BPM, also keine Rasterstufe, auf die gefaltet werden könnte. Ohne Tap meldet das Gerät den
+  Puls, den der Bass tatsächlich hat (~70). Mit Tap steht es im ±8-%-Band; wer es völlig starr
+  will, nimmt Manuell-Modus (Langdruck auf TAP).
 
 ## Der Simulator, und was er wert ist
 

@@ -1387,11 +1387,21 @@ void pollAudioEngine() {
       globalBPM = shown; pendCount = 0; pendCand = 0;
       if (!anchored) tempoRef += (shown - tempoRef) / 16;   // the reference drifts, it does not chase
     } else {
-      if (pendCand > 0 && (abs(shown - pendCand) * 100 / pendCand) <= tempoSlewPct) pendCount++;   // NOLINT
+      if (pendCand > 0 && (abs(shown - pendCand) * 100 / pendCand) <= tempoSlewPct) pendCount++;
       else { pendCand = shown; pendCount = 1; }
       // Thirty evaluations saying the same new thing: the music really did change. Adopt it and
       // move the reference with it, otherwise the band would keep pulling back to the old tempo.
-      if (pendCount >= tempoJumpConfirm) { globalBPM = shown; tempoRef = shown; pendCount = 0; pendCand = 0; }
+      //
+      // NOT while a tap anchor stands. A tap is the user naming which pulse is the beat, and a
+      // measurement that insists on a different one is exactly the case the anchor exists for --
+      // adopting it would let persistence beat instruction. Drum & bass makes this concrete:
+      // measured on a ~168 BPM track, the interval median sits on ~860ms, which is 2.45 beats and
+      // therefore fits no rung, so the fold cannot rescue it; the reading held near 70 for long
+      // stretches and this branch published it thirty seconds later, against a standing anchor of
+      // 171. Reported live 2026-09-02 as "dnb 177bpm geht ja gar nicht" and "jetzt wieder bei 70".
+      // The escape from a genuinely stale anchor stays tapAnchorMiss, which drops the anchor after
+      // twenty evaluations that fit no rung at all; adoption then resumes normally.
+      if (!anchored && pendCount >= tempoJumpConfirm) { globalBPM = shown; tempoRef = shown; pendCount = 0; pendCand = 0; }
     }
   }
   audioLastUs = micros() - pollT0;
