@@ -27,6 +27,56 @@ NVS hält alte Werte, die die neuen Standardwerte überschreiben. Nach dem Flash
 
 `hwAudioEnabled` steht nach jedem Reboot auf 0 — Audio muss explizit eingeschaltet werden.
 
+## Testplan 2026-09-02 (geführt, am Fixture)
+
+Aufteilung: **du machst das Physische und beurteilst das Sichtbare, ich messe über die API.**
+Rund 45 Minuten. Abbruchkriterien stehen jeweils dabei — wenn eines greift, wird repariert und
+nicht weitergetestet.
+
+**Vorbereitung (du):** Fixture an DMX und Strom, frei sichtbar. Gerät per USB dran (zum Flashen)
+und im WLAN. Musik bereit: zuerst **ein Track, dessen Tempo du kennst** (sag es mir erst nach
+meiner Messung), später zwei **fremde** Tracks anderer Machart. Dann Bescheid sagen.
+
+### A — Grundfunktion, ohne Musik
+| | du | ich |
+|---|---|---|
+| A1 | bestätigst, dass die Web-UI lädt | flashe Firmware + Dateisystem |
+| A2 | — | prüfe `drift`. **Abbruch, wenn nicht ~0** — dann geht die Sample-Uhr nach und jede Tempomessung fällt zu hoch aus, alles Weitere wäre wertlos |
+| A3 | fährst den Kopf mit dem Joystick | frage dich: fühlt sich die Reaktion unverändert an? (Regression des Kadenz-Umbaus) |
+| A4 | beurteilst die Bewegung mit einem Movement FX (z. B. Circle) | frage dich: flüssig oder ruckelt es? Die Ausgabe läuft jetzt mit 33 Hz statt ~420 |
+
+**Abbruch bei A3/A4**, wenn Bewegung stockt oder der Joystick träge wirkt → `/api/asmmode?every=1`
+stellt das alte Verhalten sofort wieder her, dann ist der Umbau falsch abgegrenzt.
+
+### B — Was der Kadenz-Umbau wirklich bringt (ohne Musik, Movement FX an)
+Du musst nur das FX laufen lassen. Ich messe `engUs`/`engMax`/`lps` im neuen Modus, schalte per
+`/api/asmmode?every=1` auf das alte Verhalten, messe erneut, und schalte zurück. Damit steht die
+reale Ersparnis statt meiner Herleitung (erwartet: `engUs` fällt im Mittel deutlich, `lps` steigt).
+
+### C — Audio, mit Musik
+| | du | ich |
+|---|---|---|
+| C1 | startest Musik, Mikrofon in üblicher Position | schalte Audio ein, setze die Startwerte |
+| C2 | drehst einmal deutlich lauter, dann wieder leiser | beobachte `pk`/`clip`/`rclip` und ob der Auto-Gain nachzieht |
+| C3 | — | messe, ob er **erkennt oder oszilliert**: Sperre steht auf 60 ms; liegt der Onset-Median bei ~100 ms, ist es ein freilaufender Oszillator |
+| C4 | nennst mir jetzt das echte Tempo | habe vorher meine Messung genannt |
+
+### D — Die neuen Trigger (der eigentliche Zweck)
+Ich setze Movement FX auf `bass` und Dimmer FX auf `high`. **Du schaust hin und beschreibst:**
+fährt der Kopf auf dem Kick? Blitzt der Dimmer *zwischen* den Kicks auf den Hi-Hats, oder blitzt
+alles gleichzeitig? Das kann nur das Auge beurteilen — ich messe parallel die Raten der drei
+Bänder (erwartet: Bass ~halb so oft wie High).
+
+### E — Die Härteprüfung
+Zwei **fremde** Tracks, anderes Genre und Tempo. **Es wird nichts nachgestellt.** Ich messe BPM
+und Bandraten, du beurteilst die Optik. Muss ich nachjustieren, ist die skalenfreie Schwelle
+gescheitert und das gehört so ins Protokoll.
+
+### F — Last
+Alles gleichzeitig: Movement + Dimmer + Audio + AUDIO-Tab im Browser offen. Ich messe `loopMax`,
+`audUs`, `fftUs`, `lps`. Dann schließt du den Tab und ich messe erneut — **`fftUs` muss auf 0
+fallen**, sonst greift die Bedarfssteuerung nicht.
+
 ## Prüfplan, in dieser Reihenfolge
 
 **0. Die Uhr — wichtigster Test.** `drift` auf `/api/audio_debug` ist die Abweichung der
