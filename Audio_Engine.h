@@ -480,9 +480,15 @@ inline void updateAutoGain(uint32_t now) {
       while (p > target && delta > -5) { p >>= 1; delta--; }   // straight to the right range
     }
     agLowSince = 0;
-  } else if (agPeakWin < lo && agPeakWin > (full / 32)) {
-    // The level floor matters: in silence the peak is near zero and without it the gain would
-    // wind all the way up, then clip the moment the music starts.
+  } else if (agPeakWin < lo && (agPeakWin << (5 - tuneInputGainShift)) > (full / 32)) {
+    // The level floor stops it winding all the way up in silence and then clipping the moment
+    // the music starts. It has to be judged at FULL gain, not at the current setting: measured
+    // as a plain comparison it latched up. Once a loud passage had pushed the gain down to 0,
+    // ordinary music read below the floor -- because the gain was low, which is the very thing
+    // being corrected -- so it looked like silence and never came back. Observed on the fixture
+    // with the input at 2% and ig stuck at 0, which starved the detector down to 0.7 onsets/s
+    // and turned the tempo readout into noise. Shifting by the remaining headroom asks the right
+    // question: would this be a real signal if the gain were turned up?
     if (agLowSince == 0) agLowSince = now;
     else if ((uint32_t)(now - agLowSince) > (uint32_t)agUpDelayMs) delta = 1;
     agHighSince = 0;
