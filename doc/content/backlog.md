@@ -153,6 +153,28 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
 
 ### Offen aus der Audio-Überarbeitung (2026-09-02)
 
+- **Der Intervall-Median scheitert an synkopiertem Material — strukturell, nicht durch
+  Einstellung.** Am Gerät gemessen auf einem Hip-Hop-Track mit 98 BPM (Beat = 612 ms): der
+  Detektor rastet auf **454 ms** ein, und das ist mit 1 % Genauigkeit **¾ Beat** (459 ms). Die
+  Onsets sind dabei völlig in Ordnung — sie liegen nur nicht auf einem gleichmäßigen Raster.
+  Hip-Hop setzt Kicks auf die Eins, das „und" der Zwei, vor die Vier; die Abstände sind ¾, ½,
+  1¼ Beats, und deren Median ist eben nicht der Beat.
+
+  Kein Wert von `agr` oder `tw` behebt das. Ein Sweep darüber wählt nur aus, **welche** falsche
+  Periode man stabil bekommt: `agr=20` lieferte konstant 77 BPM, `agr=15` konstant 128 — beides
+  reale Periodizitäten im Material, keine davon der Beat. Vier-Viertel-Material (Techno 156,
+  House 119) lief mit denselben Einstellungen fehlerfrei.
+
+  **Nötig ist ein Verfahren, das die Periode sucht, die *alle* Onsets erklärt** — Autokorrelation
+  oder Kammfilter über den Onset-Strom — statt aufeinanderfolgende Abstände zu mitteln. Genau so
+  ein Verfahren (der Phasen-DFT) lag hier im Code und wurde am 2026-09-02 als toter Code entfernt.
+  Das war richtig: er lief auf den unbrauchbaren Onsets des damals defekten Komparators. Mit den
+  jetzt sauberen Onsets wäre er das passende Werkzeug und gehört neu gebaut.
+
+  **Im Simulator entwickeln, nicht am Gerät.** `sim/` braucht dafür einen synkopierten Kick als
+  Testmuster; dort gibt es exakte Wahrheit und wiederholbare Läufe. Am laufenden Track wurden
+  heute dreimal Werte eingestellt, die sich als trackspezifisch herausstellten.
+
 - **CPU-Messung am Gerät steht aus.** Drei Detektorbänder statt einem sind dreifache Last pro
   Sample; im Gegenzug läuft die FFT nur noch bei offenem AUDIO-Tab und Mid/High nur bei
   tatsächlichem Routing. Netto sollte es günstiger sein als vorher, ist aber **nicht gemessen**.
