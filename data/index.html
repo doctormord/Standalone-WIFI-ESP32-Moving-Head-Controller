@@ -1939,9 +1939,24 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   // already released. Stop bypasses the queue entirely (plain immediate fetch) and clears any
   // still-pending move so it can't fire again right after the stop lands.
   function sendJoy(v) {
-    if (v.x === 0 && v.y === 0) { tfPending['joy'] = null; fetch('/joy_in?x=0&y=0').catch(() => {}); return; }
+    if (v.x === 0 && v.y === 0) {
+      tfPending['joy'] = null; joyHeld = null;
+      if (joyKeepAlive) { clearInterval(joyKeepAlive); joyKeepAlive = null; }
+      fetch('/joy_in?x=0&y=0').catch(() => {});
+      return;
+    }
+    // Keep-alive while the stick is held. The device now stops the head by itself if nothing
+    // arrives for 500ms, because a single lost release packet used to leave it running to its
+    // mechanical end stop -- and the release is sent as its own request whose failure is
+    // swallowed below. The stick emits only on change, so a held position would otherwise fall
+    // silent and trip that watchdog; this is what keeps "held" distinguishable from "gone".
+    joyHeld = v;
+    if (!joyKeepAlive) joyKeepAlive = setInterval(() => {
+      if (joyHeld) fetch(`/joy_in?x=${joyHeld.x.toFixed(3)}&y=${joyHeld.y.toFixed(3)}`).catch(() => {});
+    }, 150);
     tFetch(`/joy_in?x=${v.x.toFixed(3)}&y=${v.y.toFixed(3)}`, 'joy', 40);
   }
+  let joyKeepAlive = null, joyHeld = null;
   // Same bypass as sendJoy's stop case, generalized: a stop command queued behind tFetch's debounce
   // can sit behind an in-flight update for up to ~80ms, and if that delay outlasts the "dirty" grace
   // window a stale poll response can flip the flag back to running. Reported live 2026-08-18: sg/rg

@@ -120,6 +120,18 @@ int centerPan16 = 32767; int centerTilt16 = 32767;
 int liveOutPan0 = 32767, liveOutTilt0 = 32767;
 
 float joyInputX = 0.0f, joyInputY = 0.0f;
+// When the last joystick command arrived, and how often we have had to stop the head ourselves.
+//
+// joyInputX/Y are plain state with no expiry: whatever value last arrived keeps being integrated
+// forever. A single dropped release packet therefore does not slow the head down, it sends it to
+// its mechanical end stop. Measured on the device 2026-09-02: one /joy_in?x=0.2 with the stop
+// deliberately withheld drove pan from centre to zero in under three seconds, and it only stopped
+// because it ran out of travel. The frontend sends the release as its own request and swallows
+// the error (.catch(() => {})), so nothing retried it -- over WiFi at a venue that is a matter of
+// when, not if.
+unsigned long lastJoyInMs = 0;
+uint32_t joyWatchdogTrips = 0;
+#define JOY_INPUT_TIMEOUT_MS 500   // three missed 150ms keep-alives before we stop by ourselves
 float joySmoothX = 0.0f, joySmoothY = 0.0f;
 int joyMaxSpeed = 2000;
 float joyCurve = 1.5f;
@@ -332,6 +344,11 @@ void updateEngines(unsigned long now) {
   if (abs(centerPan16 - (int)exactPan) > 1) exactPan = centerPan16;
   if (abs(centerTilt16 - (int)exactTilt) > 1) exactTilt = centerTilt16;
 
+  // Dead-man switch. The stick only emits on change, so the frontend sends a keep-alive while it
+  // is held; if that stops arriving the link is gone and the safe reading is "released".
+  if ((joyInputX != 0.0f || joyInputY != 0.0f) && (now - lastJoyInMs) > JOY_INPUT_TIMEOUT_MS) {
+    joyInputX = 0.0f; joyInputY = 0.0f; joyWatchdogTrips++;
+  }
   if (joyInputX != 0.0f || joyInputY != 0.0f || fabsf(joySmoothX) > 0.001f || fabsf(joySmoothY) > 0.001f) {
       mapIsMoving = false;
       float smoothFactor = 1.0f - joyMomentum; if (smoothFactor < 0.05f) smoothFactor = 0.05f; float blend = 1.0f - powf(1.0f - smoothFactor, dt * 30.0f);

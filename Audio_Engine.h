@@ -319,13 +319,22 @@ inline bool fftIsNeeded(unsigned long now) {
 // on the worse detector.
 #define SD_STAT_HIST 24            // ~24 blocks * 32ms = 768ms of history
 struct SdBand {
-  SdBand(int lo, int hi, int rel_, int lock_, int bmax_, int bsh_)
-    : kLo(lo), kHi(hi), rel(rel_), lockoutMs(lock_), boostMaxQ8(bmax_), boostShift(bsh_) {}
+  SdBand(int lo, int hi, int rel_, int lock_, int bmax_, int bsh_, int sadd_)
+    : kLo(lo), kHi(hi), rel(rel_), sensAdd(sadd_), lockoutMs(lock_), boostMaxQ8(bmax_), boostShift(bsh_) {}
   // Filter edges, as one-pole shifts: fc = 16000 / (2*pi * 2^k), so 6 is 40Hz, 4 is 159Hz,
   // 2 is 637Hz, 1 is 1273Hz, and 0 on the upper edge is a pass-through, which turns the pair
   // into a plain highpass.
   int kLo, kHi;
   int rel;                  // envelope release, 2^k samples / 16000
+  // Added to the global sensitivity for this band, in the same 0..100 units. The threshold is a
+  // position inside the band's own dynamic range, and in a band the kick dominates -- which is
+  // every band, since a kick is broadband -- the kick sets the top of that range. For Bass that
+  // is exactly right: the thing setting the ceiling is also the thing being detected. For High it
+  // is backwards, because there the point is to find what is quieter than the kick. Measured on
+  // the device 2026-09-02: raising the global sensitivity from 60 to 80 left Bass at 2.6/s but
+  // took High from 2.73 to 3.55/s, so the band was being held back by a threshold meant for the
+  // kick and not by an absence of hats.
+  int sensAdd = 0;
   int lockoutMs;            // hard floor only; the soft boost does the real work
   int boostMaxQ8;           // how far an onset lifts the threshold, Q8
   int boostShift;           // and how fast that decays back
@@ -361,10 +370,10 @@ struct SdBand {
 // 103ms at 145 BPM -- so the high band has to be ready again long before that, or a dimmer effect
 // set to "high" simply follows the beat instead of the hats, which is the whole point of routing
 // it there. Its release is shorter too: a hat is a few milliseconds, a kick rings for a hundred.
-//                    lo hi  rel lock boost  bshift
-inline SdBand sdBass ( 6, 4,   8,  60, 1024,     11);   // kick:  4.0x, ~128ms recovery
-inline SdBand sdMid  ( 4, 2,   7,  50,  768,     10);   // snare: 3.0x, ~64ms
-inline SdBand sdHigh ( 1, 0,   6,  40,  512,      9);   // hats:  2.0x, ~32ms
+//                    lo hi  rel lock boost  bshift  sens+
+inline SdBand sdBass ( 6, 4,   8,  60, 1024,     11,     0);  // kick:  4.0x, ~128ms recovery
+inline SdBand sdMid  ( 4, 2,   7,  50,  768,     10,    20);  // snare: 3.0x, ~64ms
+inline SdBand sdHigh ( 1, 0,   6,  40,  512,      9,    40);  // hats:  2.0x, ~32ms, most permissive
 
 // The existing names stay as references to the bass band, so the API, the debug JSON and the
 // simulator keep addressing "the detector" exactly as before without a rename sweep.
@@ -527,7 +536,9 @@ inline void sdUpdateStatsBand(SdBand& b) {
   // A beat needs VARIANCE, not level: a held note sits above any threshold indefinitely.
   b.transient = (b.varMean > 0) && ((b.varMad * 100) >= (b.varMean * b.varMinPct));
 
-  int32_t fracQ8 = 230 - ((int32_t)hwAudioSensitivity * 153) / 100;
+  int32_t bandSens = hwAudioSensitivity + b.sensAdd;
+  if (bandSens < 0) bandSens = 0; else if (bandSens > 100) bandSens = 100;
+  int32_t fracQ8 = 230 - (bandSens * 153) / 100;
   int32_t range  = b.peakStat - b.floorV;
   if (range < 0) range = 0;
   b.thrBlock = b.floorV + ((range * fracQ8) >> 8) + 8;

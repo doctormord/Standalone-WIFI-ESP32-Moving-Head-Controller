@@ -39,6 +39,8 @@ void saveAudioPrefs() {
     prefs.putInt("a_tw", tempoWindowMs);
     prefs.putInt("a_vmp", sdVarMinPct);
     prefs.putInt("a_mrp", sdMinRangePct);
+    prefs.putInt("a_sam", sdMid.sensAdd);
+    prefs.putInt("a_sah", sdHigh.sensAdd);
     prefs.putInt("a_bst", sdBoostMaxQ8);
     prefs.putInt("a_bsh", sdBoostShift);
     prefs.putInt("a_pfp", sdPeakFallPct);
@@ -90,6 +92,8 @@ void loadAudioPrefs() {
     tempoWindowMs = prefs.getInt("a_tw", tempoWindowMs);
     sdVarMinPct = prefs.getInt("a_vmp", sdVarMinPct);
     sdMinRangePct = prefs.getInt("a_mrp", sdMinRangePct);
+    sdMid.sensAdd = prefs.getInt("a_sam", sdMid.sensAdd);
+    sdHigh.sensAdd = prefs.getInt("a_sah", sdHigh.sensAdd);
     sdBoostMaxQ8 = prefs.getInt("a_bst", sdBoostMaxQ8);
     sdBoostShift = prefs.getInt("a_bsh", sdBoostShift);
     sdPeakFallPct = prefs.getInt("a_pfp", sdPeakFallPct);
@@ -244,7 +248,7 @@ void setupAPI() {
     // pre-smoothing median-detected value and most recent accepted (possibly octave-folded)
     // interval, loopMax is the worst main-loop gap in the last 5s -- pull these live via curl
     // to check the BPM detection and loop-jitter theories against real audio instead of guessing.
-    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec) + ",\"asmEvery\":" + String(dmxAssembleEveryLoop ? 1 : 0)
+    json += ",\"rawBPM\":" + String(lastRawDetectedBPM) + ",\"rawMs\":" + String(lastRawIntervalMs) + ",\"loopMax\":" + String(loopMaxMs) + ",\"lps\":" + String(loopsPerSec) + ",\"asmEvery\":" + String(dmxAssembleEveryLoop ? 1 : 0) + ",\"joyWd\":" + String(joyWatchdogTrips)
             + ",\"audUs\":" + String(audioLastUs) + ",\"audMax\":" + String(audioMaxUs)
             + ",\"fftUs\":" + String(fftLastUs)
             + ",\"engUs\":" + String(engineLastUs) + ",\"engMax\":" + String(engineMaxUs)
@@ -379,6 +383,7 @@ void setupAPI() {
   });
 
   server.on("/joy_in", []() {
+    lastJoyInMs = millis();          // feeds the dead-man switch in updateEngines()
     joyInputX = server.arg("x").toFloat(); 
     joyInputY = server.arg("y").toFloat();
     server.send(200, "OK");
@@ -565,7 +570,7 @@ void setupAPI() {
       "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
       "\"sdEnv\":%ld,\"sdThr\":%ld,"
       "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
-      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d,\"rclip\":%d,\"sab\":%d,\"mOn\":%ld,\"hOn\":%ld",
+      "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"mrp\":%d,\"sam\":%d,\"sah\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d,\"rclip\":%d,\"sab\":%d,\"mOn\":%ld,\"hOn\":%ld",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
       (long)lastThMid, (long)lastThHigh,
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
@@ -583,7 +588,7 @@ void setupAPI() {
       sdEnabled ? 1 : 0, sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
       (long)sdLastEnv, (long)sdLastThr,
       (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
-      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdClkDriftPpt,
+      tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdMinRangePct, sdMid.sensAdd, sdHigh.sensAdd, sdClkDriftPpt,
       autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs, micRawClipCount, sdAllBands ? 1 : 0,
       (long)sdMid.lastOnsetMs, (long)sdHigh.lastOnsetMs);
     // The spectrum rides along on request rather than living at its own URL. This server handles
@@ -670,6 +675,8 @@ void setupAPI() {
     if (server.hasArg("tw"))  tempoWindowMs = constrain(server.arg("tw").toInt(), 1000, 10000);
     if (server.hasArg("vmp")) sdVarMinPct   = constrain(server.arg("vmp").toInt(), 0, 200);
     if (server.hasArg("mrp")) sdMinRangePct = constrain(server.arg("mrp").toInt(), 0, 400);
+    if (server.hasArg("sam")) sdMid.sensAdd  = constrain(server.arg("sam").toInt(), -50, 100);
+    if (server.hasArg("sah")) sdHigh.sensAdd = constrain(server.arg("sah").toInt(), -50, 100);
     if (server.hasArg("bst")) sdBoostMaxQ8  = constrain(server.arg("bst").toInt(), 256, 4096);
     if (server.hasArg("bsh")) sdBoostShift  = constrain(server.arg("bsh").toInt(), 6, 14);
     if (server.hasArg("pfp")) sdPeakFallPct   = constrain(server.arg("pfp").toInt(), 10, 99);
