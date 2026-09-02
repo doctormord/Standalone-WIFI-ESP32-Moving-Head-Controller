@@ -84,6 +84,75 @@ When adding a new effect parameter or config field, it typically needs to be tou
 ### Multi-fix sessions
 - When several independent fixes are needed, sketch the plan first, then implement in one pass rather than lots of small steps with heavy intermediate output.
 
+## Debugging discipline
+
+Written after a session that took a whole evening to find a fault that two minutes of the right
+measurement would have shown. Every rule below is the generalisation of a specific mistake made
+that day; the details are in `doc/content/history.md` (2026-09-02).
+
+**Measure the input before theorising about the output.** When a reported value is wrong, count
+the raw quantity that feeds it before reasoning about the code that publishes it. A tempo readout
+bouncing between 122 and 61 was blamed in turn on the band, the anchor and the phase lock — three
+real bugs, none of them the cause. Counting the onsets themselves settled it immediately: 96% of
+kicks detected, 80% of the gaps correct. The detector was fine and the estimator was at fault.
+Distinguish first: **is the input distribution clean?** If yes, the fault is downstream. If no,
+it is level, sensitivity or detection. That one question orders everything after it.
+
+**Set what you measure; never measure against a value you only read.** A setting can change
+between the read and the measurement — twice in one day it did (`dSy` mid-run, and an FX that a
+reboot had switched off), and both times the conclusion drawn was wrong. Measurement scripts
+establish their own state.
+
+**Ground truth is collected at the moment of measurement, not remembered.** Comparing against a
+tempo from an earlier message is worthless; the music moved on. `tAnchor` against `tBPM` on
+`/api/state` gives truth and measurement in the same instant.
+
+**Carry level and onset rate in every audio measurement.** Without them a stable reading cannot be
+distinguished from silence — which is exactly what happened once.
+
+**A/B against the subsystem switched off.** Disabling the mic isolated the phase lock as the sole
+source of the effect jitter in a single measurement (7% with audio, 3% without), after a lot of
+reasoning had failed to.
+
+**Suspect the measurement before the device.** Polling two endpoints in one loop halves the
+sampling rate; the resulting "34% jitter" was entirely artefact, and gave itself away because the
+outliers sat at near-exact multiples of the cycle. Long gaps in a sampled periodic signal usually
+mean missed samples, not a stall.
+
+**Verify the deployment, always.** File size is not proof, and a failed OTA has been mistaken for
+a successful one. `/api/state` reports `bld` (build date and time) for exactly this.
+
+### What the faults actually were
+
+None of that day's bugs was a tuning value, and every attempt to tune one made things worse. All
+five were **a rule compared against the wrong reference, or running on the wrong clock**:
+
+- a counter incremented once per audio block (31/s) where it meant once per evaluation (1/s), so
+  "20 evaluations" was 0.64 seconds;
+- a band checked against the last accepted value and then reassigning it — a step limiter, not a
+  band, so 15% per second walked the tempo anywhere;
+- an error measured as "time since the last event minus the interval", which could only ever come
+  out negative, so the correction worked in one direction only;
+- a gate that rejected scattered windows and accepted tight ones, thereby preferring a consistent
+  minority over an inconsistent majority;
+- a clamp added against integer underflow that turned a deliberate quarter-of-the-error correction
+  into a full snap.
+
+So when something drifts, sticks or oscillates, ask **"what is this compared against, and on which
+clock?"** before touching a parameter. Prefer correcting one rule to adding a compensating one.
+
+**Check the other cases before trading one for another.** Disabling a path to fix drum & bass
+removed the only way an anchor could expire, and broke track changes an hour later. If a change
+makes one case better, name the case it makes worse and test that too.
+
+**The simulator is necessary, not sufficient.** `sim/` gives exact truth and repeatable runs, and
+parameter and algorithm work belongs there. But a method that scored 81% on synthesised patterns
+scored 7% on the real track it was built for. Hardware decides.
+
+**Separate what is established from what you invented.** "Standard practice in beat trackers" was
+said of a three-line simplification; the underlying principle is standard, the specific form was
+not. State which is which, unprompted.
+
 ## Documentation & language policy
 
 - **Code, comments, commit messages, UI strings — always English.** No exceptions, regardless of the language a request comes in.
