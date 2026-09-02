@@ -693,6 +693,10 @@ inline int tempoCandidate = 0, tempoAgree = 0;
 // tracker keeps measuring, and its answer is folded to the nearest simple ratio of the tapped
 // value. Drift too far from every ratio and the tempo genuinely changed, so the anchor is dropped.
 inline bool tempoAuto = true;
+// The band the reported tempo may move within, and how long a reading outside it must persist
+// before it is believed. Evaluations run once a second, so 30 is thirty seconds.
+inline int  tempoSlewPct = 15;      // the band, in percent, around the established tempo
+inline int  tempoJumpConfirm = 30;  // evaluations of agreement before adopting outside it
 inline int  tapAnchorMiss = 0;   // consecutive evaluations fitting no rung
 inline int  tapAnchorBPM = 0;      // last tapped tempo, 0 = none. Deliberately not persisted:
                                    // it is a statement about the music playing now.
@@ -1281,7 +1285,36 @@ void pollAudioEngine() {
     // clamping would silently show a tempo that is neither the measurement nor its octave.
     if (tempoMulMode == 1 && trackedBPM * 2 <= BPM_MAX_LIMIT) shown = trackedBPM * 2;
     else if (tempoMulMode == 2 && trackedBPM / 2 >= BPM_MIN_LIMIT) shown = trackedBPM / 2;
-    globalBPM = constrain(shown, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+    shown = constrain(shown, BPM_MIN_LIMIT, BPM_MAX_LIMIT);
+
+    // A tempo does not change in seconds. Music can drift, and a DJ can mix into something
+    // faster, but neither happens between one evaluation and the next -- so a large jump is
+    // far more likely to be the estimator losing its footing than the music changing.
+    //
+    // Observed on a 120 BPM house track: it read 120 correctly, dropped to 83 through a quiet
+    // passage (fewer kicks, gaps stretch, the median slips a rung -- 83/120 is close to 2/3)
+    // and then overshot to 136 when the track came back. Every one of those was published
+    // immediately, which makes the readout useless precisely when a breakdown means you are
+    // relying on it.
+    //
+    // So the reported tempo lives in a band around the value already established: inside it the
+    // tracker works freely, outside it the reading is simply not published. 120 to 83 is -31%
+    // and never gets through at all.
+    //
+    // A hard band alone would strand the readout on the old tempo after a genuine track change,
+    // with nothing to say so. A reading outside the band is therefore still adopted -- but only
+    // after it has said the same thing for thirty consecutive evaluations, which is thirty
+    // seconds. That is nowhere near "within seconds" and it is not a dead end either. Tapping
+    // remains the immediate way to set a new base, which is what a tap is for.
+    static int pendCand = 0, pendCount = 0;
+    int diffPct = (globalBPM > 0) ? (abs(shown - globalBPM) * 100 / globalBPM) : 100;
+    if (diffPct <= tempoSlewPct) {
+      globalBPM = shown; pendCount = 0; pendCand = 0;
+    } else {
+      if (pendCand > 0 && (abs(shown - pendCand) * 100 / pendCand) <= tempoSlewPct) pendCount++;
+      else { pendCand = shown; pendCount = 1; }
+      if (pendCount >= tempoJumpConfirm) { globalBPM = shown; pendCount = 0; pendCand = 0; }
+    }
   }
   audioLastUs = micros() - pollT0;
   if (audioLastUs > audioMaxUs) audioMaxUs = audioLastUs;

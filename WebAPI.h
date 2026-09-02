@@ -46,6 +46,8 @@ void saveAudioPrefs() {
     prefs.putInt("a_pfp", sdPeakFallPct);
     prefs.putInt("a_pmw", sdPeakMaxWaitMs);
     prefs.putInt("a_agr", tempoAgreeMaxPct);
+    prefs.putInt("a_slew", tempoSlewPct);
+    prefs.putInt("a_jcf", tempoJumpConfirm);
     prefs.putBool("a_ag", autoGain);
     prefs.putBool("a_auto", tempoAuto);
     prefs.putInt("a_agt", agTargetPct);
@@ -100,6 +102,8 @@ void loadAudioPrefs() {
     sdPeakFallPct = prefs.getInt("a_pfp", sdPeakFallPct);
     sdPeakMaxWaitMs = prefs.getInt("a_pmw", sdPeakMaxWaitMs);
     tempoAgreeMaxPct = prefs.getInt("a_agr", tempoAgreeMaxPct);
+    tempoSlewPct = prefs.getInt("a_slew", tempoSlewPct);
+    tempoJumpConfirm = prefs.getInt("a_jcf", tempoJumpConfirm);
     autoGain = prefs.getBool("a_ag", autoGain);
     agTargetPct = prefs.getInt("a_agt", agTargetPct);
     agUpDelayMs = prefs.getInt("a_agu", agUpDelayMs);
@@ -694,6 +698,8 @@ void setupAPI() {
     if (server.hasArg("bsh")) sdBoostShift  = constrain(server.arg("bsh").toInt(), 6, 14);
     if (server.hasArg("pfp")) sdPeakFallPct   = constrain(server.arg("pfp").toInt(), 10, 99);
     if (server.hasArg("pmw")) sdPeakMaxWaitMs = constrain(server.arg("pmw").toInt(), 10, 200);
+    if (server.hasArg("slew")) tempoSlewPct = constrain(server.arg("slew").toInt(), 1, 50);
+    if (server.hasArg("jcf"))  tempoJumpConfirm = constrain(server.arg("jcf").toInt(), 1, 30);
     if (server.hasArg("agr")) tempoAgreeMaxPct = constrain(server.arg("agr").toInt(), 5, 100);
     // Auto range selection. Setting the gain by hand implies wanting it left alone, so an
     // explicit ig= switches auto off rather than fighting the next correction.
