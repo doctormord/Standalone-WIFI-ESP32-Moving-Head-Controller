@@ -40,6 +40,7 @@
 | Steuerung | DMX512 / Master-Slave / Auto / Sound |
 | Kanäle | **18 CH** (Std.18ch-Modus) |
 | Pan/Tilt | 540° / 270° |
+| Pan/Tilt-Geschwindigkeit | **~330°/s Pan, ~165°/s Tilt** (gemessen, siehe unten — steht nicht im Handbuch) |
 | Dimmer | 0–100%, linear |
 | Farbrad | 9 Farben + Open |
 | Gobo-1-Rad (statisch, CH7) | 9 Gobos + Open |
@@ -138,6 +139,38 @@ Codewheel-Range laut Menü **-90 bis +130** (`+021` = gerade nach oben, ≈ Rang
 bestätigt, dass die Kalibrierung den Zenit auf DMX-Tilt-Center legt). Pan-Codewheel-Range
 **-83 bis +517**.
 
+### Pan/Tilt-Geschwindigkeit (gemessen 2026-09-02, nicht aus dem Handbuch)
+
+Das Handbuch nennt die Verfahrwinkel, aber **keine Geschwindigkeit**. Für den Controller ist sie
+trotzdem nötig: DMX hat keine Positionsrückmeldung, also fährt jede kommandierte Position ins
+Blaue. Wird schneller kommandiert, als die Mechanik kann, läuft der Sollwert dem Kopf davon — und
+nach dem Loslassen fährt er den aufgelaufenen Rückstand stur zu Ende. Das sieht aus wie Trägheit,
+ist aber keine.
+
+**Messwerte:**
+
+| Achse | Grenzrate | Winkelgeschwindigkeit | volle Strecke |
+|---|---|---|---|
+| Pan | 40 000 Einheiten/s | ~330 °/s (über 540°) | ~1,6 s |
+| Tilt | 40 000 Einheiten/s | ~165 °/s (über 270°) | ~1,6 s |
+
+Beide Achsen liegen beim selben Zahlenwert in 16-Bit-Einheiten — die Mechanik braucht für ihren
+vollen Bereich also gleich lang, die Winkelgeschwindigkeiten unterscheiden sich nur, weil die
+Bögen unterschiedlich groß sind. Das ist plausibel für identische Motoren und Treiber auf beiden
+Achsen.
+
+**Messverfahren — und warum das naheliegende nicht funktioniert.** Der erste Versuch leitete die
+Grenze aus dem Nachlaufen ab: die höchste Rate suchen, bei der noch kein Nachlauf auftritt. Das
+liefert **nur eine Untergrenze** — kein Nachlauf beweist, dass die Mechanik *mindestens* so
+schnell ist, nie dass sie nicht schneller kann. So kamen 165°/s für Pan heraus, also genau die
+Hälfte des wahren Werts, was den Kopf spürbar langsamer machte als vorher.
+
+Das taugliche Verfahren ist **das Motorgeräusch**: denselben Schwenk mit steigender Sollrate
+fahren und hinhören. Solange der Motor hörbar schneller wird, ist die Mechanik noch nicht am
+Anschlag; sobald sich der Klang bei weiterer Erhöhung nicht mehr ändert, ist die Grenze erreicht.
+Genommen wird der letzte Wert, bei dem er noch schneller wurde. (Im Firmware-Repo: `ptMaxRatePan`
+und `ptMaxRateTilt` in `Moving_Head_Horizon.ino`, live setzbar über `/joy_cfg?ratep=&ratet=`.)
+
 ### CH5 — Speed
 `0–255`, „Pan/Tilt speed, Pan/Tilt time" — das Handbuch spezifiziert
 **keinen** exakten Split-Punkt zwischen den beiden Modi (typisch bei
@@ -147,6 +180,18 @@ Billig-Movern: oft eine Hälfte „Zeit bis Ziel" (Fade), die andere
 Handbuch nicht widerlegt, aber auch nicht vollständig bestätigt. Kein
 Fix nötig, nur zur Kenntnis: falls sich CH5 am echten Gerät „springend"
 statt linear verhält, ist das der wahrscheinliche Grund.
+
+**Praxisbefund 2026-09-02: CH5 gehört für Live-Bewegung auf 0.** Der Kanal ist die
+fixture-eigene Anfahrglättung und wirkt auf *jede* kommandierte Position. Der frühere
+Vorgabewert 128 legte damit eine zweite, unbekannte Glättung über alles, was der Controller
+selbst rechnet — am Gerät als durchgehend indirektes Anfahren spürbar, egal was an der eigenen
+Joystick-Glättung verstellt wurde. Auf 0 wird das Anfahren sofort direkt. Für das Movement FX
+gilt dasselbe, dort würde die Fixture-Glättung die Figur zusätzlich verschmieren, weil der Kopf
+einer ständig wandernden Position hinterherschleift.
+
+Sinnvoll bleibt CH5 für **Szenenwechsel**: ein Preset schreibt die Position als Sprung, und bei
+höherem CH5 gleitet der Kopf hinein statt mit vollen 330°/s hinzuknallen. Also bewusst
+hochdrehen, wenn ein Wechsel getragen wirken soll — nicht als Dauerzustand.
 
 ### CH6 — Color
 | DMX | Farbe |
