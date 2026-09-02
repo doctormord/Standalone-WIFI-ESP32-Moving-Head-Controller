@@ -1009,7 +1009,24 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     );
   }
 
-  Object.assign(window, { Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, PresetGrid, SaveCenterButton, FX_HUE, MOVE_SYNCS });
+  // Momentary buttons need to acknowledge the press. TAP in particular is used while looking at
+  // the light, not at the screen, so without feedback there is no way to tell a tap that landed
+  // from one that did not -- and a tap tempo is only as good as the taps you trust. Kept as a
+  // plain style poke rather than component state: these fire several times a second and a
+  // re-render per press would be the wrong trade.
+  function pressFlash(e, colour) {
+    const el = e.currentTarget;
+    const bg = el.style.background, tr = el.style.transform;
+    el.style.background = colour;
+    el.style.transform = 'scale(0.95)';
+    el.style.transition = 'none';
+    setTimeout(() => {
+      el.style.transition = 'background 140ms, transform 140ms';
+      el.style.background = bg; el.style.transform = tr;
+    }, 110);
+  }
+
+  Object.assign(window, { pressFlash, Pill, BumpBtn, Panel, LabeledSlider, Dropdown, Accordion, AudioVisualizer, JogDial, JoystickAdvancedControls, StatusBar, Tabs, CompoundChannel, TriggerBlock, MutedWarning, PresetGrid, SaveCenterButton, FX_HUE, MOVE_SYNCS });
 })();
 </script>
 <script type="text/babel">
@@ -1030,8 +1047,8 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <button onClick={onKillAll} style={{ padding: '11px 0', background: 'rgba(127,29,29,0.32)', border: '1px solid rgba(220,38,38,0.4)', borderRadius: 11, color: '#fca5a5', fontWeight: 700, fontSize: 12, letterSpacing: 1, cursor: 'pointer', textTransform: 'uppercase' }}>◼ Kill All FX · Stop Show</button>
           <Panel title="Tempo & sync · audio" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-              <button onPointerDown={tap} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 10, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>TAP · {bpm}</button>
-              <button onClick={onHardSync} style={{ padding: '11px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 10, color: '#5eead4', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>SYNC PHASE</button>
+              <button onPointerDown={(e) => { pressFlash(e, 'rgba(59,130,246,0.55)'); tap(); }} style={{ padding: '11px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 10, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>TAP · {bpm}</button>
+              <button onPointerDown={(e) => { pressFlash(e, 'rgba(20,184,166,0.55)'); onHardSync(); }} style={{ padding: '11px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 10, color: '#5eead4', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>SYNC PHASE</button>
               <button onClick={onMicToggle} style={{ padding: '11px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 10, color: '#86efac', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{micOn ? <LED color="#22c55e" pulse size={7} /> : null} HW MIC</button>
             </div>
             <div style={{ marginTop: 10 }}><LabeledSlider label="HW Mic Sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact /></div>
@@ -1299,12 +1316,12 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           
           <Panel title="Tempo & sync" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
-              <button onPointerDown={tap} style={{ padding: '9px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>TAP · {bpm}</button>
+              <button onPointerDown={(e) => { pressFlash(e, 'rgba(59,130,246,0.55)'); tap(); }} style={{ padding: '9px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.32)', borderRadius: 9, color: '#93c5fd', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>TAP · {bpm}</button>
               {/* This had no onClick at all -- a button that looked live and did nothing. The LIVE
                   tab's identical one was wired to /sync all along, so pressing SYNC here while
                   setting up FX triggers, which is where you would reach for it, silently did
                   nothing. Reported from the fixture 2026-09-02. */}
-              <button onClick={onHardSync} style={{ padding: '9px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 9, color: '#5eead4', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>SYNC</button>
+              <button onPointerDown={(e) => { pressFlash(e, 'rgba(20,184,166,0.55)'); onHardSync(); }} style={{ padding: '9px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 9, color: '#5eead4', fontWeight: 700, fontSize: 11, cursor: 'pointer' }}>SYNC</button>
               <button onClick={onMicToggle} style={{ padding: '9px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 9, color: '#86efac', fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>{micOn ? <LED color="#22c55e" pulse size={6} /> : null} HW MIC</button>
             </div>
             <div style={{ marginTop: 8 }}><LabeledSlider label="Mic sensitivity" value={hwSens} onChange={(v) => setHwSens(v)} min={0} max={100} unit="%" accent={accent} compact /><JogDial value={state.jog || 0} accent={accent} onChange={(v) => { setState((s) => ({ ...s, jog: v })); fetch('/jog?v=' + v); }} onRelease={() => { setState((s) => ({ ...s, jog: 0 })); fetch('/jog?v=0'); }} /></div>
