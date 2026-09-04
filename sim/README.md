@@ -10,6 +10,51 @@ positions are known exactly. No microcontroller involved.
     ./simbeat --mode level --auto           # across a 50x input level range
     ./simbeat --mode trace --secs 4         # per-block state, for debugging
     ./simbeat --mode csv ...                # one line of numbers, for shell sweeps
+
+## Validation corpus
+
+    python3 mktracks.py tracks          # seven annotated tracks, 70..174 BPM
+    ./simbeat --mode psyscore --file tracks/techno-150.wav --beats tracks/techno-150.beats
+
+Deliberately away from 120 BPM and built around what actually breaks onset detectors: sustained
+bass that never returns to silence, pads with no transient, swung timing, syncopated kicks,
+vibrato, and a breakdown with no drums in it. The annotation is the BEAT GRID, not the kick
+positions -- on syncopated material those differ, and conflating them credits a detector for
+finding a pulse nobody hears. `tracks/` is gitignored; regenerate it, it is deterministic.
+
+## Psychoacoustic front end (prototype, not firmware)
+
+    ./simbeat --mode psy                                  # ablation, all patterns x tempi
+    ./simbeat --mode psyscore --file X.wav --beats X.txt  # onset quality vs ground truth
+
+A Bark-band / log-compressed / SuperFlux onset function built on the firmware's own integer FFT,
+with each of the three perceptual steps switchable so its contribution can be measured on its
+own. See `doc/content/proposal.md` section 5 for the measurements and for why none of it has
+been ported. Short version: it hears everything (recall 96-99%), it hears more than the beat
+(precision ~50% against kick-only truth, because the hi-hats really are there), and that makes
+it incompatible with the median-of-gaps tempo estimator the device runs — a broadband onset
+function needs autocorrelation, which is a different pipeline, not an upgrade.
+
+The one clean win: logarithmic compression cuts the systematic timing offset from +14.2 ms to
++2.1 ms, beating the firmware's +10.7 ms on the same signal against the same ground truth.
+
+## Scoring against a real recording
+
+The synthesised track carries its own ground truth, so precision/recall/F are free there. For a
+real file the beat positions have to be supplied, otherwise the only thing that can be compared
+is the reported BPM — and that was how a conclusion drawn here (81%) survived until the device
+disagreed with it (7%).
+
+    ffmpeg -i track.mp3 -ac 1 -ar 16000 -f wav track.wav     # mp3 / stream -> what --file wants
+    ./simbeat --mode single --file track.wav --beats track.beats --secs 60
+
+`--beats` takes one beat time in **seconds** per line. A second tab- or space-separated column
+is ignored, so an Audacity label export works unchanged; blank lines and `#` comments are
+skipped. The annotated median inter-beat interval becomes the true tempo — `--bpm` describes the
+synthetic generator and means nothing for a real file.
+
+The reported constant offset is worth reading: it is the detector's own latency, and it only
+becomes visible once there is real ground truth to measure against.
     ./simbeat --mode bands --file X.wav     # real audio, the three bands side by side
     ./simbeat --mode compare                # tempo estimators against each other
     ./simbeat --mode compare --pattern hiphop --secs 60

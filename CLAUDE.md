@@ -15,7 +15,7 @@ This is a merged codebase (see `README.md`): backend (`Moving_Head_Horizon.ino`,
 - `Audio_Engine.h` — I2S mic sampling, envelope followers, and audio-reactive/BPM beat detection (`pollAudioEngine()`, `initAudioEngine()`).
 - `WebAPI.h` — all HTTP routes (`setupAPI()`), included from the `.ino`. Routes are thin: parse `server.arg(...)`, mutate the global FX/state objects, optionally persist to `Preferences`.
 - `data/index.html` — the entire web UI: a single-file React app loaded via UMD `<script>` tags with in-browser Babel (`type="text/babel"`), split into several `<script type="text/babel">` IIFE blocks (hooks/primitives, shared widgets, tab components). No JS build step — edit this file directly and it's transpiled client-side on load. **Each `<script type="text/babel">` block is its own JS scope** — a top-level `const` declared in one block is not visible in another (bit us twice already: two same-named but differently-shaped `COLORS` arrays in different blocks, see `doc/content/history.md` 2026-08-15). When adding a shared constant, check which block actually needs it rather than assuming it's globally visible.
-- `data/vendor/*.gz` — React/ReactDOM (production, minified) and Babel Standalone (minified), gzip-compressed, served from LittleFS via dedicated routes in `WebAPI.h` (`/vendor/react.js` etc., each setting `Content-Encoding: gzip` explicitly). Replaces a former CDN dependency (`unpkg.com`) that left the UI blank whenever the device had no internet uplink — notably the WiFi AP fallback (`Moving_Head_Ctrl`) used at venues with no WLAN. Babel Standalone alone is 2.4MB unminified/minified — only fits the ~1.4MB LittleFS partition gzip-compressed (~548KB). If you ever need to update these vendor files, re-verify they still fit with `pio run -t buildfs` (fails loudly with `LFS_ERR_NOSPC` on overflow — verified by deliberately overflowing it once, see history).
+- `data/vendor/*.gz` — React/ReactDOM (production, minified) and Babel Standalone (minified), gzip-compressed, served from LittleFS via dedicated routes in `WebAPI.h` (`/vendor/react.js` etc., each setting `Content-Encoding: gzip` explicitly). Replaces a former CDN dependency (`unpkg.com`) that left the UI blank whenever the device had no internet uplink — notably the WiFi AP fallback (`Moving_Head_Ctrl`) used at venues with no WLAN. Babel Standalone alone is 2.4MB unminified/minified — only fits the 896KB LittleFS partition gzip-compressed (~548KB). If you ever need to update these vendor files, re-verify they still fit with `pio run -t buildfs` (fails loudly with `LFS_ERR_NOSPC` on overflow — verified by deliberately overflowing it once, see history).
 
 ## Build / deploy
 
@@ -36,7 +36,9 @@ No build system in-repo (no Makefile, no arduino-cli project file, no package.js
 
 **Checking the UI actually parses:** run `scripts/check_ui.sh` after editing `data/index.html`. There is no build step -- Babel runs in the browser at load time -- so nothing else catches a syntax error before it is on the device, where it shows up as a blank page. The script transpiles each `<script type="text/babel">` block with the Babel already vendored in `data/vendor`, needs only `node`, and reports blocks separately because each is its own scope. It has already caught a duplicate identifier that would have blanked the header (2026-09-01), and the same class of bug blanked the AUDIO tab once before that.
 
-**Checking `data/` still fits on the device:** the LittleFS partition (`spiffs` in the partition table) is **1408KB**, and as of 2026-08-27 it is **~57% full — 612KB free**, not the "~85% full" this file claimed until then (that figure was stale and had been discouraging UI additions for no reason). Current contents are 772KB across four files (`index.html` 178KB + `data/vendor/*.gz` 594KB, of which Babel alone is 548KB). Measured, not estimated: `pio run -t buildfs` builds the image, then count the 4096-byte blocks in `.pio/build/supermini/littlefs.bin` that are not entirely `0xFF`/`0x00` — 199 of 352 were in use. Still run `pio run -t buildfs` after touching anything under `data/`; it fails loudly (`LFS_ERR_NOSPC`) if the contents don't fit, rather than silently truncating, and it's fast (~1s). **The tight budget is the app partition, not the filesystem:** `pio run` reports Flash at **91.8%** (1,202,887 of 1,310,720 bytes), i.e. only ~105KB of headroom for new firmware code — that is the ceiling to plan features against.
+**Partition table (changed 2026-09-03):** the project no longer uses the stock `default.csv`. `partitions_horizon.csv` in the repo root moves 512KB from the filesystem to the two OTA app slots — app slots **1.25MB → 1.5MB each (+20%)**, filesystem **1408KB → 896KB**. `nvs` stays at `0x9000` with its original size, so the saved configuration survives the switch; the filesystem offset moves from `0x290000` to `0x310000`, so **it must be re-flashed** and **OTA cannot make this change** (the table lives at `0x8000`). One USB flash with `scripts/flash_esptool.sh --fs`. Read the CSV before editing it — the comments say which numbers are load-bearing.
+
+**Checking `data/` still fits on the device:** the LittleFS partition (`spiffs` in the partition table) is **896KB** since 2026-09-03, not the "~85% full" this file claimed until then (that figure was stale and had been discouraging UI additions for no reason). Current contents are ~810KB across four files (`index.html` ~216KB + `data/vendor/*.gz` 594KB, of which Babel alone is 548KB) — so ~86KB free, and shrinking as the UI grows. This is now the binding budget, not the app partition. Measured, not estimated: `pio run -t buildfs` builds the image, then count the 4096-byte blocks in `.pio/build/supermini/littlefs.bin` that are not entirely `0xFF`/`0x00` — 199 of 352 were in use. Still run `pio run -t buildfs` after touching anything under `data/`; it fails loudly (`LFS_ERR_NOSPC`) if the contents don't fit, rather than silently truncating, and it's fast (~1s). **The budget is now roughly balanced:** as of 2026-09-04 `pio run` reports Flash at **78.6%** (1,236,511 of 1,572,864 bytes) — ~336KB of headroom, up from ~78KB before the partition change. The filesystem is the tighter of the two now, and getting tight: ~810KB of 896KB used. `index.html` is served uncompressed; gzipping it the way the vendor files already are would free well over 100KB if it ever comes to that. Re-read the figure from `pio run` rather than trusting this line; it has been stale before. Note that deleting unreferenced code does not move it — the linker already drops what nothing calls, so removing dead code buys readability, not space.
 
 ## Architecture
 
@@ -61,7 +63,74 @@ User-supplied route parameters (`sync` indices, chaser/preset slot numbers, Step
 
 **Web layer.** `WebServer` on port 80 serves the SPA from LittleFS and exposes query-param-style routes per subsystem (DMX/state polling, joystick input, per-effect config, chaser config, preset save/recall, fixture patch, WiFi setup, beat/sync/jog). Almost all state is persisted via `Preferences` (NVS): general settings under `"sys"`, scenes under `"sc1"`–`"sc10"`, fixture patch under `"patch"`. WiFi falls back to a local AP (`Moving_Head_Ctrl` / `12345678`) if no stored station credentials connect; mDNS name is `movinghead.local`.
 
-When adding a new effect parameter or config field, it typically needs to be touched in four places: the global FX object/state in the `.ino`, the `SceneData` struct + its save/load paths (`loadAllChaserScenes`, `/save` handler, `executePreset`/`executeChaserSlot`/`triggerSceneFX`), the corresponding `WebAPI.h` route(s), and the frontend's `fetch` calls/state in `data/index.html`.
+## Anything crossing the frontend/backend boundary: check BOTH ends, both directions
+
+Before changing a value that travels between `data/index.html` and the device, write down its
+full round trip and confirm every leg carries it:
+
+    control -> outgoing change detector -> URL -> route -> engine field
+                                                              |
+    control state <- poll merge <- /api/get_dmx <- ------------
+
+**A value is only as good as its weakest leg, and a missing leg never announces itself.** Miss
+the outgoing detector and the edit is never sent. Miss the route's `hasArg` and an older client
+wipes it. Miss `/api/get_dmx` and the control cannot show what is running. Miss the poll merge
+and the control shows a stale value. Miss the baseline fingerprint and the next edit is misread
+as already-sent. None of these produce a compile error, a warning, or a log line — they produce
+a control that does nothing, or a value that springs back about a second later.
+
+So: **for every field, name the sender and name the receiver, in both directions.** If you cannot
+point at both, the work is not finished. This applies to route parameters, telemetry fields,
+persisted settings — anything with two ends. The concrete list below is this principle applied
+to effect parameters, where the round trip happens to be eleven steps long.
+
+## Adding an effect parameter — the complete checklist
+
+This used to say "four places". It is eleven, and **every single omission fails silently** — no
+compile error, no console warning, just a control that does nothing or a value that reverts a
+second later. Work down the list; do not trust memory.
+
+**Firmware**
+
+1. **The engine field** in `FX_Engine.h` (`Modulator` / `MovementEngine` / `StepFX`) and the code
+   that reads it.
+2. **`SceneData`** in the `.ino` — **append at the END, never insert.** Scenes are stored as a raw
+   struct blob (`prefs.putBytes`) and the load checks the exact byte count, so changing `sizeof`
+   makes every saved scene fail that check *silently*. Keep the previous layout as
+   `SceneDataV1`; its `sizeof` is what recognises an old blob, whose prefix is byte-identical so
+   the read still lands correctly and only the new tail needs defaults. Defaults must be the
+   values that reproduce the OLD behaviour.
+3. **Both migration branches** in `loadAllChaserScenes()` — the `SceneDataV1` one *and* the older
+   per-key fallback below it. Note an `inline void migrate(SceneData&)` helper will not compile:
+   the Arduino build hoists function prototypes above the struct definitions. Write it out inline.
+4. **Scene application** — `triggerSceneFX()` / `executePreset()` / `executeChaserSlot()`.
+5. **Scene save** — the `/save` handler in `WebAPI.h`.
+6. **The route** (`/fx`, `/modfx`, …) — behind `server.hasArg()` so an older client that omits it
+   leaves the value alone, and `constrain()`d, because the same value also arrives from NVS.
+7. **`/api/get_dmx`** so the frontend can read it back. **Mind the commas:** those `json +=` lines
+   already end with a separating comma, so append without a leading one and *with* a trailing
+   one. Getting this wrong produces invalid JSON and a blank web UI. Verify by piping the
+   endpoint through `json.load`, not by looking at it.
+
+**Frontend — `data/index.html`, five places, all of them required**
+
+8. **State default** in the `useState` initialiser (~`fxTr: 0, fxSy: 3, …`).
+9. **The poll merge**, inside that group's `if (!xDirty) { … }` block. Omitted: the control never
+   learns what the device is actually running.
+10. **The `pr2.<group>State` fingerprint** in the merge. Omitted: the baseline and the state drift
+    apart and the next edit is misread as already-sent.
+11. **The `syncFx(...)` change-detector array AND the URL builder** — both, at the same call.
+    `syncFx` only transmits when that array differs from the last sent copy, so **a field that is
+    in the URL but not in the array can never be sent**: the edit is dropped and the next poll
+    writes the device's old value back over it. That is the failure reported live on 2026-09-03
+    as "die werte werden immer wieder überschrieben" — the parameter was in all ten other places.
+
+Then the control itself. Where several effects share a component (`TriggerBlock`), adding it
+there covers all of them at once — prefer that over four copies.
+
+**Verify it end to end before believing it:** set the value over `curl`, then poll
+`/api/get_dmx` several times and check it *stays*. A single readback proves nothing; the revert
+takes about a second.
 
 ## Working practices & token efficiency
 

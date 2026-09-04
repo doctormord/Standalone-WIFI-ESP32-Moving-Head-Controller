@@ -222,6 +222,138 @@ gefixt (siehe „Kürzlich geklärt"), drei bewusst zurückgestellt:
   Bereichswahl hält still, weil Herunterregeln hier nichts heilt. Offen ist nur, ob das im
   Livebetrieb je auftritt.
 
+### Offen nach dem Rückbau (2026-09-03 abends)
+
+- **Der Tap-Anker greift auf D&B offenbar nicht.** Gemessen mit dem ausgelieferten Detektor,
+  Anker per `/beat?bpm=172` gesetzt, Track echte 172: GUI-Median **122**, nur **3 %** der
+  Messwerte innerhalb von 5 %. `handoff.md` behauptet seit dem 2026-09-02, mit Tap stehe D&B im
+  ±8-%-Band — diese Messung widerspricht dem. Zu klären: fällt der Anker (`tapAnchorMiss` /
+  `tapAnchorRawMiss`), greift er gar nicht, oder faltet er auf eine falsche Rasterstufe? Der
+  Weg dahin führt über `bOn`: Abstände histogrammieren und gegen die Rungs prüfen, **nicht**
+  über die Anzeige. Höchste Priorität der offenen Punkte.
+
+### Offen nach dem Hardware-Test (2026-09-03)
+
+- ~~**`psy=1` …**~~ **Erledigt 2026-09-03: wieder ausgebaut.** Über drei Genres nicht zuverlässig besser (House und Trap klar schlechter, D&B uneinheitlich), also entfernt. Forschungsstand bleibt im Simulator und in `proposal.md` §5–6. Ursprüngliche Notiz:
+- ~~**`psy=1` verbessert die Erkennung, nicht das Tempo.**~~ **Revidiert am selben Tag** — das
+  Urteil beruhte auf einem einzigen Genre. Über Trap, House und D&B gemessen ist es
+  **komplementär**: `psy=0` gewinnt auf Trap (121 gegen 133–143) und House (122 gegen 155),
+  `psy=1` gewinnt auf Drum & Bass deutlich (170 gegen 127; 92 % gegen 9 % der Messwerte
+  innerhalb 5 %, ohne Tap). Standard bleibt `psy=0`, der Schalter liegt jetzt im AUDIO-Tab.
+  Offen bleibt: **automatisch umschalten geht nicht** — es gibt kein Kriterium im Signal, das
+  „synkopiert" von „dichten Hi-Hats" trennt, ohne genau die Frage zu beantworten, um die es
+  geht. Pro Set von Hand ist derzeit die ehrliche Antwort.
+
+- **Nicht auf einem einzelnen Genre tunen.** Ein `psyd`-Sweep auf Trap fand bei 900 die beste
+  Onset-Rate; übernommen wurde nichts. Trap ist ein Extremfall (spärliche Kicks, dichte Hats,
+  Dauer-Sub) und eine dort hochgedrehte Schwelle verliert auf leiserem Material die Kicks.
+  Wenn `psy` je wieder aufgegriffen wird, dann über mehrere Genres, nicht über eines.
+
+- **Die „ohne FFT"-Vergleichsmessung fehlt noch.** `measure_cpu.sh` Phase 1 lief mit laufender
+  FFT, weil ein offener AUDIO-Tab im Browser die Freigabe erneuert. Für die saubere Zahl alle
+  Tabs schließen und wiederholen. Die Kernfrage ist trotzdem beantwortet (FFT 3,8 %).
+
+### Offen aus dem Code-Review (2026-09-02)
+
+Ein Review über `git diff future...HEAD` (Audio_Engine.h, .ino, WebAPI.h, index.html, sim/).
+Der größere Teil der Befunde ist in derselben Sitzung behoben; hier steht, was bewusst offen
+blieb, weil es eine Entscheidung braucht oder eigenen Umfang hat.
+
+- **`--comment` im Code-Review funktioniert in diesem Setup nicht.** Der Schalter postet
+  Befunde als Kommentare an einen GitHub-PR. Hier gibt es keinen PR (der Vergleich läuft gegen
+  einen lokalen Branch), `gh` ist nicht installiert, und das Werkzeug zum strukturierten Melden
+  ist in dieser Sitzung nicht verfügbar. Der Schalter wird stillschweigend ignoriert, die Befunde
+  landen als Fließtext. Wer sie dauerhaft haben will, muss sie selbst ablegen — so wie hier.
+
+- **Die MID- und HIGH-Beat-LEDs im Header sind tot, solange nichts auf diese Bänder geroutet
+  ist.** `guiMid`/`guiHigh` werden nur gesetzt, wenn `sdRunMid`/`sdRunHigh` laufen, und die
+  laufen bedarfsgesteuert: entweder ein FX (jetzt auch der Chaser) hört auf das Band, oder der
+  AUDIO-Tab ist offen. Der 500-ms-Poll von `/api/state`, der die LEDs speist, verlängert diese
+  Freigabe **nicht**. Auf dem LIVE-Tab bleiben Mid und High also dunkel, obwohl das Mikrofon an
+  ist — was sich wie ein defekter Detektor liest. Zwei Wege: entweder die LEDs nur anzeigen,
+  wenn das Band tatsächlich läuft (ehrlich, aber erklärungsbedürftig), oder die Bänder
+  dauerhaft mitlaufen lassen (kostet CPU, die genau deshalb eingespart wurde). Erst messen,
+  siehe „CPU am Gerät messen" im Handoff.
+
+- ~~**`/audio_tune?fft=0` friert Pegelanzeige und Auto-Gain ein.**~~ **Erledigt 2026-09-02** —
+  durch Ausbau statt Reparatur. Der Breitbandpfad ist weg, siehe `proposal.md` Abschnitt 2.
+  Ursprünglicher Befund: `micPeak`, `micClipCount` und
+  `updateAutoGain()` liegen alle im FFT-Zweig. Der Tempo-Teil dieses Problems ist behoben
+  (`sdOnsetMs` wird im Legacy-Zweig zurückgesetzt, vorher fütterte ein eingefrorener Zeitstempel
+  den Schätzer), die Telemetrie nicht. `fft=0` ist ein Notausgang, kein Betriebsmodus — deshalb
+  nur notiert. Wer ihn benutzt, sollte wissen, dass die Kopfzeile dann lügt.
+
+- **Für die Pan/Tilt-Ratenbegrenzung gibt es keine Oberfläche.** `/joy_cfg` nimmt `ratep` und
+  `ratet` entgegen und `/api/joycfg` gibt sie aus, aber kein Bedienelement bindet daran. Es sind
+  die sicherheitsrelevantesten Werte, die zuletzt dazukamen, und sie sind nur per Hand getippter
+  URL erreichbar. Dasselbe gilt für rund ein Dutzend `/audio_tune`-Parameter (`sab`, `mrp`,
+  `sam`, `sah`, `bst`, `bsh`, `slew`, `jcf`, `agt`, `agu`, `agd`). Die in `CLAUDE.md` genannte
+  Invariante „jeder Frontend-`fetch()` passt zu einer Backend-Route" gilt weiter; die Umkehrung
+  gilt nicht mehr.
+
+- ~~**Simulator: Ground Truth für echte Tracks fehlt.**~~ **Erledigt 2026-09-02** — `--beats`
+  liest annotierte Beatzeiten (eine Sekundenzahl je Zeile, Audacity-Labels funktionieren
+  unverändert) und ersetzt damit das synthetische Raster. Gegengeprüft an einer erzeugten
+  124-BPM-Datei: Precision 100 %, Recall 98 %, F 0,989, konstanter Versatz 10,7 ms — das ist die
+  Eigenlatenz des Detektors, die vorher schlicht nicht messbar war. Ursprünglicher Befund: WAV-Dateien liest `sim/` bereits
+  (`--file`, mit Resampling); MP3 und Streams gehen über `ffmpeg -i x.mp3 -ac 1 -ar 16000 -f wav
+  out.wav` ohne Änderung am Code. Was fehlt, ist die Bewertung: das F-Maß funktioniert nur gegen
+  den synthetischen Track, dessen Beatpositionen bekannt sind. Ein `--beats <datei>` mit
+  annotierten Beatzeiten würde echte Musik messbar machen — und das ist die Voraussetzung für
+  jeden psychoakustischen Ansatz, nicht ein Nebenpunkt davon. Ohne Wahrheit am echten Signal
+  wiederholt man sonst genau den Fehler vom 2026-09-02: der Simulator sagte 81 %, das Gerät 7 %.
+
+### Offen aus der Simulator-Validierung (2026-09-03)
+
+- **`db` (Bass-Detektorwahl) ist wirkungslos geworden.** Seit die rahmenbasierte Bass-Erkennung
+  ausgebaut ist, kommt der Bass-Onset ausschließlich aus `sdProcessBlock()`. `tuneDetBass`
+  verändert nur noch `envSlow` → `bassEnergy` → `lastBassEnergy`/`lastThBass`, und die gehen
+  ausschließlich in die Telemetrie. Das Bedienelement im AUDIO-Tab tut also nichts für die
+  Erkennung, es ändert nur, was der Graph anzeigt. Entweder entfernen oder als reine
+  Anzeigeoption beschriften. Gleiches gilt für `dynThreshold`/`dynMadBass`/`thBass`, die je
+  Block berechnet werden, ohne dass sie noch etwas entscheiden.
+
+- **Der Varianz-Gate `vmp` ist auf dichtem Material scharf genug, um alles abzuschalten.** Ab
+  einem Wert von 20 liefert der Detektor auf einem Techno-Track mit liegendem Bass *null*
+  Onsets. Der Default ist derzeit unkritisch, aber der Wert ist über `/audio_tune` erreichbar
+  und persistiert — ein Griff daneben legt die Audioerkennung still, ohne dass irgendwo etwas
+  darauf hinweist. Untergrenze prüfen oder in der Oberfläche warnen.
+
+- **Oktavfehler treffen jedes Verfahren.** Über die Validierungssammlung meldet keine Kette
+  drum & bass bei 174 und Techno bei 150 richtig; alle landen bei der halben Rate (87 bzw. 75).
+  Der Tap-Anker löst das, ohne Tap ist es offen. Siehe `proposal.md` Abschnitt 6.
+
+### ~~Bestätigte Lücke: Wirkdauer und Wiederholperiode sind dasselbe~~ — **erledigt 2026-09-03**
+
+Gebaut als Burst: Anzahl × Dauer, in einem Raster. Standardwerte reproduzieren das alte
+Verhalten bitgleich (größte Abweichung 0.000000000 über 40 Beats), Presets überleben die
+Struct-Erweiterung dank `SceneDataV1`-Größenerkennung. Ursprüngliche Notiz:
+
+**Was fehlt.** „Dimme über 1 Beat, aber nur alle 4 Beats" ist nicht einstellbar. `Modulator::sync`
+legt fest, wie lange die Kurve dauert **und** wie oft sie sich wiederholt — es ist derselbe Wert.
+Ein Sync-Teiler von 4 Beats *streckt* die Kurve über vier Beats, statt sie in einem Beat
+abzuspielen und drei zu warten. Behelfen kann man sich heute nur über die Kurvenform, was die
+Sache nicht trifft. Gleiches gilt für `MovementEngine`: „Kreis über 4 Beats, Raster 16" geht
+nicht.
+
+**Umsetzung, grob.** Ein zusätzlicher Parameter je Engine (Wiederholperiode, aus derselben
+Teilertabelle). Während der Pause wird die Phase auf 1.0 gehalten — das gibt `startVal` aus,
+bei der üblichen Flash-Decay-Einstellung also dunkel. Standardwert = gleich `sync`, dann ist das
+Verhalten bitgleich zu heute. Betrifft die Engine, `/modfx` bzw. `/fx`, die Szenen-Persistenz
+und die Oberfläche.
+
+**Die Falle, die vorher zu lösen ist.** `SceneData` wird als **roher Struct-Block** gespeichert
+(`prefs.getBytes("data", &sd, sizeof(SceneData))`), und das Laden prüft auf exakte Größe. Ein
+neues Feld im Struct ändert `sizeof` und lässt **jede gespeicherte Szene stillschweigend
+durchfallen** — auf dem Gerät liegen derzeit vier benannte Presets. Also: neue Werte als eigene
+NVS-Schlüssel neben dem Block ablegen, nicht ins Struct aufnehmen. Additive Schlüssel sind
+rückwärtskompatibel und bekommen beim Fehlen ihren Standardwert.
+
+**Offene Designfrage.** Reichen zwei Parameter (Kurve spielt einmal je Periode) oder braucht es
+drei (Kurve wiederholt sich innerhalb eines aktiven Fensters, dann Pause)? Ersteres deckt
+„1 Beat dimmen alle 4" ab, letzteres zusätzlich „vier Kreise, dann parken". Zwei Parameter sind
+ein Bedienelement je Effekt, drei sind zwei.
+
 ## 🚀 Zukünftige Features (Feature Requests)
 
 - **Hardware-Joystick via ADS1115 (I²C):** 16-bit ADC, schreibt direkt

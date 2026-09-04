@@ -186,6 +186,75 @@ bei 100 % Treffergenauigkeit und ~7 ms Zeitfehler bei 130 BPM, Tempo über 90–
 genau, stabil über einen 50-fachen Pegelbereich. Zum Vergleich: Dixon (DAFx-06) misst für das
 beste von acht Verfahren F = 0,964 bei 8,8 ms über 106.054 Onsets.
 
+## CPU: gemessen am Gerät, 2026-09-03
+
+Die Frage stand seit dem Audio-Umbau offen und wurde nie beantwortet. Jetzt gemessen mit
+`scripts/measure_cpu.sh`, ESP32-C3 @160 MHz, ein Fixture gepatcht, Mikrofon an, keine Musik:
+
+    Schleifenrate            172 /s      schlimmste Schleifenlücke   22 ms
+    updateEngines            252 us  ->  4,3 %   eines Kerns
+    Audio-Block gesamt      3036 us  ->  9,5 %   bei 31 Blöcken/s
+      davon FFT             1211 us  ->  3,8 %
+      davon psyProcessFrame   46 us  ->  0,14 %  (mit psy=1)
+    ------------------------------------------------
+    Summe                             ~14 %
+
+**Der C3 ist nicht CPU-begrenzt.** Damit ist auch die Chipfrage beantwortet: eine FPU (nur
+ESP32, S3, H4 und P4 haben eine — C5, C6 und S2 **nicht**) würde heute nichts kaufen. Und die
+dauerhaft laufende FFT kostet 3,8 %, ist also klar bezahlbar; der psychoakustische Detektor
+obendrauf ist mit 0,14 % praktisch umsonst.
+
+### Warum die erste Messung wertlos war
+
+Zwei Telemetriefelder maßen etwas anderes als ihr Name — beide am 2026-09-03 korrigiert:
+
+- **`fftUs`** wurde vom Anfang des Audio-Blocks aus gestoppt und enthielt damit die
+  Sample-Skalierung über 512 Werte, das Auto-Gain und den **kompletten Sample-Rate-Detektor**.
+  Es meldete 2913 µs für etwas, das 1211 µs kostet — Faktor 2,4 zu hoch, und die Antwort auf
+  „ist die dauernde FFT bezahlbar" wäre entsprechend falsch ausgefallen.
+- **`audUs`** wurde von jedem Aufruf von `pollAudioEngine()` überschrieben, auch von den vielen,
+  die noch gar keinen vollständigen Block haben (~170 Aufrufe/s gegen ~31 echte Blöcke/s). Es
+  zeigte also meist einen Leerlauf.
+
+Auffällig war die Kombination: der Mittelwert von `audUs` (959 µs) lag **unter** dem von `fftUs`
+(2913 µs), obwohl die FFT innerhalb des Audio-Blocks läuft. Ein Teil kann nicht teurer sein als
+das Ganze — *diese* Unmöglichkeit hat den Fehler aufgedeckt, nicht die absolute Größe der Zahl.
+
+### Beim Lesen der Werte beachten
+
+- `engUs`/`audUs`/`fftUs`/`psyUs` sind **Momentaufnahmen des letzten Aufrufs**, keine
+  Mittelwerte. `engMax`/`audMax`/`loopMax` sind Maxima über ein gleitendes **5-Sekunden-Fenster**
+  und werden gemeinsam zurückgesetzt.
+- `engMax` erreichte 5176 µs (entspräche 89 % bei Dauerlast). Das ist eine einzelne Spitze im
+  Fenster, kein Dauerzustand — WLAN und Webserver landen gelegentlich in derselben Iteration.
+  Dasselbe erklärt, warum `fftUs` zwischen 795 und 2738 µs schwankt.
+- `fftUs` ist **0**, solange die FFT nicht läuft. Sie ist bedarfsgesteuert, und `/api/state`
+  verlängert die Freigabe **nicht**. Bei dieser Messung lief sie durchgehend, weil ein Browser
+  den AUDIO-Tab offen hatte — die geplante „ohne FFT"-Vergleichsphase kam deshalb nicht zustande.
+  Wer sie braucht: alle Browser-Tabs schließen und erneut messen.
+
+## LFO-Kurven: zwei Familien, und warum das zählt
+
+`lfoShape()` verkettet zwei Schritte — der **Modus** formt die Phase, die **Kurve** formt das
+Ergebnis. Daraus folgt eine Unterscheidung, die keine Beschriftung verrät:
+
+- **Rampen** (Linear, Quad, Cubic, Sine) laufen monoton 0 → 1. Sie *brauchen* einen Modus, der
+  sie wieder herunterbringt; Sine + PingPong ergibt einen sauberen Auf-und-Ab-Impuls.
+- **Gauss ist bereits ein vollständiger Impuls** — dunkel → hell → dunkel, mit der Spitze beim
+  Eingangswert 0,5.
+
+Deshalb ergibt **Gauss + PingPong zwei Blitze**: PingPong schickt den Eingang 0 → 1 → 0, er
+passiert die 0,5 zweimal, und die Glocke feuert jedes Mal. Kein Fehler, sondern eine Glocke auf
+eine bereits gefaltete Rampe. Für einen einzelnen weichen Impuls: **Gauss + Forward.**
+
+    Gauss  Forward   |      ....:::--==+**###@@@@@@@@@###**+==--:::....      |  1 Spitze
+    Gauss  PingPong  |  ..:-=+*#@@@@@#*+=-:..         ..:-=+*#@@@@@#*+=-:.. |  2 Spitzen
+    Sine   PingPong  |   ....::--===++***###@@@@@@@@@@###***++===--::....   |  1 Spitze
+
+Nebenbefund: **Gauss + Reverse ist identisch zu Gauss + Forward**, weil die Glocke symmetrisch um
+0,5 liegt und das Umdrehen sie auf sich selbst spiegelt. Bei dieser Kurve hat das Modus-Menü
+faktisch nur zwei Ergebnisse statt drei.
+
 ## Performance & Skalierung
 
 - **Kein FPU am ESP32-C3** (RV32IMC, 1 Core @ 160 MHz). Jedes

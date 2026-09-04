@@ -5336,3 +5336,942 @@ BPM-Median 122, `ig` konstant auf 1 — kein Wandern der Verstärkung mehr.
 
 Den entscheidenden Test hat der User gemacht, und zwar den härtestmöglichen: **Musik komplett
 gestoppt.** *„es hält. ich habe musik gestoppt, er bleibt wie eine eins drauf."*
+
+## 2026-09-02 — Code-Review über den Audio-Umbau
+
+Nach der Messsession ein Review über `git diff future...HEAD` — Codequalität, toter Code,
+Kommentare, Magic Numbers, Frontend/Backend-Parität. Fünfzehn Befunde, elf davon selbst am
+Code gegengeprüft, bevor irgendetwas angefasst wurde. Was dabei herauskam, ordnet sich in drei
+Gruppen, und die dritte ist die interessante.
+
+### Echte Fehler, die niemand gemeldet hatte
+
+- **Der Chaser fehlte in der Bandfreigabe.** `routed()` prüfte die sieben FX-Objekte, aber
+  `chaserTrigger` und `chaserFadeTrigger` nehmen dieselben Bandnummern und laufen durch dasselbe
+  `checkAudioTrg()`. Ein Chaser auf „Mid" hatte damit nie ein laufendes Mid-Band: `sdRunMid`
+  blieb falsch, `sdMid.onsetMs` konstant 0, und der Chaser schaltete ausschließlich über den
+  3000-ms-Notfallpfad weiter. Das liest sich als „Audio-Trigger tut beim Chaser nichts", und
+  genau das war es auch.
+
+- **`/audio_tune?fft=0` fütterte den Tempo-Schätzer mit einem eingefrorenen Zeitstempel.**
+  `sdOnsetMs` wird nur im FFT-Zweig geschrieben. Im Legacy-Zweig behielt es seinen letzten Wert,
+  und die Zeile darunter nimmt ihn, sobald er ungleich null ist. Der Schätzer bekam also auf
+  jedem Block dieselbe Zeit, der Abstand war immer 0, und es wurde nie ein Intervall gespeichert.
+  Jetzt wird es im Legacy-Zweig zurückgesetzt.
+
+- **`tempoRef` war eingefroren, solange ein Tap-Anker stand.** Die Referenz wird nur im
+  unverankerten Pfad fortgeschrieben. Tappt man 174 über einer Referenz von 90 und läuft der
+  Anker zwanzig Minuten, dann steht beim Ablaufen des Ankers wieder 90 da — und jede korrekte
+  Messung nahe 174 ist über 15 % daneben, also klemmt die Anzeige weitere `tempoJumpConfirm`
+  Auswertungen. An beiden Stellen, an denen der Anker fällt, wird `tempoRef` jetzt aus
+  `globalBPM` neu gesetzt.
+
+- **Der AUDIO-Tab pollte so schnell wie das Gerät antworten konnte.** Das `useEffect` hatte
+  `drawSpec` in den Dependencies, `drawSpec` hängt an `tune`, und der Merge gibt bei **jeder**
+  Antwort ein frisches Objekt zurück. Also: Antwort → neue Identität → Effekt neu → `clearInterval`
+  → sofortiger `poll()`. Das 40-ms-Intervall existierte nur auf dem Papier; faktisch lief eine
+  Anfrage pro Antwort gegen einen Server, der eine Anfrage zur Zeit aus der Hauptschleife
+  bedient. Genau die Last, für deren Beseitigung die beiden Endpunkte vorher zusammengelegt
+  worden waren. Die Zeichenfunktionen liegen jetzt in Refs, die Deps sind nur noch `[paused]`.
+
+- **Zwei Robustheitslöcher.** `/hwaudio` ohne `sens` setzte die Empfindlichkeit stillschweigend
+  auf 0 (`""`.toInt()). Und die aus NVS geladenen Shift-Werte umgingen die Clamps, die die Route
+  anlegt — `tuneInputGainShift` geht als `agPeakWin << (5 - shift)` in die Verstärkungsregelung,
+  ein gespeicherter Wert über 5 ist damit undefiniertes Verhalten. Beides gefixt, die Clamps
+  spiegeln jetzt die Bereiche der Route. Dazu ein Querbezug, den zwei unabhängige Clamps nicht
+  leisten können: `blo=2&bhi=9` passierte beide und drehte den Bandpass um.
+
+### Kommentare, die Code beschrieben, den es nicht mehr gibt
+
+Der Autokorrelations-Block war vollständig tot — `tempoRing[192]`, `tempoAutocorr()`,
+`tempoFluxMean`, `tempoAvgSeeded`, `tempoCandidate`, `tempoAgree`, `TEMPO_LAG_MIN`. Kein Leser
+mehr, nirgends. Dazu drei Telemetriefelder (`pB`/`pH`/`pD`), die weiterhin über
+`/api/audio_debug` veröffentlicht wurden und konstant 0 meldeten, während der Kommentar darüber
+behauptete, man könne damit „die Oktaventscheidung inspizieren statt sie zu erschließen". Wer
+das zum Debuggen benutzt hätte, hätte drei Nullen als Befund gelesen.
+
+Übrig geblieben waren außerdem: eine Abschnittsüberschrift „TEMPO TRACKER (autocorrelation over
+the flux history)" über einem Intervall-Median, ein Kommentar über eine Q7-Sinustabelle ohne
+Tabelle, eine Erklärung der Onset-Gewichtung ohne Gewichtung, ein `HISTORY_LEN`-Kommentar, der
+von einem 66-ms-Poll sprach, den es nie gab (40 ms), und in `WebAPI.h` ein verwaister Block, der
+den zusammengelegten `/api/spectrum`-Endpunkt dokumentierte — direkt über `/audio_tune`, so dass
+er beim Lesen von oben nach unten wie dessen Dokumentation aussah, und im direkten Widerspruch
+zu dem Kommentar vierzig Zeilen darüber, der die Zusammenlegung begründet.
+
+**Das ist die eigentliche Lehre dieses Reviews.** Diese Kommentare waren nicht schlampig — sie
+waren zum Zeitpunkt ihres Schreibens korrekt und sorgfältig. Sie sind falsch geworden, weil der
+Code unter ihnen ersetzt wurde. Ein Kommentar, der ein Verfahren begründet, muss mit dem
+Verfahren sterben, sonst wird er zur Falschaussage mit dem Autoritätsanspruch einer Erklärung.
+
+### Magic Numbers auf genau dem Pfad, der von Hand debuggt wird
+
+Der Tempo-Pfad hatte die Konstanten inline stehen, obwohl er der Pfad ist, an dem einen ganzen
+Abend lang von Hand gedreht wurde — und obwohl zwei ihrer Geschwister (`tempoSlewPct`,
+`tempoJumpConfirm`) längst benannt und persistiert sind. Herausgezogen und benannt:
+
+    BEAT_PHASE_WINDOW_PCT    15    Akzeptanzfenster des Phasendetektors, in % eines Beats
+    BEAT_PHASE_GAIN_DIV       4    Schleifenverstärkung: 1/N des Phasenfehlers pro Onset
+    BEAT_GRID_MISS_LIMIT     40    Onsets daneben, bevor der Downbeat neu gesetzt wird
+    TAP_FOLD_TOLERANCE     0.08    wie nah ein Verhältnis an einer Rasterstufe liegen muss
+    TAP_ANCHOR_MISS_LIMIT    20    Auswertungen ohne faltbare Beziehung, dann fällt der Anker
+    TAP_ANCHOR_RAW_GAIN_DIV   8    wie schnell die Rohreferenz des Ankers nachzieht
+    TEMPO_ANCHOR_BAND_PCT     8    Band um den Anker — bewusst gleich TAP_FOLD_TOLERANCE
+    TEMPO_REF_GAIN_DIV       16    Drift der unverankerten Referenz
+    SD_THR_FRAC_Q8_MAX/MIN 230/77  Schwellenlage im [Boden..Spitze]-Bereich, Q8
+    SD_THR_FLOOR_MARGIN       8    damit die Schwelle nicht auf den Boden fällt
+    MIC_RAW_CLIP_LEVEL       ...   0,98 × Vollaussteuerung des 32-Bit-I2S-Worts
+    DMX_FRAME_INTERVAL_MS    30    eine Konstante für Zusammenbau *und* Senden des Frames
+
+Der letzte war ein Doppel-Literal an zwei Stellen, die übereinstimmen müssen. Ändert man eine,
+wird der Frame in anderem Takt zusammengebaut als gesendet — ohne Compilerfehler, und das
+Symptom (veraltete Pan/Tilt-Werte im gesendeten Frame) sieht aus wie ein Engine-Fehler.
+
+### Sprachregel verletzt
+
+`sim/sim.cpp` gab durchweg auf Deutsch aus — Spaltenköpfe, Fehlermeldungen, Musterbeschreibungen,
+sogar `return "falsch";`. Die Regel ist eindeutig und kennt keine Ausnahme für Werkzeuge:
+Code, Kommentare, Commit-Messages, Ausgaben — englisch; Deutsch nur unter `doc/content/`.
+Vollständig übersetzt, danach identische Zahlen im `--mode compare` (31 % / 81 % / 100 %).
+
+### Was das Aufräumen *nicht* gebracht hat
+
+Flash vorher 94,1 %, nachher 94,2 %. Der tote Autokorrelationscode kostete nichts — der Linker
+hatte ihn längst verworfen; die 384 Byte `tempoRing` schlugen mit 8 Byte RAM zu Buche. Bezahlt
+haben die neuen Clamps und Kommentare. Notiert, weil die Erwartung „toten Code entfernen schafft
+Platz" naheliegend und falsch ist, und weil `CLAUDE.md` bis heute 91,8 % behauptete — die Zahl
+ist jetzt korrigiert, mit dem Hinweis, sie aus `pio run` zu lesen statt der Datei zu glauben.
+
+### Nicht angefasst
+
+Vier Punkte stehen im Backlog statt im Diff: die toten MID/HIGH-LEDs im Header (braucht eine
+Entscheidung zwischen Ehrlichkeit und CPU), die eingefrorene Pegelanzeige unter `fft=0` (ein
+Notausgang, kein Betriebsmodus), die fehlende Oberfläche für die Pan/Tilt-Ratenbegrenzung, und
+`--comment` am Code-Review, das ohne GitHub-PR wirkungslos ist.
+
+Alles per `pio run`, `pio run -t buildfs` und `scripts/check_ui.sh` verifiziert (8/8 Blöcke).
+**Nicht am Gerät getestet** — der Chaser-Fix und der Poll-Fix wollen beide vor dem nächsten Set
+kurz angesehen werden.
+
+## 2026-09-02 — Sync bis 64 Beats, echte Ground Truth, Legacy raus
+
+Drei Anforderungen aus einem Rutsch, alle vom User: Beat-Trigger bis 64 Beats, die Frage warum
+der Simulator keine Wahrheit für echte Musik kennt, und die Ansage, dass der ganze Legacy-Ballast
+weg kann.
+
+### Sync-Teiler bis 64 Beats
+
+`syncBeats[]` hatte sieben Einträge und endete bei 8 Beats. 16/32/64 sind **hinten angehängt**
+(Indizes 7/8/9), nicht in musikalischer Reihenfolge eingefügt — der Index ist das, was in jeder
+Szene und jedem Preset in NVS landet, ein Umsortieren hätte also jede gespeicherte Show
+stillschweigend umgedeutet. Die Oberfläche sortiert beim Anzeigen, die Tabelle nicht.
+
+Beim Nachzählen der Clamp-Stellen ein Beinahe-Fehler meinerseits: `MovementEngine` clampt auf
+0..7, `syncBeats[]` hatte aber nur 7 Einträge — ich hielt das für einen Zugriff hinter das Array
+und schrieb das auch so hin. Falsch. Es gibt eine **zweite** Tabelle, `moveSyncBeats[8]` (1 bis
+128 Beats), und `moveFX.process()` bekommt genau die. Ich hatte den Clamp gegen das falsche
+Array gelesen — derselbe Fehlertyp, den das Review desselben Tages als Ursache aller fünf
+Tempo-Fehler benannt hatte: *eine Regel gegen die falsche Referenz geprüft.* Beide Tabellenlängen
+heißen jetzt `SYNC_BEATS_COUNT` und `MOVE_SYNC_BEATS_COUNT` und sind dort definiert, wo indiziert
+wird, damit eine Klasse nicht länger gegen eine Länge clampen kann, die sie nicht kennt.
+
+Zwölf Sync-Clamps umgestellt; drei weitere `0, 6` sind **keine** Sync-Werte, sondern
+Rad-Positionen für `rGoboMap` und bleiben.
+
+### `--beats`: Wahrheit für echte Musik
+
+Auf die Frage „warum haben wir das nicht" gibt es keine gute Antwort — es war nie blockiert, es
+hat nur nie jemand gebaut. WAV konnte der Simulator schon, MP3 und Streams gehen über `ffmpeg`
+ohne Codeänderung. Was fehlte, war die **Bewertung**: das F-Maß lief gegen das synthetische
+Raster, also gegen eine Wahrheit, die es bei einer echten Datei nicht gibt.
+
+`--beats <datei>` liest jetzt annotierte Beatzeiten (eine Sekundenzahl je Zeile, zweite Spalte
+wird ignoriert, damit Audacity-Label-Exporte direkt funktionieren) und ersetzt damit das
+synthetische Raster vollständig. Beim Verdrahten sofort in die eigene Falle getreten:
+`resetEngine()` macht `track = Track()` und warf die frisch geladene Annotation weg — „Onsets 91
+gegen 0 echte Beats". Genau die Lehre vom Vortag, *was gemessen wird, muss nach dem Reset gesetzt
+sein*, nur diesmal im Werkzeug statt im Messskript. Die Annotation liegt jetzt außerhalb von
+`Track` und überlebt den Reset.
+
+Gegenprobe an einer erzeugten 124-BPM-Datei (Kick plus Hi-Hats auf den Off-Beats): **Precision
+100 %, Recall 98 %, F 0,989, gemeldet 123 gegen 124 echt** — und ein konstanter Versatz von
+**10,7 ms**. Das ist die Eigenlatenz des Detektors, und sie war vorher schlicht nicht messbar.
+
+### Legacy ausgebaut
+
+Vier Dinge entfernt, jedes mit einer Begründung in `doc/content/proposal.md`, damit die Ansätze
+nicht mit dem Code verschwinden:
+
+1. **Breitband-Hüllkurvenpfad** (`fft=0`) — trennte nicht nach Frequenz, sondern danach, wie
+   schnell der Gesamtpegel steigt. Er leitete Mid/High-Schwellen aus der **Bass**-Schwelle ab,
+   weshalb ein bassbetonter Track die High-Schwelle über alles hob, was das High-Band je
+   produzierte. Und er ließ beim Betreten `sdOnsetMs`, Pegelanzeige und Auto-Gain hinter sich —
+   ein Notausgang, der drei andere Dinge kaputtmacht, ist keiner.
+2. **Rahmenbasierte Bass-Erkennung** (`bsd=0`) — 32 ms Auflösung sind bei 128 BPM schon 7 % eines
+   Beats, und der Schätzer arbeitet auf genau diesen Abständen. Für **Mid und High** ist der
+   rahmenbasierte Vergleich bewusst **geblieben**: er ist der Rückfall unter `sab=0`, dem
+   Notausgang für die CPU-Messung.
+3. **`flux`** — ein globaler Schalter für etwas, das pro Band entschieden gehört; `db`/`dm`/`dh`
+   tun das seit Längerem richtig.
+4. **`audioUseTracker` und `tempoTapLock`** — zwei Schalter und eine gespiegelte Kopie für genau
+   ein Flag. Das Menü bot daraus „auto tracker" gegen „interval median" an, also zwei Schätzer,
+   von denen es nur noch einen gibt. Übrig ist `tempoAuto`; beide API-Schreibweisen bleiben, weil
+   sie von verschiedenen Stellen der Oberfläche kommen.
+
+Dazu toter Frontend-Code (`fluxOn`, deklariert und nie benutzt).
+
+**Was es gebracht hat, ehrlich gerechnet:** Flash 94,2 % → 94,0 %, also rund 1,6 KB. Weniger, als
+die Menge an entferntem Code vermuten lässt — dieselbe Lehre wie beim toten
+Autokorrelationscode am selben Tag. Der Gewinn liegt woanders: es gibt jetzt keinen zweiten
+Analysepfad mehr, in dem sich Fehler wie der eingefrorene Zeitstempel verstecken können, und
+keine Oberfläche mehr, die Verfahren anbietet, die es nicht gibt.
+
+**Verifikation.** `pio run`, `pio run -t buildfs`, `scripts/check_ui.sh` (8/8). Entscheidend:
+der Simulator lieferte nach dem Ausbau **bit-identische** Ergebnisse zur vorher aufgenommenen
+Baseline — `--mode compare` über alle Muster (31 % / 81 % / 100 %) und der echte WAV-Lauf
+(F 0,989). Das Verhalten hat sich nicht geändert, nur die Menge an Code, in der es passieren
+kann. **Am Gerät noch nicht gefahren.**
+
+## 2026-09-02 — Psychoakustik im Simulator: was trägt, was nicht, und was ich nicht glaube
+
+Auftrag: einen psychoakustischen Ansatz entwickeln, damit der Beat so zuverlässig gefunden wird
+wie von einem Menschen. Dazu ein Überblicksartikel und sechs Quellen.
+
+### Die Absage zuerst
+
+Vier der sechs Quellen ([2] Lacoste/Eck, [3] Eyben/Böck BLSTM, [5] Davies/Böck TCN, [6] Hung
+et al. Transformer) sind neuronale Netze, und [4] setzt ein dynamisches Bayes-Netz auf ein RNN.
+Das ist der Stand der Technik und auf einem C3 ohne FPU mit 78 KB freiem Flash nicht erreichbar.
+Ich habe das gesagt, statt so zu tun als ob. Erreichbar — und lohnend — ist das, was diese
+Arbeiten als **Eingangsdarstellung** benutzen; genau dort sitzt die Wahrnehmungsmodellierung.
+
+Gebaut wurden also drei klassische Stufen auf der **FFT der Firmware**, in Ganzzahlarithmetik,
+jede einzeln abschaltbar: Bark-Bänder, logarithmische Kompression, SuperFlux-Maximumfilter,
+dazu der Standard-Peak-Picker aus Bello et al.
+
+### Zwei Fehler im eigenen Prüfstand, bevor irgendeine Zahl etwas wert war
+
+Der erste Durchlauf meldete über **jedes** Muster und **jedes** Tempo identische Onset-Zahlen
+(131/129/134/132). Ursache: `psyRun` setzte `track = Track()` und warf damit Tempo, Pegel und
+Kickmuster auf die Voreinstellung zurück — jede Variante hörte denselben Default-Track. Exakt
+dieselbe Falle wie zwei Stunden vorher, als `resetEngine()` die frisch geladenen Beat-Annotationen
+verwarf. **Zweimal am selben Tag dieselbe Ursache: die Quelle wurde zurückgesetzt, nachdem sie
+konfiguriert war.**
+
+Der zweite Durchlauf sah dann *gut* aus — 51 % gegen 20 % für die Firmware. Und war ebenfalls
+Müll: die Onset-Rate lag konstant bei ~3/s, unabhängig vom Tempo. Bei 128–174 BPM fällt das
+zufällig mit der Beatrate zusammen (100 % in jeder Zeile), darunter nicht (0 % in jeder Zeile).
+Der Peak-Picker tastete den Klangteppich ab, statt Ereignisse auszuwählen — lokales Maximum über
+nur ±1 Frame. Auf ±3 Frames und ein längeres Mittelungsfenster umgestellt.
+
+Die Lehre ist dieselbe wie gestern, nur eine Ebene höher: **erst prüfen, ob die Eingangsgröße
+plausibel ist — hier die Onset-Rate gegen die bekannte Ereignisrate — bevor man die Ausgangszahl
+interpretiert.** Ein Ergebnis, das in jeder Zeile entweder 0 % oder 100 % ist, ist kein
+Ergebnis, sondern ein Artefakt.
+
+### Was dann wirklich herauskam
+
+Gegen die annotierte 124-BPM-Datei:
+
+| Variante | Onsets/s | Prec | Recall | F | Versatz |
+|---|---|---|---|---|---|
+| Firmware | 2,02 | 100 % | 98 % | 0,989 | +10,7 ms |
+| Bark, linear | 3,51 | 58 % | 99 % | 0,733 | +14,2 ms |
+| + log | 4,00 | 49 % | 96 % | 0,652 | **+2,1 ms** |
+| + SuperFlux | 3,98 | 50 % | 96 % | 0,654 | +2,1 ms |
+
+**Der belastbare Gewinn ist die logarithmische Kompression:** sie senkt den systematischen
+Zeitversatz von +14,2 auf +2,1 ms und schlägt damit auch die Firmware um 8,6 ms — 1,8 % eines
+Beats bei 124 BPM. Sauber gemessen, gegen echte Ground Truth, auf demselben Signal.
+
+**Precision ~50 % ist kein Fehler.** Die zusätzlichen Onsets sind die Hi-Hats, die tatsächlich
+da sind. Ein Breitband-Onsetdetektor tut genau das, wofür er gebaut ist.
+
+**Und genau deshalb passt er nicht zum vorhandenen Schätzer.** Der Abstands-Median unterstellt,
+jeder Abstand sei der Beat; das gilt nur für einen absichtlich schmalbandigen Detektor. Auf
+derselben Datei liefert der Median bei drei von fünf Varianten **gar keine Antwort**, während
+die Autokorrelation bei allen 125 gegen 124 echte BPM meldet. Ein psychoakustisches Front-End
+ist also kein Austauschteil, sondern ein anderer Zweig der Pipeline — und der verlangt die
+Autokorrelation zurück, die am Vortag mangels Tap-freier Leistung ausgebaut wurde.
+
+Der SuperFlux-Maximumfilter änderte nichts Messbares. Kein Gegenbeweis: er zielt auf Vibrato,
+und weder das synthetische Material noch die Testdatei enthalten welches.
+
+### Die Zahl, der ich nicht traue
+
+Über 5 synkopierte Muster × 6 Tempi meldet der Simulator für Breitband-ODF + Autokorrelation
+**57 % gegen 20 %** für die Firmware. Das sieht nach einer Verdreifachung aus. Ich schreibe es
+hin und traue ihm nicht: **derselbe Simulator meldete am Vortag 81 % für eine Kette, die am
+Gerät 7 % erreichte.** Es ist eine Hypothese, bis sie an echter annotierter Musik gemessen ist.
+Mit `--beats` ist das jetzt möglich — vorher war es das nicht, und das ist der eigentliche
+Fortschritt des Tages.
+
+Nichts davon ist portiert. Details, Ablationstabelle und Kostenabschätzung in
+`doc/content/proposal.md`, Abschnitt 5.
+
+## 2026-09-03 — Validierungssammlung, und der Befund, den sie freigelegt hat
+
+Auftrag: komplexere Tracks für den Simulator bauen, weg von 120 BPM, auch Hip-Hop — und dann
+eine Empfehlung, was am Gerät zu testen ist.
+
+### Was gebaut wurde
+
+`sim/mktracks.py` erzeugt sieben synthetisierte Tracks mit exakten Beat-Annotationen: boombap-86,
+trap-70, strings-92, breakdown-132, house-145, techno-150, dnb-174. Nicht als Klickmuster,
+sondern mit Instrumenten — Kick mit Tonhöhensturz von 110 auf 45 Hz, Snare aus Rauschen plus
+190-Hz-Körper, geschlossene und offene Hats, liegende Bässe, Flächen mit und ohne Vibrato,
+geswingte Achtel, ein Breakdown von acht Takten ohne jedes Schlagzeug.
+
+Entscheidend ist, was als Wahrheit danebensteht: **das Beat-Raster, nicht die Kickpositionen.**
+Auf synkopiertem Material sind das verschiedene Dinge, und sie zu verwechseln ist genau die Art,
+wie ein Detektor für einen Puls gelobt wird, den kein Mensch hört.
+
+### Der Befund
+
+Auf `techno-150` — Four-on-the-floor, der Fall, für den der Detektor gebaut wurde — fand die
+Firmware 64 von 144 Beats, F 0,144. Das roch nach einem Fehler in meinem Material, also habe ich
+denselben Track viermal erzeugt und nur den Pegel des liegenden Basses variiert. Recall:
+
+    Bass-Gain        0,00    0,50    0,90    1,25
+    Firmware          92 %    47 %    23 %    11 %
+    log-Flux (voll)   93 %    93 %    93 %    93 %
+
+Keine Streuung, eine monotone Dosis-Wirkungs-Kurve. **Der Detektor verliert neun von zehn Kicks,
+sobald ein Sub-Bass in derselben Lautstärke mitläuft.** Der Mechanismus ist trivial, sobald man
+ihn sieht: der Detektor vergleicht einen **Pegel** gegen einen nachgeführten Boden; ein liegender
+Bass hebt den Boden zur Spitze, der Bereich kollabiert, die Schwelle sitzt knapp unter der
+Spitze. Ein **Flux** ist eine Ableitung — ein konstanter Anteil trägt null bei, egal wie laut.
+
+Anschließend gefragt, ob Tuning das einholt. Nein: `brl=2` und `mrp=20` heben F von 0,148 auf
+0,31–0,33, Recall bleibt bei 27–35 % gegen 93 %. `brf` wirkt überhaupt nicht. Und `vmp` ab 20
+schaltet die Erkennung auf diesem Material **vollständig ab** — null Onsets. Der Fehler ist
+strukturell, nicht eingestellt.
+
+### SuperFlux, jetzt mit passendem Material
+
+Am Vortag hatte der Maximumfilter nichts Messbares bewirkt, weil kein Vibrato im Testmaterial
+war. Auf `strings-92`: Onsets 96 → 77, Precision 64 → 77 %, Recall 64 → 61 %, F 0,635 → 0,682.
+Richtung und Größenordnung wie bei Böck & Widmer. Der Filter arbeitet, er hatte vorher nur
+nichts zu tun. Ein Verfahren gegen unpassendes Material zu messen und dann „wirkt nicht" zu
+notieren, wäre hier der bequeme Fehler gewesen.
+
+### Die Ernüchterung
+
+Über alle sieben Tracks, Tempo innerhalb von 4 %: Firmware/Median 2 von 7, Firmware/ACF 3 von 7,
+psychoakustisch/Median 3 von 7, psychoakustisch/ACF 4 von 7. Oktavfehler bei dnb-174 (87) und
+techno-150 (75) treffen jedes Verfahren. **Kein Verfahren findet den Beat zuverlässig ohne Tap.**
+Was das psychoakustische Front-End kauft, ist Robustheit der Erkennung, nicht Richtigkeit des
+Tempos.
+
+### Und ein zweiter, unabhängiger Befund
+
+Auf `house-145` meldet die Firmware das Tempo **richtig** (145) und rastet trotzdem eine halbe
+Beat-Länge daneben ein: konstanter Versatz −187,9 ms bei 414 ms Beat, bei 98 % Precision. Sie
+findet sauber und regelmäßig — den Offbeat, auf dem dort Openhat und Bassnote liegen. Für Licht
+ist das der unangenehmste Fehler überhaupt: die BPM stimmt, und alles blitzt zwischen den
+Schlägen. Dieser Befund kommt aus einer Kennzahl, die es vor `--beats` gar nicht gab.
+
+### Zur Methode
+
+Zwei Dinge, die diese Sitzung gerettet haben und die beim nächsten Mal wieder gelten:
+
+- **Ein Ergebnis, das nach einem Fehler im eigenen Material riecht, wird durch eine Dosisreihe
+  geprüft, nicht durch Nachdenken.** Vier Läufe mit einer variierten Größe haben aus „vielleicht
+  ist mein Bass zu laut" einen belastbaren Mechanismus gemacht.
+- **Bevor ein Umbau empfohlen wird, wird gefragt, ob ein vorhandener Parameter es tut.** Hier
+  nicht — aber die Frage kostete zehn Minuten und hätte einen Port sparen können.
+
+Empfehlung für die Hardware steht in `handoff.md`, Details in `proposal.md` Abschnitt 6.
+
+## 2026-09-03 — Partitionstabelle, psychoakustischer Detektor in der Firmware, CPU-Messwerkzeug
+
+### Partitionstabelle: 94,0 % → 78,5 %
+
+Das Flash-Problem war nie ein Chip-Problem, sondern eine falsch verteilte 4-MB-Scheibe: die
+Standardtabelle gibt jedem OTA-Slot 1,25 MB, während das Dateisystem bei 55 % Füllung 1408 KB
+belegte. `partitions_horizon.csv` schiebt 512 KB herüber — App-Slots **1,5 MB (+20 %)**,
+Dateisystem 896 KB mit noch 124 KB Reserve.
+
+Zwei Dinge sind daran heikel und stehen deshalb im CSV selbst: **`nvs` bleibt bei `0x9000` mit
+unveränderter Größe** (dort liegen WLAN, Patch und sämtliche Presets — ein Verschieben löscht
+die komplette Gerätekonfiguration), und der Dateisystem-Offset wandert von `0x290000` nach
+`0x310000`. Letzteres heißt: **einmal USB-Flash mit `--fs`, OTA kann das nicht.**
+
+`scripts/flash_esptool.sh` hatte diesen Offset fest verdrahtet — mit einem Kommentar
+„decode it yourself if this board's table ever changes". Genau der Fall ist jetzt eingetreten.
+Das Skript liest ihn nun mit `gen_esp32part.py` aus der gerade gebauten `partitions.bin`, statt
+ihn zu glauben.
+
+Bei +20 % statt der angepeilten +22 % habe ich bewusst gestoppt: die letzten zwei Punkte hätten
+die Dateisystem-Reserve von 124 KB auf 60 KB gedrückt, und `index.html` wächst mit jeder
+UI-Arbeit.
+
+### Die Bandbreitenfrage — gute Idee, gemessen widerlegt
+
+Vorschlag aus dem Chat: wenn wir die FFT nur für die unteren Bänder brauchen, könnte man die
+Abtastrate senken oder weniger Bins nehmen. Die Mathematik dahinter stimmt vollständig — bei
+Dezimation um D und gleichbleibender Fensterlänge in Sekunden bleibt die Binbreite `fs/N`
+unverändert, der Aufwand fällt aber von `N·log N` auf `(N/D)·log(N/D)`. 16 kHz/512 und
+2 kHz/64 liefern beide 31,25 Hz bei 32 ms — Faktor 12 billiger.
+
+Gemessen (Recall gegen 120 echte Beats, oberstes Bark-Band variiert):
+
+    bis          300 Hz   510 Hz   3700 Hz   8000 Hz
+    ohne Bass      82 %     82 %      80 %      92 %
+    mit Bass 1,25  58 %     58 %      72 %      93 %
+
+Ohne liegenden Bass reichen 300 Hz, dann wäre eine Dezimation um 26 möglich. **Mit** liegendem
+Bass steigt der Recall bis ganz nach oben weiter — physikalisch plausibel: wenn eine Bassnote
+denselben Grundtonbereich belegt, ist das Einzige, was einen Kick noch als Kick ausweist, sein
+breitbandiger Klick. Genau den schneidet die Dezimation weg. Schon Dezimation um 2 kostet
+21 Punkte Recall. Also nicht dezimiert.
+
+### Der Detektor ist jetzt in der Firmware — abschaltbar
+
+`psyProcessFrame()` in `Audio_Engine.h`: 22 Bark-Bänder auf der vorhandenen FFT, Ganzzahl-`log2`,
+SuperFlux-Maximumfilter, Peak-Picker mit Mittelwert + δ·MAD. Über `/audio_tune?psy=1` im Betrieb
+umschaltbar, NVS-persistent, Standard **aus**. Kosten: **+2.396 Bytes** Flash.
+
+Eine Entscheidung dabei wurde gemessen statt geraten: der Peak-Picker braucht Vorlauf, und jeder
+Frame sind 32 ms Latenz zum Licht. w1=3 hätte ~96 ms gekostet — ein Fünftel eines Beats bei
+128 BPM. Die Messung zeigt, dass **w1=1 den vollen Recall von 93 % hält** (Precision fällt von
+66 auf 57 %, was der Tempo-Schätzer weit besser verkraftet als einen verlorenen Kick). Also
+w1=1, 32 ms.
+
+### Der Cross-Check, der eine selbstgebaute Falle fand
+
+Der Simulator compiliert die echte `Audio_Engine.h`, also lässt sich die portierte Fassung gegen
+den unabhängigen Prototyp prüfen. Erster Versuch: **identische Zahlen mit und ohne `--psy`.**
+Ursache: `run()` protokollierte `sdBass.lastOnsetMs` — also immer den Sample-Rate-Detektor,
+unabhängig davon, welcher gerade die Lichter steuert. Dieselbe Falle hätte am Gerät zugeschlagen,
+denn dieselbe Größe speist die Onset-Telemetrie.
+
+Behoben mit `bassOnsetUsedMs`: „der Onset, den der Motor tatsächlich benutzt hat". Danach
+reproduziert die Firmware den Prototyp auf 1 Prozentpunkt genau:
+
+    Bass-Gain        0,00    0,50    0,90    1,25
+    Sample-Rate       92 %    47 %    23 %    11 %
+    psychoakustisch   91 %    92 %    92 %    92 %
+
+**Das ist der dritte Fall an drei Tagen, in dem gegen die falsche Referenz gemessen wurde.**
+Beim ersten war es der Tap-Zähler auf der falschen Uhr, beim zweiten die Beat-Annotation, die
+`resetEngine()` verwarf, jetzt die Onset-Quelle. Das Muster ist immer dasselbe und immer
+erkennbar an *zu ähnlichen* Zahlen: wenn zwei Varianten exakt gleich abschneiden, misst man
+zweimal dieselbe.
+
+### Erwartung für das Hardware-A/B, vorher aufgeschrieben
+
+Über die sieben Validierungstracks gewinnt `psy=1` beim Recall auf sechs von sieben und beim
+Tempo auf vier von sieben (gegen zwei). Zwei Vorhersagen entscheiden den Test:
+
+- Auf basslastigem Material (techno, dnb, trap) soll er **deutlich** gewinnen — Recall 10 → 88 %,
+  24 → 74 %, 21 → 75 %. Tut er das nicht, war der Simulator wieder zu optimistisch.
+- Auf dünnem synkopiertem Material meldet er das **doppelte Tempo** (Trap 170 statt 70,
+  Boom-Bap 170 statt 86), weil er zusätzlich die Hi-Hats findet und der Abstands-Median
+  daraufhin die Periode halbiert. **Der Tap-Anker soll genau das auffangen** — deshalb ist
+  beides zu testen, ohne Tap und mit.
+
+Aufgeschrieben *bevor* geflasht wird, damit hinterher nicht die Erinnerung an die Vorhersage
+angepasst wird.
+
+### CPU-Messung: Werkzeug statt Schätzung
+
+`scripts/measure_cpu.sh` liest `lps`, `engUs`/`engMax`, `audUs`/`audMax`, `fftUs` und `loopMax`
+und rechnet sie in Prozent eines Kerns um. Zwei Phasen, weil `fftUs` **0** ist, solange niemand
+das Spektrum abfragt — die FFT ist bedarfsgesteuert, `/api/state` verlängert die Freigabe nicht,
+und das Wachhalten der Freigabe ist selbst Last. Genau diese Unterscheidung stand bisher nirgends
+und hätte die Messung verdorben.
+
+Die Zahl entscheidet zwei offene Fragen auf einmal: ob die dauernd laufende FFT bezahlbar ist,
+und ob ein anderer SoC etwas brächte. Zur zweiten: nur ESP32, S3, H4 und P4 haben eine FPU —
+**C5, C6 und S2 haben keine**, wären für unsere Soft-Float-Last also wirkungslos, und der P4 hat
+kein WLAN. Übrig bleibt der S3 als einziger sinnvoller Tausch, und auch der erst, wenn die
+Messung sagt, dass es eng ist.
+
+## 2026-09-03 — Am Gerät: geflasht, CPU gemessen, psy=1 getestet und wieder ausgeschaltet
+
+### Flash
+
+Auto-Reset funktionierte, kein BOOT-Griff nötig. Firmware mit neuer Partitionstabelle, danach
+das Dateisystem auf `0x310000`. Gerät kam unter derselben IP zurück — **NVS hat überlebt**,
+Fixture-Patch und WLAN unverändert, Oberfläche lädt vom neuen Offset. Flash **78,5 %**.
+
+### CPU — und warum die erste Messung wertlos war
+
+Die erste Messung meldete die FFT mit 2913 µs. Auffällig war nicht die Größe, sondern eine
+Unmöglichkeit: der Mittelwert von `audUs` (959 µs) lag **unter** dem von `fftUs`, obwohl die FFT
+innerhalb des Audio-Blocks läuft. Ein Teil kann nicht teurer sein als das Ganze.
+
+Im Code lagen zwei Fehler:
+
+- **`fftUs`** wurde vom Anfang des Blocks gestoppt und enthielt damit die Sample-Skalierung über
+  512 Werte, das Auto-Gain und den **kompletten Sample-Rate-Detektor** — Arbeit, die ohnehin
+  läuft. Faktor 2,4 zu hoch.
+- **`audUs`** wurde von jedem `pollAudioEngine()`-Aufruf überschrieben, auch von den ~170/s, die
+  noch keinen vollständigen Block haben. Es zeigte meist einen Leerlauf.
+
+Beides korrigiert, `psyUs` ergänzt. Die echten Zahlen (ein Fixture, Mikrofon an):
+
+    Schleifenrate     172 /s     schlimmste Lücke 22 ms
+    updateEngines     252 us  ->  4,3 %
+    Audio-Block      3036 us  ->  9,5 %
+      davon FFT      1211 us  ->  3,8 %
+      davon psy        46 us  ->  0,14 %
+                              ---------
+                                ~14 %
+
+**Der C3 ist nicht CPU-begrenzt.** Die Chipfrage ist damit beantwortet — eine FPU brächte heute
+nichts. Die dauerhaft laufende FFT kostet 3,8 %, der psychoakustische Detektor 0,14 %.
+
+Nebenbefund: in der geplanten „ohne FFT"-Phase lief sie trotzdem durchgehend, weil ein Browser
+den AUDIO-Tab offen hielt und damit die Freigabe erneuerte. Für die Kernfrage egal, aber die
+Vergleichsphase kam nicht zustande.
+
+### Das A/B auf einem Trap-Track — und warum wir es abgebrochen haben
+
+Erste Zahlen sahen nach einem klaren Sieg aus:
+
+    psy=0    0,33 Onsets/s    (Beatrate 2,00 bei 120 BPM -- also 17 %)
+    psy=1    2,33 Onsets/s    (117 %)
+
+Faktor 7. Dann die Abstände histogrammiert statt die Anzeige zu lesen — und das Bild kippte:
+
+    Abstand-Median 256 ms -> 234 BPM
+    1/4 Beat 15 %   1/3 17 %   1/2 Beat 21 %   1 Beat NUR 7 %   dazwischen 20 %
+
+`psy=1` findet die Hi-Hats und die 1/16-Rolls mit. Für einen Onsetdetektor ist das richtig, als
+Tempoquelle über den Abstands-Median ist es unbrauchbar: gemeldet wurden 133–143 statt 120,
+während `psy=0` mit seinen wenigen Onsets **121** meldete — also richtig.
+
+**Erkennungsrate ist nicht Tempo-Richtigkeit.** Der alte Detektor findet wenig, aber das Wenige
+liegt auf dem Beat. Genau das entscheidet für ein Licht.
+
+Ein Sweep über `psyd` (384…2048) zeigte bei 900 eine Onset-Rate von exakt 2,00/s und die
+niedrigste Streuung des ganzen Laufs (5 %). Er wurde trotzdem nicht übernommen: der Tap kam
+mitten in den Sweep, hat ab da die Tempo-Spalte gefaltet und sie damit kontaminiert — und
+wichtiger, der Einwand aus dem Chat war richtig: **Trap ist ein pathologischer Fall.** Wer die
+Schwelle daran hochdreht, bis nur noch die lautesten Ereignisse durchkommen, verliert auf
+leiserem Material die Kicks. Auf einem einzelnen Genre zu tunen ist genau der Weg, auf dem der
+Rest kaputtgeht.
+
+Zurückgesetzt auf `psy=0`, `psyd=384`.
+
+### Was der Regressionstest zeigte — und was der eigentliche Befund des Tages ist
+
+Mit `psy=0` auf demselben Track:
+
+    GUI 118   Tap-Anker 116   (Wahrheit 120)
+    Onsets/s 0,87   Abstand-Median 921 ms = 65 BPM   davon 1 Beat: 16 %
+
+Die **rohen Abstände sind Müll** — der Median liegt bei zwei Beats, nur 16 % sind einen Beat
+lang. Trotzdem steht 118 in der Anzeige. Das leistet der **Tap-Anker**: er faltet die krummen
+Abstände auf die Stufe, die der Tap vorgegeben hat.
+
+Damit ist auch beantwortet, warum `psy=1` hier nichts bringt: es verbessert die Erkennung, aber
+die Erkennung war nie das, was die Anzeige rettet. Der Anker ist es.
+
+`psy=1` bleibt als abschaltbares Experiment im Code (2,4 KB, Standard aus). Um es nutzbar zu
+machen, bräuchte es eine Tempostufe, die dichte Onsets verträgt — Autokorrelation oder
+Kammfilter — also einen Pipeline-Tausch, keine Stellschraube. Siehe `proposal.md` Abschnitt 5.
+
+## 2026-09-03 (Nachtrag) — Das Genre-A/B kippt das Urteil: psy ist komplementär, nicht schlechter
+
+Der Eintrag oben endete mit „`psy=1` bleibt aus" — auf Grundlage **eines** Tracks (Trap). Das
+war voreilig. Über drei Genres am Gerät gemessen, jeweils **ohne Tap**, sieht es anders aus:
+
+| Genre | Wahrheit | `psy=0` | `psy=1` |
+|---|---|---|---|
+| Trap | 120 | **121** ✓ | 133–143 ✗ |
+| House | 122 | **122** ✓ (86 % der Abstände genau ein Beat) | 155 ✗ (59 % halbe Beats) |
+| Drum & Bass | 172 | 127, nur **9 %** der Messwerte richtig ✗ | **170, 92 % richtig** ✓ |
+
+Die D&B-Zahlen stammen aus je ~1.100 Messungen über 45 s je Seite, nicht aus einem Endwert.
+
+**Das ist kein „besser oder schlechter", sondern komplementär.** Der Sample-Rate-Detektor gewinnt,
+wo die Kicks auf dem Beat und spärlich genug liegen; der psychoakustische gewinnt, wo das
+Kickmuster synkopiert ist und der Schätzer mehr Belege braucht. Und D&B war exakt der Fall, der
+am 2026-09-02 live als „dnb 177bpm geht ja gar nicht" und „jetzt wieder bei 70" gemeldet wurde —
+jetzt 92 % richtig, **ohne Tap**.
+
+Konsequenz: `psy` bleibt, Standard weiter **aus**, und bekommt ein Bedienelement im AUDIO-Tab
+(„Kick · sample-rate" gegen „Kick · psychoacoustic") statt nur per `curl` erreichbar zu sein.
+Pro Set umschalten, nicht pro Track.
+
+### Zur Methode, zweimal an einem Tag dieselbe Lehre
+
+- **Ein Genre ist keine Stichprobe.** Nach Trap stand das Urteil fest und war falsch. Der
+  Einwand aus dem Chat — „ob trap wirklich das Maß der Dinge sein sollte" — hat den Fehler
+  verhindert, nicht die Messung.
+- **Onset-Menge ist nicht Tempo-Richtigkeit.** Auf Trap fand `psy=1` das Siebenfache an Onsets
+  und meldete trotzdem falsch, weil nur 7 % der Abstände einen Beat lang waren. Erst das
+  Histogramm der Abstände, nicht die Zählung, hat das gezeigt. Auf House dasselbe Muster: 3,10
+  gegen 2,00 Onsets/s und 59 % halbe Beats.
+- **Ein einzelner Endwert ist keine Messung.** Der erste D&B-Lauf zeigte GUI 169 als
+  Momentaufnahme, während der `tBPM`-Median bei 157 lag. Erst 1.100 wiederholte Messungen haben
+  daraus ein belastbares „92 % innerhalb von 5 %" gemacht.
+
+Und ein Befund, der unabhängig davon zählt: auf House arbeitet der **vorhandene** Detektor
+punktgenau — 2,00 Onsets/s bei einer Beatrate von 2,03, 86 % der Abstände exakt ein Beat, Tempo
+ohne Tap auf 0 % genau. Vier-Viertel ist gelöst.
+
+## 2026-09-03 (Nachtrag 2) — Auto-Gain kam nach einem Neustart nicht hoch. Zwei Ursachen, beide von mir.
+
+Live gemeldet: „autogain nach einem neustart kommt nicht hoch?" Am Gerät sofort reproduziert —
+`ig = 0`, `ag = 1`, Pegel 862 von 32767 (2,6 %), `xb = 0`, also **null Onsets**. Der klassische
+Deadlock: zu wenig Verstärkung, also keine Erkennung, also nie mehr Verstärkung.
+
+### Ursache 1: der gespeicherte Wert wurde nie mehr überschrieben
+
+Am 2026-09-02 hatte ich `saveAudioPrefs()` auf `if (!autoGain) prefs.putInt("a_ig", …)`
+umgestellt — mit der guten Begründung, dass ein von einer lauten Passage erzwungener Auto-Wert
+nicht zum Startwert jedes künftigen Boots werden soll. Was ich übersehen habe: in NVS **stand
+bereits eine 0** aus der Zeit davor. Und mit der neuen Regel wird dieser Wert bei aktivem
+Auto-Gain nie wieder überschrieben. Jeder Neustart landete also wieder bei 0 — dauerhaft.
+
+Die Ironie: der Kommentar an `autoGain` behauptet seit jeher „Not persisted: it re-converges
+within seconds of any restart. Only the on/off switch is stored." Der Code hat das nie getan.
+Jetzt tut er es: `a_ig` wird nur noch geladen, wenn die Verstärkung **manuell** ist. Dafür musste
+die Ladereihenfolge getauscht werden — `a_ig` wurde vor `a_ag` gelesen, also bevor überhaupt
+bekannt war, ob Auto-Gain an ist.
+
+### Ursache 2: das Beat-Gate hat einen alten Fix wieder aufgehoben
+
+Am 2026-09-02 kam auf Wunsch die Regel dazu, dass Auto-Gain nur hochregelt, während Beats
+eintreffen — richtig gegen das Aufreißen in Breaks und Flächen. Aber sie setzt voraus, dass
+Beats überhaupt **erkennbar** sind, und genau das gilt am unteren Ende des Verstärkungsbereichs
+nicht. Damit war ein Zustand wieder erreichbar, den ein früherer Fix schon einmal beseitigt
+hatte — der Kommentar an der Pegelprüfung beschreibt ihn wörtlich: „Once a loud passage had
+pushed the gain down to 0, ordinary music read below the floor … and never came back."
+
+Behoben mit `AG_STARVE_SHIFT = 1`: unterhalb dieser Verstärkung entscheidet die Pegelprüfung
+allein. Das ist sicher, weil sie ohnehin **bei voller Verstärkung** ausgewertet wird und damit
+schon die richtige Frage stellt — „wäre das ein echtes Signal, wenn man aufdrehte?". Bewusst
+begrenzt: ab Stufe 2 greift das Beat-Gate wieder, ein stiller Raum kann die Verstärkung also
+höchstens zwei Stufen anheben, und „kein Beat, kein Tempo" hält die Anzeige weiterhin fest.
+
+### Verifikation
+
+Simulator, Pegel-Sweep über einen 50×-Bereich: F ≥ 0,98 auf jeder Stufe, Verstärkung konvergiert
+korrekt von 4 auf 0, kein Clipping, Tempo überall richtig — die Änderung bricht den Normalbetrieb
+nicht.
+
+Am Gerät, direkt nach dem Neustart und **ohne Tap**:
+
+    vorher:  ig 0    0,00 Onsets/s   Pegel 2,6 %   kam nur durch einen Tap hoch
+    nachher: ig 3    1,90 Onsets/s   Pegel 16 %    klettert selbstständig auf ig 4
+
+### Zur Methode
+
+Beide Fehler entstanden dadurch, dass eine **einzeln richtige** Regel eine Voraussetzung der
+jeweils anderen zerstört hat: „speichere den Auto-Wert nicht" setzt voraus, dass der gespeicherte
+Wert dann auch nicht *gelesen* wird; „regle nur bei Beats hoch" setzt voraus, dass Beats
+erkennbar sind. Beide Male stand die verletzte Voraussetzung bereits als Kommentar im Code —
+einmal an `autoGain`, einmal an der Pegelprüfung. **Beim Ändern einer Regel gehört der Kommentar
+gelesen, der die alte begründet.**
+
+## 2026-09-03 (Nachtrag 3) — psy wieder ausgebaut, und der Fehler, der es fast falsch entschieden hätte
+
+### Der Beinahe-Fehler
+
+Nach dem guten D&B-Ergebnis (92 % richtig) sollte eine Gegenprobe her. Sie ergab Median 161 und
+nur 23 % — also „reproduziert nicht", woraufhin ich den Rückbau begonnen habe. **Es lief in
+diesem Moment House, nicht D&B.** Auf House ist das Verfahren bekanntermaßen schlecht; die 161
+sind exakt der Wert, der dort vorher schon gemessen wurde.
+
+Ein „stop" aus dem Chat hat den Rückbau abgebrochen, bevor irgendetwas geschrieben war, und die
+Klarstellung „eben lief house, jetzt dnb" hat den Fehler aufgedeckt. **Das ist der vierte Fall in
+drei Tagen, in dem gegen die falsche Referenz gemessen wurde** — nach dem Tap-Zähler auf der
+falschen Uhr, der von `resetEngine()` verworfenen Annotation und der Onset-Quelle, die immer den
+alten Detektor zeigte. Diesmal war es das Material selbst.
+
+Die Lehre, die noch fehlte: **auch die Testbedingung gehört protokolliert, nicht erinnert.** Was
+lief, war nicht Teil der Messung — deshalb konnte sie falsch interpretiert werden, ohne dass es
+auffiel.
+
+### Die saubere Messung, und die Entscheidung
+
+Danach auf tatsächlich laufendem D&B (getappt 172), je 35 s:
+
+    ohne Tap:   psy=0  Median 156, 41 % richtig      psy=1  Median 146, 20 %
+    mit Anker:  psy=0  Median 122,  3 % richtig      psy=1  Median 170, 65 %
+
+Nichts davon ist verlässlich. `psy=1` gewinnt nur mit Anker, und auch dort nur mit 65 %. Über
+alle drei Genres bleibt es dabei: klar schlechter auf House und Trap, uneinheitlich auf D&B.
+
+**Entscheidung im Chat: raus damit, Code vereinfachen, zurück auf den Stand, der funktioniert.**
+Das ist richtig — ein Verfahren, dessen Vorteil sich nicht zuverlässig reproduzieren lässt,
+rechtfertigt kein zweites Codepfad-Paar, keinen NVS-Schlüssel und kein Bedienelement.
+
+Entfernt: `psyDetect`, `psyProcessFrame()`, die Bark-Tabelle, der Peak-Picker, `psy`/`psyd`/
+`psyb` als Route und NVS-Schlüssel, `psyUs`, das Bedienelement im AUDIO-Tab und der `--psy`-Pfad
+im Simulator. 2.480 Bytes Flash zurück, ein Codepfad weniger.
+
+**Behalten wurde bewusst:**
+
+- **`bOn`** — der Zeitstempel des zuletzt benutzten Bass-Onsets. Ein gelatchtes Flag kann nur
+  „mindestens einer seit der letzten Frage" sagen; erst der Zeitstempel erlaubt das Histogramm
+  der Abstände, und **darauf beruhte heute jede einzelne Diagnose**.
+- Die korrigierte Zeitmessung (`fftUs` misst jetzt wirklich nur die FFT, `audUs` nur echte
+  Blöcke) und die beiden Auto-Gain-Fixes.
+- Der Forschungsstand im Simulator (`--mode psy`, `psyscore`, `psyband`, `mktracks.py`) samt
+  `proposal.md` §5–6. Das Verfahren ist dokumentiert und vermessen; es ist nur nicht besser.
+
+### Nebenbefund: die fehlende Vergleichsmessung ist nachgeliefert
+
+Ohne laufende FFT (kein AUDIO-Tab offen, nichts erzwingt sie mehr) läuft die Schleife mit
+**331/s statt 172/s**, und `audUs` fällt von 3036 auf ~600 µs. Ein Teil davon ist die FFT, ein
+Teil war die 25-Hz-Abfrage des offenen Browser-Tabs — die beiden lassen sich aus diesen Zahlen
+nicht sauber trennen, aber die Größenordnung ist damit belegt.
+
+### Was offen bleibt und nicht vergessen werden darf
+
+`psy=0` **mit** Tap-Anker auf 172 lieferte auf D&B Median 122 und nur 3 % innerhalb von 5 % —
+das ist die ausgelieferte Konfiguration, und `handoff.md` behauptet seit dem 2026-09-02, mit Tap
+stehe D&B im ±8-%-Band. Diese Messung widerspricht dem. Ob der Anker dort fällt, gar nicht erst
+greift oder auf eine falsche Stufe faltet, ist ungeklärt. **Das ist der nächste zu untersuchende
+Punkt** — und er hat nichts mit `psy` zu tun.
+
+## 2026-09-03 (Nachtrag 4) — Tap: gleitendes Fenster durch eine Kette ersetzt
+
+Gemeldet: manuelles Tappen bei D&B liefert 178 176 174 182 174 168 179 164 169 182 — „schon
+bissi random, ist das normal?" Und beim Weitertappen: „das sehe ich ja nicht wann es nichts mehr
+bringt, aktuell springt es beim weitertappen einfach immer."
+
+### Erst die Frage beantworten: ja, normal — aber nur zum Teil
+
+Bei 172 BPM ist ein Beat 349 ms lang, und `dBPM/dt = 60000/t²` ergibt **0,49 BPM pro
+Millisekunde**. Drei Taps liefern zwei Intervalle, also keinerlei Redundanz; ±18 ms
+Fingergenauigkeit sind dort ±9 BPM. Simuliert über 500 Läufe: SD 6,2, Bereich 155…192 — die
+gemeldeten 164…182 liegen mittendrin. Dieselbe Fingergenauigkeit ergibt bei 120 BPM nur SD 2,9,
+weil die Empfindlichkeit quadratisch mit dem Tempo wächst. **D&B ist beim Tappen intrinsisch
+doppelt so schwierig wie House.**
+
+### Aber das Springen beim Weitertappen war ein echter Mangel
+
+Der alte Code behielt die Taps der letzten **3 Sekunden**. Bei 172 BPM sind das etwa acht — jeder
+weitere Tap schob einen alten hinaus, und der Wert wurde immer wieder aus einer *rotierenden*
+Stichprobe berechnet. Er konnte gar nicht zur Ruhe kommen. Gemessen:
+
+    Taps    Sprung pro Tap        Genauigkeit (SD gegen die Wahrheit)
+            alt        neu        alt        neu
+      8    +/-1,0     +/-1,0      1,77      1,41
+     12    +/-2,0     +/-0,0      1,62      0,84
+     16    +/-1,0     +/-0,0      1,64      0,59
+     24    +/-2,0     +/-0,0      1,67      0,22
+
+Die alte Genauigkeit läuft bei SD 1,65 in eine Wand, weil das Fenster die Stichprobe deckelt.
+
+### Was jetzt drin ist
+
+Der Entwurf kam aus dem Chat: eine **Kette**, die weiterwächst, solange getappt wird, und die
+nach einer Sperrzeit von vorne beginnt.
+
+- `TAP_CHAIN_GAP_MS = 2000` — zwei Beats beim langsamsten zugelassenen Tempo (60 BPM = 1000 ms),
+  also kann kontinuierliches Tappen die eigene Kette nie brechen; Absetzen startet eine neue.
+- **Ausgleichsgerade** über Tap-Index gegen Tap-Zeit statt Mittelwert der Intervalle. Der
+  Mittelwert der Intervalle teleskopiert zu „Spanne ÷ (n−1)" und hängt damit ausschließlich am
+  ersten und letzten Tap — den beiden, die am ehesten daneben liegen. Die Ausgleichsgerade
+  gewichtet alle Taps, verdünnt einen Fehlgriff und konvergiert.
+- **Tap-Zähler im Knopf**, damit sichtbar ist, wie viel Substanz hinter dem Wert steckt. Feste
+  Breite, sonst reflowt die Zeile bei zweistelligen Zahlen — derselbe Fehler wie beim MIC-Badge
+  im Header.
+
+Keine Firmware-Änderung, reine Frontend-Arbeit.
+
+### Zur Methode
+
+Die erste Reaktion wäre gewesen, „ist normal, tapp öfter" zu antworten — die Rechnung stützt das
+ja. Sie war aber nur die halbe Wahrheit: **normal war die Streuung bei drei Taps, nicht das
+Nicht-Konvergieren bei dreißig.** Der Hinweis „das sehe ich ja nicht wann es nichts mehr bringt"
+hat den zweiten, echten Fehler freigelegt. Eine Erklärung, die zur Beobachtung passt, ist noch
+kein Beweis, dass es nichts zu reparieren gibt.
+
+## 2026-09-03 (Nachtrag 5) — Burst: wie viele, wie lange, in welchem Raster
+
+Gemeldete Lücke: „was der dimmer nicht kann ist z.b. dimm for 1 beat but rather alle 4 beats.
+bisher geht das nur über die kurvenform iwie. wäre beim movement ja auch nicht."
+
+Bestätigt: `sync` legte fest, **wie lange** eine Kurve dauert **und wie oft** sie sich
+wiederholt — dasselbe Feld für beides. Ein Teiler von 4 *streckte* die Kurve über vier Beats,
+statt sie in einem abzuspielen und drei zu warten. Nicht einstellbar, nur über die Kurvenform
+annäherbar.
+
+### Das Modell
+
+Drei unabhängige Zahlen, im Chat entworfen: **wie viele × wie lange, in welchem Raster.**
+
+    aktive Spanne = Anzahl x Dauer
+    pos = beatsElapsedTotal mod Raster
+    pos <  Spanne  ->  Phase = frac(pos / Dauer)     die Kurve laeuft, Anzahl-mal hintereinander
+    pos >= Spanne  ->  Phase = 1.0                   Pause
+
+Die Pause hält bei Phase 1.0, also am **Ende** der Kurve — das gibt `startVal` aus, bei der
+üblichen Flash-Decay-Einstellung dunkel. Genau das, wonach eine Pause aussehen muss.
+
+Verifiziert gegen die Beispiele aus dem Chat, ein Zeichen = 1/8 Beat:
+
+    1 Blitz alle 4 Beats   ####............................   aktiv 12 % (erwartet 12,5)
+    3 Blitze alle 4 Beats  ############....................   aktiv 37 % (erwartet 37,5)
+    Kreis 2 Beat/Raster 8  ################................   aktiv 25 % (erwartet 25)
+
+Und die Rückwärtskompatibilität, die zählt: bei Anzahl 1 und Raster = Dauer reduziert sich der
+Ausdruck exakt auf das alte `frac(beats / dauer)`. Über 40 Beats und fünf Teiler gemessen:
+**größte Abweichung 0.000000000.** Bestehende Shows verhalten sich unverändert.
+
+Bei Movement wirkt das Raster im BPM-Sync-Modus auf die **Bahn** selbst, weil dort
+`enginePhase = modPhase × 2π` gilt; während der Pause steht `modPhase` auf 1.0, also eine volle
+Umdrehung — der Kopf parkt am Startpunkt der Figur. Bei Audio-Trigger integriert die Bahn ihre
+eigene Geschwindigkeit, dort taktet das Raster nur die Größen/Geschwindigkeits-Modulation. Steht
+so im Code kommentiert.
+
+### Die Falle, die vorher zu entschärfen war
+
+`SceneData` wird als roher Struct-Block gespeichert, und das Laden prüft auf exakte Größe. Acht
+neue Felder hätten **jede gespeicherte Szene stillschweigend durchfallen lassen** — auf dem Gerät
+lagen vier benannte Presets (*Sky Moover*, *yellow three*, *beat moover*, *Wiggler*).
+
+Gelöst durch Anhängen ans Ende plus `SceneDataV1`, dessen Größe die alten Blobs erkennt: der
+Präfix ist byte-identisch, der Lesevorgang landet also korrekt, und nur der neue Schwanz bekommt
+seine Standardwerte. Nach dem Flash waren alle vier Presets unverändert da.
+
+Nebenbei: eine `inline void sceneMigrateV1(SceneData&)` ließ sich nicht übersetzen — der
+Arduino-Build zieht Funktionsprototypen vor die Struct-Definitionen. Deshalb steht die Migration
+ausgeschrieben an der Fundstelle, mit Begründung im Kommentar.
+
+### Und ein selbst gebauter Fehler, der die Oberfläche kurz lahmlegte
+
+Beim Ergänzen der vier Zeilen in `/api/get_dmx` habe ich ein führendes Komma gesetzt, obwohl die
+Zeilen bereits mit einem enden — und das abschließende vergessen. Ergebnis: `..."fMS":1000.00,,
+"fBn":1,"fRp":-1"dA":0...`, also ungültiges JSON und eine tote Weboberfläche. Aufgefallen sofort,
+weil der Funktionstest über `json.load` lief und nicht über Hinsehen. **Ein Test, der die Ausgabe
+wirklich parst, findet so etwas in derselben Minute.**
+
+Berührt: `FX_Engine.h` (beide Engines plus `burstPhase()`), `Moving_Head_Horizon.ino` (Struct,
+Migration, Szenen-Anwendung), `WebAPI.h` (Routen `bn`/`rp`, Speichern, Telemetrie),
+`data/index.html` (gemeinsamer `TriggerBlock`, damit alle vier Effekte es auf einmal bekommen).
+
+
+## 2026-09-03 (Nachtrag 6) — Der Burst-Parameter kam nie am Gerät an
+
+Gemeldet unmittelbar nach dem Ausrollen: „es klappt nicht, die werte werden immer wieder
+überschrieben auf every 1 beat."
+
+Ursache, und sie war ganz meine: die neuen Felder standen in der **URL**, in der Poll-Zusammen-
+führung und in der `pr2.*State`-Signatur — aber **nicht im Änderungsdetektor** von `syncFx`.
+Dieses Array entscheidet, ob überhaupt gesendet wird. Steht ein Feld nur in der URL, ändert sich
+das Array beim Verstellen nicht, es wird nichts geschickt, und der nächste Poll schreibt den
+unveränderten Gerätewert zurück. Von außen sieht das exakt aus wie „der Wert springt zurück".
+
+Zehn von elf Stellen waren richtig. Die elfte kostete eine Stunde.
+
+Behoben in allen vier Effektgruppen, mit einem Warnhinweis direkt an der Fundstelle. Gegenprobe:
+Wert gesetzt, sechs Polls hintereinander unverändert.
+
+### Was daraus in `CLAUDE.md` steht
+
+Die dortige Regel sagte „vier Stellen" und war damit falsch — allein das Frontend hat fünf. Sie
+ist jetzt eine vollständige Elf-Punkte-Liste, jeweils **mit dem Fehlerbild bei Auslassung**, denn
+das ist das eigentliche Problem: keine dieser Auslassungen erzeugt einen Compilerfehler oder eine
+Warnung. Sie erzeugen ein Bedienelement, das nichts tut, oder einen Wert, der eine Sekunde
+später zurückspringt.
+
+Dazu die beiden Fallen, die an diesem Tag zusätzlich zuschlugen: die `SceneData`-Größenprüfung,
+die gespeicherte Szenen stillschweigend verwirft, und die Kommas in `/api/get_dmx`, deren
+Verwechslung die gesamte Weboberfläche lahmlegt. Und die Prüfregel, die beides gefunden hätte:
+**Wert setzen, mehrfach zurücklesen, und die Antwort wirklich parsen statt sie anzusehen.**
+
+Und darüber, als Prinzip statt als Liste — aus dem Chat: **bei allem, was die Grenze zwischen
+Frontend und Backend überquert, sind immer beide Enden und beide Richtungen zu prüfen.** Der
+Rundlauf lautet: Bedienelement → Änderungsdetektor → URL → Route → Engine-Feld, und zurück über
+`/api/get_dmx` → Poll-Zusammenführung → Bedienelement. Fehlt ein Glied, meldet sich nichts — es
+entsteht ein Regler, der nichts tut, oder ein Wert, der zurückspringt. Für jedes Feld gehört
+deshalb Sender *und* Empfänger benannt, in beide Richtungen; wer nicht auf beide zeigen kann,
+ist nicht fertig. Steht als erster Abschnitt vor der Checkliste in `CLAUDE.md`.
+
+
+## 2026-09-03 (Nachtrag 7) — Burst braucht vier Zahlen, nicht drei
+
+Rückmeldung nach dem Ausrollen: „was noch nicht geht, ist die länge richtig einzustellen, so
+dass man iwie einen weichen dim haben kann. es macht ja einen unterschied ob blitz oder eher
+smooth." Und der Fall, der es beweist: *„kurze blitze von 1/2 beat länge, die 1 beat auseinander
+sitzen, davon 4 stück, alle 32 beats."*
+
+Kein Denkfehler — eine fehlende Dimension. **Länge und Abstand fielen zusammen**, weil die Kurve
+immer ihren ganzen Slot ausfüllte. Damit ist ein kurzer Impuls mit Lücke dahinter nicht
+darstellbar, und „weich" und „Blitz" sind dasselbe Bedienelement.
+
+Vier unabhängige Zahlen, dazu die Umbenennung, die ebenfalls aus dem Chat kam („sync ist, wann
+die schleife beginnt, nicht every"):
+
+    Sync      wann die Figur von vorne beginnt      (aeusseres Raster; hiess vorher "Every")
+    Count     wie viele Impulse
+    Spacing   wie weit die Impulse auseinander STARTEN   (hiess vorher "Sync")
+    Length    wie lange ein Impuls DAUERT              (neu, <= Spacing)
+
+Verifiziert, ein Zeichen = 1/8 Beat:
+
+    4x kurz 1/2, Abstand 1 Beat, Sync 8   ####....####....####....####....................
+    dasselbe weich: Length = Spacing      ################################................
+    2 Flashes je 1/2 Beat, Sync 4         ########........................................
+    3 Flashes je 1 Beat lang, Sync 4      ########################........................
+
+Die ersten beiden Zeilen sind der ganze Punkt: identische Impulszahl und identisches Raster, nur
+Length unterschiedlich — einmal vier kurze Stiche, einmal ein durchgehender Block.
+
+Rückwärtskompatibilität erneut geprüft: mit Count 1, Length = Spacing und Sync = Spacing
+reduziert sich der Ausdruck exakt auf das ursprüngliche `frac(beats / spacing)` — **größte
+Abweichung 0.000000000** über 40 Beats und fünf Teiler.
+
+### Szenen zum zweiten Mal erweitert
+
+`SceneData` bekam vier weitere Felder, also gibt es jetzt drei Layouts: V1 (ohne Burst), V2 (mit
+Burst, ohne Length) und aktuell. Alle drei werden über ihre Größe erkannt, jede ältere Fassung
+bekommt für den fehlenden Schwanz die Werte, die ihr altes Verhalten reproduzieren. Nach dem
+Flash geprüft: die vier benannten Presets sind unverändert da.
+
+### Und die Checkliste hat funktioniert
+
+Der Length-Parameter musste durch dieselben elf Stellen wie der Burst am selben Tag. Diesmal bin
+ich die frisch geschriebene Liste in `CLAUDE.md` Punkt für Punkt durchgegangen — **einschließlich
+des `syncFx`-Änderungsdetektors, der beim Burst die Stunde gekostet hatte** — und es funktionierte
+im ersten Anlauf. Zur Kontrolle wurden anschließend die Vorkommen je Feldnamen gezählt (8 bzw. 9,
+je nachdem ob JSON- und State-Schlüssel gleich heißen), bevor überhaupt geflasht wurde.
+
+
+## 2026-09-04 — Length und Spacing vertauscht: welcher Wert ist der primäre
+
+Mit Screenshots gemeldet: „spacing und length müssen getauscht werden, sonst macht es keinen
+sinn." Die Bilder zeigten es sofort — bei **Count 1** verstellt man „Spacing" und die Impulslänge
+ändert sich mit, während „Length · fills slot" danebensteht und nichts tut:
+
+    Sync every 4 · 1x · Spacing 1   -> 1 pulse, 1 beat long
+    Sync every 4 · 1x · Spacing 1/2 -> 1 pulse, 1/2 beat long
+    Sync every 4 · 1x · Spacing 2   -> 1 pulse, 2 beats long
+
+Der Grund: **Spacing war der primäre Wert und Length fiel auf ihn zurück.** Bei einem einzigen
+Impuls gibt es aber nichts zu beabstanden, also wirkte der Abstand als Länge. Die Rollen gehören
+andersherum: **Length ist immer bedeutungsvoll, Spacing fügt nur eine Lücke dahinter ein.**
+
+Dieselbe Mathematik, nur welcher Wert auf welchen zurückfällt:
+
+    vorher:  spacing primaer,  length  faellt zurueck auf spacing
+    jetzt:   length  primaer,  spacing faellt zurueck auf length  ("back to back")
+
+Damit ist die Reihenfolge in der Zeile jetzt **Count · Length · Spacing**, und `Length` trägt
+einen echten Wert statt eines Platzhalters. Am Gerät geprüft:
+
+    Length 1/2 · Count 4 · Spacing 1 · Sync 32   ####....####....####....####....  dann 28 Beat Pause
+    Length 1   · Count 4 · b2b       · Sync 32   ################................  ein Block
+
+Rückwärtskompatibilität erneut gemessen — größte Abweichung **0.000000000**. Der Firmware-Wert
+`sync` ist unverändert die Länge, nur der Zusatzwert wurde von `lengthSync` zu `spacingSync`
+umbenannt und seine Rückfallbedeutung invertiert; gespeicherte Szenen haben dort -1, was jetzt
+„back to back" heißt und exakt ihr altes Verhalten ergibt. Die vier Presets sind unverändert.
+
+### Die Lehre
+
+Bei mehreren voneinander abhängigen Parametern entscheidet nicht die Formel, **welcher der
+primäre ist, sondern welcher in jeder Konstellation eine Bedeutung behält.** Length hat immer
+eine — auch bei einem einzigen Impuls. Spacing hat erst ab zwei eine. Der Wert ohne
+Randbedingungen gehört nach vorn und trägt den echten Wert; der bedingte fällt zurück. Ein
+Screenshot mit Count 1 hat das in drei Sekunden gezeigt, was aus der Formel allein nicht
+sichtbar war.

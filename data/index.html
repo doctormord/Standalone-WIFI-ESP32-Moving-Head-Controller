@@ -602,31 +602,51 @@ function useTelemetry() {
   return t;
 }
 
+// Taps in one chain must not be more than this apart. Above BPM_MIN_LIMIT (60 BPM) a beat is
+// 1000ms, so 2000ms is two beats at the slowest tempo the device accepts -- a continuous tap can
+// never break its own chain, while putting the button down and picking it up again starts a
+// fresh one.
+const TAP_CHAIN_GAP_MS = 2000;
+
 function useTapTempo() {
   const [bpm, setBpm] = useState(120);
+  const [tapCount, setTapCount] = useState(0);
   const taps = useRef([]);
   const tap = useCallback(() => {
     const now = performance.now();
-    // 3s window rather than 2s, so a slow tempo still accumulates enough taps to average.
-    taps.current = [...taps.current.filter((t) => now - t < 3000), now];
-    // Three taps minimum: with only two, a single mistimed press IS the answer. The median of the
-    // intervals is then used instead of the mean, and intervals more than 35% away from it are
-    // dropped -- one bad tap used to move the mean immediately, which is what made tapping feel
-    // jumpy. Reported live 2026-09-01.
-    if (taps.current.length >= 3) {
-      const intervals = [];
-      for (let i = 1; i < taps.current.length; i++) intervals.push(taps.current[i] - taps.current[i-1]);
-      const sorted = [...intervals].sort((a, b) => a - b);
-      const med = sorted[Math.floor(sorted.length / 2)];
-      const kept = intervals.filter((v) => Math.abs(v - med) <= med * 0.35);
-      const use = kept.length ? kept.reduce((a, b) => a + b, 0) / kept.length : med;
+    // A CHAIN, not a sliding window. The old version kept only the last 3 seconds of taps, which
+    // at 172 BPM is about eight -- so every further tap pushed an old one out and the answer was
+    // recomputed from a rotating sample that never settled. Measured: the displayed value kept
+    // moving +/-1-2 BPM however long you tapped, and the accuracy stopped improving at SD 1.65.
+    // Keeping the whole chain instead, the value stops moving after ~10 taps and SD falls to
+    // 0.22 by 24 taps. Reported live 2026-09-03 as "beim weitertappen springt es einfach immer".
+    if (taps.current.length && now - taps.current[taps.current.length - 1] > TAP_CHAIN_GAP_MS) {
+      taps.current = [];
+    }
+    taps.current.push(now);
+    setTapCount(taps.current.length);
+    const t = taps.current;
+    if (t.length >= 3) {
+      // Least-squares fit of tap index against tap time: the slope IS the beat interval. Every
+      // tap contributes, so one mistimed press is diluted rather than decisive, and the estimate
+      // converges as the chain grows instead of hopping between samples. A plain mean of the
+      // intervals telescopes to "span / (n-1)" and therefore rests entirely on the first and
+      // last tap -- the two most likely to be wrong.
+      const n = t.length;
+      const mx = (n - 1) / 2;
+      let my = 0;
+      for (let i = 0; i < n; i++) my += t[i];
+      my /= n;
+      let num = 0, den = 0;
+      for (let i = 0; i < n; i++) { const dx = i - mx; num += dx * (t[i] - my); den += dx * dx; }
+      const use = den > 0 ? num / den : 0;
       const next = Math.round(60000 / use);
       // Matches the backend's BPM_MIN_LIMIT/BPM_MAX_LIMIT, raised to 200 for drum & bass.
-      if (next >= 60 && next <= 200) { setBpm(next); return next; }
+      if (use > 0 && next >= 60 && next <= 200) { setBpm(next); return next; }
     }
     return undefined;
   }, []);
-  return [bpm, tap, setBpm];
+  return [bpm, tap, setBpm, tapCount];
 }
 
 function useBeatPulse(bpm) {
@@ -965,17 +985,100 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
   }
 
   const TRIGGERS = [[0, 'Trigger · Internal Timer'], [1, 'Trigger · Global BPM Sync'], [2, 'Trigger · Audio Kickdrum (Bass)'], [3, 'Trigger · Audio Snare (Mids)'], [4, 'Trigger · Audio Hi-Hat (Highs)']];
-  const SYNCS = [[0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']];
+  // Sync divisors for the dimmer / gobo-rotation / prism / wheel steppers / the chaser. The
+  // VALUE is the index into syncBeats[] in the .ino, and it is deliberately not in display
+  // order: 16/32/64 were appended to that table (indices 7/8/9) so that every scene and preset
+  // already stored in NVS keeps meaning what it meant. Presented longest-first, which is how
+  // they read musically. MovementEngine has its own table and its own list (MOVE_SYNCS below).
+  const SYNCS = [[9, 'Sync · 64 Beats'], [8, 'Sync · 32 Beats'], [7, 'Sync · 16 Beats'], [0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']];
   // Movement patterns take real time to trace (finite pan/tilt slew), so a
   // full revolution can't lock to a sub-beat divisor the way a dimmer/gobo
   // LFO can — this table is beats-per-revolution, not fractions of a beat.
   const MOVE_SYNCS = [[0, 'Sync · 1 Beat / rev'], [1, 'Sync · 2 Beats / rev'], [2, 'Sync · 4 Beats / rev'], [3, 'Sync · 8 Beats / rev'], [4, 'Sync · 16 Beats / rev'], [5, 'Sync · 32 Beats / rev'], [6, 'Sync · 64 Beats / rev'], [7, 'Sync · 128 Beats / rev']];
 
-  function TriggerBlock({ trigger, setTrigger, sync, setSync, hold, setHold, holdLabel = 'Hold time', holdUnit = 'ms', accent, syncOptions = SYNCS }) {
+  // How many passes of the shape happen back to back, before the raster's pause.
+  const BURSTS = [[1, '1x'], [2, '2x'], [3, '3x'], [4, '4x'], [5, '5x'], [6, '6x'], [7, '7x'], [8, '8x']];
+
+  // Length in beats per divisor index, keyed like syncBeats[] / moveSyncBeats[] in the firmware.
+  // Only used to describe the result back to the user; the device does its own arithmetic.
+  const SYNC_BEATS = { 0: 8, 1: 4, 2: 2, 3: 1, 4: 0.5, 5: 0.25, 6: 0.125, 7: 16, 8: 32, 9: 64 };
+  const MOVE_SYNC_BEATS = { 0: 1, 1: 2, 2: 4, 3: 8, 4: 16, 5: 32, 6: 64, 7: 128 };
+  const beatStr = (b) => (b >= 1 ? String(b) : ('1/' + Math.round(1 / b)));
+  // Singular up to one beat: "over 1/2 beats" is wrong, "over 1/2 beat" is not.
+  const beatPl = (b) => (b <= 1 ? '' : 's');
+  const stripSync = (label) => label.replace(/^Sync · /, '');
+
+  // The OUTER period -- when the whole figure starts again. This is what reads as "Sync" to a
+  // person: "every 4 beats, something happens". -1 = no outer period, the old behaviour.
+  const periodOptions = (syncOptions) =>
+    [[-1, 'Sync · free run']].concat(syncOptions.map(([v, l]) => [v, 'Sync · every ' + stripSync(l)]));
+  // LENGTH is the primary divisor -- how long one pulse lasts. It is always meaningful, which is
+  // why it comes first and carries a real value rather than a fallback.
+  const lengthOptions = (syncOptions) => syncOptions.map(([v, l]) => [v, 'Length · ' + stripSync(l)]);
+  // SPACING only adds a gap behind each pulse, so it falls back to the length (back to back).
+  // Putting the fallback on this one and not on Length is deliberate: with Count at 1 there is
+  // nothing to space, and having the spacing control silently set the pulse length while
+  // "Length · fills slot" sat next to it doing nothing was the confusing arrangement this
+  // replaced -- reported with screenshots on 2026-09-04.
+  const spacingOptions = (syncOptions) =>
+    [[-1, 'Spacing · back to back']].concat(syncOptions.map(([v, l]) => [v, 'Spacing · every ' + stripSync(l)]));
+
+  // Says in plain words what the four numbers produce. They can contradict each other -- count x
+  // spacing can exceed the period -- and the firmware then widens the period, because it cannot
+  // cut a curve in half. Doing that silently is what made "8x, 2 beats, every 4" come out as a
+  // flash every two beats with no pause, reported live as "das stimmt so nicht". So it is spelled
+  // out rather than implied.
+  function burstSummary(length, burst, period, spacing, isMove) {
+    const tab = isMove ? MOVE_SYNC_BEATS : SYNC_BEATS;
+    const len = tab[length];
+    if (len == null) return null;
+    const n = Math.max(1, burst || 1);
+    // Spacing can never be shorter than the pulse itself; the firmware clamps it the same way.
+    const sp = (spacing == null || spacing < 0 || tab[spacing] == null || tab[spacing] < len) ? len : tab[spacing];
+    const span = sp * n;
+    const word = isMove ? (n > 1 ? 'passes' : 'pass') : (n > 1 ? 'pulses' : 'pulse');
+    const each = sp > len
+      ? `${beatStr(len)} beat${beatPl(len)} long, ${beatStr(sp)} beat${beatPl(sp)} apart`
+      : `${beatStr(len)} beat${beatPl(len)} long, back to back`;
+    if (period == null || period < 0) return { ok: true, text: `${n} ${word}, ${each} — repeating with no gap` };
+    const r = tab[period];
+    if (r == null) return null;
+    if (span > r) return { ok: false,
+      text: `${n} x ${beatStr(sp)} = ${beatStr(span)} beats, longer than the ${beatStr(r)}-beat sync — it runs straight through. Fewer pulses, tighter spacing, or a wider sync.` };
+    const gap = r - span;
+    return { ok: true,
+      text: `${n} ${word}, ${each} — then ${gap > 0 ? beatStr(gap) + ' beat' + beatPl(gap) + ' of pause' : 'no pause'}, every ${beatStr(r)}` };
+  }
+
+  function TriggerBlock({ trigger, setTrigger, sync, setSync, hold, setHold, holdLabel = 'Hold time', holdUnit = 'ms', accent, syncOptions = SYNCS, burst, setBurst, raster, setRaster, length, setLength }) {
+    // Four independent numbers, and it takes four: the outer period (Sync), how many pulses
+    // (Count), how far apart they start (Spacing), and how long each one lasts (Length). Tying
+    // length to spacing -- which is what this did until 2026-09-03 -- makes a short stab with a
+    // gap behind it impossible and collapses "soft" and "flash" into the same control.
+    // `sync` is the LENGTH divisor (the primary one, the firmware's own `sync` field) and
+    // `length` here carries the SPACING. The prop names are historic; the labels are what count.
+    const full = trigger !== 0 && setBurst && setRaster && setLength;
+    const sum = full ? burstSummary(sync, burst, raster, length, syncOptions === MOVE_SYNCS) : null;
     return (
       <>
         <div style={{ marginBottom: 8 }}><Dropdown value={trigger} onChange={(v) => setTrigger(parseInt(v))} options={TRIGGERS} accent={accent} dense /></div>
-        {trigger === 0 ? <LabeledSlider label={holdLabel} value={hold} onChange={setHold} min={0} max={10000} step={100} unit={holdUnit} accent={accent} compact /> : <Dropdown value={sync} onChange={(v) => setSync(parseInt(v))} options={syncOptions} accent={accent} dense />}
+        {trigger === 0 ? <LabeledSlider label={holdLabel} value={hold} onChange={setHold} min={0} max={10000} step={100} unit={holdUnit} accent={accent} compact /> : (
+          full ? (
+            <>
+              <Dropdown value={raster} onChange={(v) => setRaster(parseInt(v))} options={periodOptions(syncOptions)} accent={accent} dense />
+              <div style={{ display: 'grid', gridTemplateColumns: '0.62fr 1.19fr 1.19fr', gap: 6, marginTop: 6 }}>
+                <Dropdown value={burst} onChange={(v) => setBurst(parseInt(v))} options={BURSTS} accent={accent} dense />
+                <Dropdown value={sync} onChange={(v) => setSync(parseInt(v))} options={lengthOptions(syncOptions)} accent={accent} dense />
+                <Dropdown value={length} onChange={(v) => setLength(parseInt(v))} options={spacingOptions(syncOptions)} accent={accent} dense />
+              </div>
+              {sum ? (
+                <div style={{ marginTop: 5, fontSize: 10.5, lineHeight: 1.4, color: sum.ok ? 'rgba(255,255,255,0.45)' : '#fbbf24' }}>
+                  {sum.ok ? '→ ' : '⚠ '}{sum.text}
+                </div>
+              ) : null}
+            </>
+          ) : <Dropdown value={sync} onChange={(v) => setSync(parseInt(v))} options={syncOptions} accent={accent} dense />
+        )}
       </>
     );
   }
@@ -1091,7 +1194,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 <script type="text/babel">
 // horizon-live.jsx
 (function () {
-  function LiveTab({ accent, joystickSize, state, setState, bpm, tap, tempoAuto, onToggleAuto, muted, onUnmute, keyJoyRef, onJog, onJogRelease, onKillAll, onHardSync, onMicToggle, micOn, hwSens, setHwSens, onPresetRecall, onPresetSave, onBlackout, onJoystick }) {
+  function LiveTab({ accent, joystickSize, state, setState, bpm, tap, tapCount, tempoAuto, onToggleAuto, muted, onUnmute, keyJoyRef, onJog, onJogRelease, onKillAll, onHardSync, onMicToggle, micOn, hwSens, setHwSens, onPresetRecall, onPresetSave, onBlackout, onJoystick }) {
     const presetNames = state.presetNames; const presetActive = state.presetActive;
     return (
       <div className="live-grid">
@@ -1106,7 +1209,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <button onClick={onKillAll} style={{ padding: '11px 0', background: 'rgba(127,29,29,0.32)', border: '1px solid rgba(220,38,38,0.4)', borderRadius: 11, color: '#fca5a5', fontWeight: 700, fontSize: 12, letterSpacing: 1, cursor: 'pointer', textTransform: 'uppercase' }}>◼ Kill All FX · Stop Show</button>
           <Panel title="Tempo & sync · audio" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
-              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '11px 0', borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · <span style={{ display: 'inline-block', minWidth: '3ch', textAlign: 'left', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{bpm}</span></button>
+              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '11px 0', borderRadius: 10, fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · <span style={{ display: 'inline-block', minWidth: '3ch', textAlign: 'left', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{bpm}</span><span style={{ marginLeft: 4, fontSize: '0.72em', opacity: tapCount > 1 ? 0.55 : 0, fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace', display: 'inline-block', minWidth: '2ch', textAlign: 'right', whiteSpace: 'pre' }}>{tapCount > 1 ? String(Math.min(tapCount, 99)) : ' '}</span></button>
               <button onPointerDown={(e) => { pressFlash(e, 'rgba(20,184,166,0.55)'); onHardSync(); }} style={{ padding: '11px 0', background: 'rgba(20,184,166,0.16)', border: '1px solid rgba(20,184,166,0.32)', borderRadius: 10, color: '#5eead4', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>SYNC PHASE</button>
               <button onClick={onMicToggle} style={{ padding: '11px 0', background: micOn ? 'rgba(34,197,94,0.30)' : 'rgba(34,197,94,0.10)', border: `1px solid rgba(34,197,94,${micOn ? 0.6 : 0.3})`, borderRadius: 10, color: '#86efac', fontWeight: 700, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>{micOn ? <LED color="#22c55e" pulse size={7} /> : null} HW MIC</button>
             </div>
@@ -1151,12 +1254,12 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                   <Dropdown value={state.chaserOrder} onChange={(v) => setState((s) => ({ ...s, chaserOrder: parseInt(v) }))} options={[[0, 'Order · Sequential'], [1, 'Order · Random']]} accent={accent} dense />
                   <Dropdown value={state.chaserTrigger} onChange={(v) => setState((s) => ({ ...s, chaserTrigger: parseInt(v) }))} options={[[0, 'Trigger · Internal Timer'], [1, 'Trigger · Global BPM Sync'], [2, 'Trigger · Audio Kickdrum'], [3, 'Trigger · Audio Snare'], [4, 'Trigger · Audio Hi-Hat']]} accent={accent} dense />
                 </div>
-                {state.chaserTrigger === 0 ? <LabeledSlider label="Hold time" value={state.chaserHold} onChange={(v) => setState((s) => ({ ...s, chaserHold: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /> : <Dropdown value={state.chaserSync} onChange={(v) => setState((s) => ({ ...s, chaserSync: parseInt(v) }))} options={[[0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']]} accent={accent} dense />}
+                {state.chaserTrigger === 0 ? <LabeledSlider label="Hold time" value={state.chaserHold} onChange={(v) => setState((s) => ({ ...s, chaserHold: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /> : <Dropdown value={state.chaserSync} onChange={(v) => setState((s) => ({ ...s, chaserSync: parseInt(v) }))} options={[[9, 'Sync · 64 Beats'], [8, 'Sync · 32 Beats'], [7, 'Sync · 16 Beats'], [0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']]} accent={accent} dense />}
               </div>
               <div style={{ padding: 10, background: 'rgba(255,255,255,0.022)', borderRadius: 9, border: '1px solid rgba(255,255,255,0.04)' }}>
                 <div style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.45)', letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Fade time</div>
                 <Dropdown value={state.chaserFadeMode} onChange={(v) => setState((s) => ({ ...s, chaserFadeMode: parseInt(v) }))} options={[[0, 'Fade · Manual (ms)'], [1, 'Fade · Global BPM Sync']]} accent={accent} dense />
-                <div style={{ marginTop: 6 }}>{state.chaserFadeMode === 0 ? <LabeledSlider label="Fade time" value={state.chaserFade} onChange={(v) => setState((s) => ({ ...s, chaserFade: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /> : <Dropdown value={state.chaserFadeSync} onChange={(v) => setState((s) => ({ ...s, chaserFadeSync: parseInt(v) }))} options={[[0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']]} accent={accent} dense />}</div>
+                <div style={{ marginTop: 6 }}>{state.chaserFadeMode === 0 ? <LabeledSlider label="Fade time" value={state.chaserFade} onChange={(v) => setState((s) => ({ ...s, chaserFade: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /> : <Dropdown value={state.chaserFadeSync} onChange={(v) => setState((s) => ({ ...s, chaserFadeSync: parseInt(v) }))} options={[[9, 'Sync · 64 Beats'], [8, 'Sync · 32 Beats'], [7, 'Sync · 16 Beats'], [0, 'Sync · 8 Beats'], [1, 'Sync · 4 Beats'], [2, 'Sync · 2 Beats'], [3, 'Sync · 1 Beat'], [4, 'Sync · 1/2 Beat'], [5, 'Sync · 1/4 Beat'], [6, 'Sync · 1/8 Beat']]} accent={accent} dense />}</div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 6, alignItems: 'center' }}>
                 <Dropdown value={state.chaserFrom} onChange={(v) => setState((s) => ({ ...s, chaserFrom: parseInt(v) }))} options={Array.from({length:10}, (_,i)=>[i, `Slot ${i+1}`])} accent={accent} dense />
@@ -1207,7 +1310,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         <div style={{ marginTop: 8 }}><LabeledSlider label="Rotation" value={state.fxRot} onChange={(v) => setState((s) => ({ ...s, fxRot: v }))} min={0} max={360} unit="°" accent={accent} compact /></div>
         <div style={{ marginTop: 8, marginBottom: 6, fontSize: 9.5, color: FX_HUE.movement, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase' }}>Size + Speed modulator</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.fxMode} onChange={(v) => setState((s) => ({ ...s, fxMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.fxCurve} onChange={(v) => setState((s) => ({ ...s, fxCurve: parseInt(v) }))} options={MOVE_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} syncOptions={MOVE_SYNCS} />
+        <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} syncOptions={MOVE_SYNCS}  burst={state.fxBn} setBurst={(v) => setState((s) => ({ ...s, fxBn: v }))} raster={state.fxRp} setRaster={(v) => setState((s) => ({ ...s, fxRp: v }))} length={state.fxSg} setLength={(v) => setState((s) => ({ ...s, fxSg: v }))} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}><LabeledSlider label="Speed Start" value={state.fxSS} onChange={(v) => setState((s) => ({ ...s, fxSS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Speed End" value={state.fxSE} onChange={(v) => setState((s) => ({ ...s, fxSE: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size Start" value={state.fxZS} onChange={(v) => setState((s) => ({ ...s, fxZS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size End" value={state.fxZE} onChange={(v) => setState((s) => ({ ...s, fxZE: v }))} min={1} max={100} unit="%" accent={accent} compact /></div>
         <FxButton running={state.fxRunning} label="MOVEMENT FX" onClick={() => setState((s) => ({ ...s, fxRunning: !s.fxRunning }))} />
       </Accordion>
@@ -1218,7 +1321,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     return (
       <Accordion title="Dimmer FX" dot={FX_HUE.dimmer} badge={state.dimFxRunning ? 'RUN' : null}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.dimMo} onChange={(v) => setState((s) => ({ ...s, dimMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.dimCu} onChange={(v) => setState((s) => ({ ...s, dimCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.dimTr} setTrigger={(v) => setState((s) => ({ ...s, dimTr: v }))} sync={state.dimSy} setSync={(v) => setState((s) => ({ ...s, dimSy: v }))} hold={state.dimSp} setHold={(v) => setState((s) => ({ ...s, dimSp: v }))} holdLabel="Manual speed" accent={accent} />
+        <TriggerBlock trigger={state.dimTr} setTrigger={(v) => setState((s) => ({ ...s, dimTr: v }))} sync={state.dimSy} setSync={(v) => setState((s) => ({ ...s, dimSy: v }))} hold={state.dimSp} setHold={(v) => setState((s) => ({ ...s, dimSp: v }))} holdLabel="Manual speed" accent={accent}  burst={state.dimBn} setBurst={(v) => setState((s) => ({ ...s, dimBn: v }))} raster={state.dimRp} setRaster={(v) => setState((s) => ({ ...s, dimRp: v }))} length={state.dimSg} setLength={(v) => setState((s) => ({ ...s, dimSg: v }))} />
         <div style={{ marginTop: 6 }}><LabeledSlider label="Start value" value={state.dimSt} onChange={(v) => setState((s) => ({ ...s, dimSt: v }))} accent={accent} compact /><LabeledSlider label="End value" value={state.dimEn} onChange={(v) => setState((s) => ({ ...s, dimEn: v }))} accent={accent} compact /></div>
         <FxButton running={state.dimFxRunning} label="DIMMER FX" onClick={() => setState((s) => ({ ...s, dimFxRunning: !s.dimFxRunning }))} />
       </Accordion>
@@ -1230,14 +1333,14 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       <Accordion title="Rotation FX · gobo + prism" dot={FX_HUE.rotation} badge={state.grFxRunning || state.prFxRunning ? 'RUN' : null}>
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>Gobo rotation · CH9</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.grMo} onChange={(v) => setState((s) => ({ ...s, grMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.grCu} onChange={(v) => setState((s) => ({ ...s, grCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.grTr} setTrigger={(v) => setState((s) => ({ ...s, grTr: v }))} sync={state.grSy} setSync={(v) => setState((s) => ({ ...s, grSy: v }))} hold={state.grSp} setHold={(v) => setState((s) => ({ ...s, grSp: v }))} holdLabel="Manual speed" accent={accent} />
+        <TriggerBlock trigger={state.grTr} setTrigger={(v) => setState((s) => ({ ...s, grTr: v }))} sync={state.grSy} setSync={(v) => setState((s) => ({ ...s, grSy: v }))} hold={state.grSp} setHold={(v) => setState((s) => ({ ...s, grSp: v }))} holdLabel="Manual speed" accent={accent}  burst={state.grBn} setBurst={(v) => setState((s) => ({ ...s, grBn: v }))} raster={state.grRp} setRaster={(v) => setState((s) => ({ ...s, grRp: v }))} length={state.grSg} setLength={(v) => setState((s) => ({ ...s, grSg: v }))} />
         <LabeledSlider label="Start DMX" value={state.grSt} onChange={(v) => setState((s) => ({ ...s, grSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.grEn} onChange={(v) => setState((s) => ({ ...s, grEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.grFxRunning} label="GOBO ROT" onClick={() => setState((s) => ({ ...s, grFxRunning: !s.grFxRunning }))} />
 
         <div style={{ fontSize: 9.5, color: FX_HUE.rotation, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 }}>Prism rotation · CH11</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.prMo} onChange={(v) => setState((s) => ({ ...s, prMo: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.prCu} onChange={(v) => setState((s) => ({ ...s, prCu: parseInt(v) }))} options={MOD_CURVES} accent={accent} dense /></div>
-        <TriggerBlock trigger={state.prTr} setTrigger={(v) => setState((s) => ({ ...s, prTr: v }))} sync={state.prSy} setSync={(v) => setState((s) => ({ ...s, prSy: v }))} hold={state.prSp} setHold={(v) => setState((s) => ({ ...s, prSp: v }))} holdLabel="Manual speed" accent={accent} />
+        <TriggerBlock trigger={state.prTr} setTrigger={(v) => setState((s) => ({ ...s, prTr: v }))} sync={state.prSy} setSync={(v) => setState((s) => ({ ...s, prSy: v }))} hold={state.prSp} setHold={(v) => setState((s) => ({ ...s, prSp: v }))} holdLabel="Manual speed" accent={accent}  burst={state.prBn} setBurst={(v) => setState((s) => ({ ...s, prBn: v }))} raster={state.prRp} setRaster={(v) => setState((s) => ({ ...s, prRp: v }))} length={state.prSg} setLength={(v) => setState((s) => ({ ...s, prSg: v }))} />
         <LabeledSlider label="Start DMX" value={state.prSt} onChange={(v) => setState((s) => ({ ...s, prSt: v }))} min={135} max={255} accent={accent} compact />
         <LabeledSlider label="End DMX" value={state.prEn} onChange={(v) => setState((s) => ({ ...s, prEn: v }))} min={135} max={255} accent={accent} compact />
         <FxButton running={state.prFxRunning} label="PRISM ROT" onClick={() => setState((s) => ({ ...s, prFxRunning: !s.prFxRunning }))} />
@@ -1281,7 +1384,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       <Accordion title="Auto-chaser · show" dot={FX_HUE.show} badge={state.showRunning ? 'RUN' : null}>
         <Dropdown value={state.transMode} onChange={(v) => setState((s) => ({ ...s, transMode: parseInt(v) }))} options={[[0, 'Scene Transition · Crossfade'], [1, 'Scene Transition · Dip to Black (M.I.B.)']]} accent={accent} dense />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 8 }}><Dropdown value={state.chaserOrder} onChange={(v) => setState((s) => ({ ...s, chaserOrder: parseInt(v) }))} options={[[0, 'Order · Sequential'], [1, 'Order · Random']]} accent={accent} dense /><Dropdown value={state.chaserTrigger} onChange={(v) => setState((s) => ({ ...s, chaserTrigger: parseInt(v) }))} options={[[0, 'Trigger · Internal Timer'], [1, 'Trigger · BPM Sync'], [2, 'Trigger · Bass'], [3, 'Trigger · Snare'], [4, 'Trigger · Hi-Hat']]} accent={accent} dense /></div>
-        <div style={{ marginTop: 6 }}>{state.chaserTrigger === 0 ? <LabeledSlider label="Hold time" value={state.chaserHold} onChange={(v) => setState((s) => ({ ...s, chaserHold: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /> : <Dropdown value={state.chaserSync} onChange={(v) => setState((s) => ({ ...s, chaserSync: parseInt(v) }))} options={[[0,'Sync · 8 Beats'],[1,'Sync · 4 Beats'],[2,'Sync · 2 Beats'],[3,'Sync · 1 Beat'],[4,'Sync · 1/2 Beat'],[5,'Sync · 1/4 Beat'],[6,'Sync · 1/8 Beat']]} accent={accent} dense />}</div>
+        <div style={{ marginTop: 6 }}>{state.chaserTrigger === 0 ? <LabeledSlider label="Hold time" value={state.chaserHold} onChange={(v) => setState((s) => ({ ...s, chaserHold: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /> : <Dropdown value={state.chaserSync} onChange={(v) => setState((s) => ({ ...s, chaserSync: parseInt(v) }))} options={[[9,'Sync · 64 Beats'],[8,'Sync · 32 Beats'],[7,'Sync · 16 Beats'],[0,'Sync · 8 Beats'],[1,'Sync · 4 Beats'],[2,'Sync · 2 Beats'],[3,'Sync · 1 Beat'],[4,'Sync · 1/2 Beat'],[5,'Sync · 1/4 Beat'],[6,'Sync · 1/8 Beat']]} accent={accent} dense />}</div>
         <div style={{ marginTop: 6 }}><LabeledSlider label="Fade time" value={state.chaserFade} onChange={(v) => setState((s) => ({ ...s, chaserFade: v }))} min={0} max={10000} step={100} unit="ms" accent={accent} compact /></div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 6, alignItems: 'center' }}><Dropdown value={state.chaserFrom} onChange={(v) => setState((s) => ({ ...s, chaserFrom: parseInt(v) }))} options={Array.from({length:10}, (_,i)=>[i, `Slot ${i+1}`])} accent={accent} dense /><span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 10 }}>to</span><Dropdown value={state.chaserTo} onChange={(v) => setState((s) => ({ ...s, chaserTo: parseInt(v) }))} options={Array.from({length:10}, (_,i)=>[i, `Slot ${i+1}`])} accent={accent} dense /></div>
         <FxButton running={state.showRunning} label="SHOW" onClick={() => setState((s) => ({ ...s, showRunning: !s.showRunning }))} />
@@ -1330,7 +1433,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     'rgSt', 'rgEn', 'rgHo', 'rgTr', 'rgSy', 'rgFxRunning', 'rgSc', 'rgSp',
   ];
 
-  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, tempoAuto, onToggleAuto, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync }) {
+  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, tapCount, tempoAuto, onToggleAuto, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync }) {
     // Tracks "has anything changed since the last recall/save" via a per-field
     // baseline snapshot (not just a boolean) so a partial save -- e.g. Save
     // Center, which only persists pan/tilt -- can clear just the fields it
@@ -1375,7 +1478,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           
           <Panel title="Tempo & sync" padding={12} right={<span style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{bpm}BPM</span>}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5 }}>
-              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '9px 0', borderRadius: 9, fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · <span style={{ display: 'inline-block', minWidth: '3ch', textAlign: 'left', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{bpm}</span></button>
+              <button {...makeTapHandlers(tap, tempoAuto, onToggleAuto, 'rgba(59,130,246,0.55)')} title={tempoAuto ? 'Tempo follows the microphone. Short press taps an anchor, long press switches to manual.' : 'Tempo is manual. Short press taps it, long press hands control back to the microphone.'} style={{ ...tapModeStyle(tempoAuto), padding: '9px 0', borderRadius: 9, fontWeight: 700, fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5, transition: 'background 160ms, box-shadow 160ms, color 160ms' }}>TAP · <span style={{ display: 'inline-block', minWidth: '3ch', textAlign: 'left', fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace' }}>{bpm}</span><span style={{ marginLeft: 4, fontSize: '0.72em', opacity: tapCount > 1 ? 0.55 : 0, fontVariantNumeric: 'tabular-nums', fontFamily: '"JetBrains Mono", monospace', display: 'inline-block', minWidth: '2ch', textAlign: 'right', whiteSpace: 'pre' }}>{tapCount > 1 ? String(Math.min(tapCount, 99)) : ' '}</span></button>
               {/* This had no onClick at all -- a button that looked live and did nothing. The LIVE
                   tab's identical one was wired to /sync all along, so pressing SYNC here while
                   setting up FX triggers, which is where you would reach for it, silently did
@@ -1666,7 +1769,11 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 (function () {
   const { useState, useEffect, useRef, useCallback } = React;
 
-  const HISTORY_LEN = 200; // ~13s at the 66ms poll below
+  // How often the AUDIO tab asks the device for band values and spectrum. The device serves one
+  // request at a time out of its main loop, so this is a real load on it -- do not lower it
+  // without checking the header's ping.
+  const AUDIO_POLL_MS = 40;
+  const HISTORY_LEN = 200; // samples kept in the scrolling graph: 200 x 40ms = ~8s
 
   function AudioDebugTab({ accent, micOn, onMicToggle, hwSens, setHwSens }) {
     const canvasRef = useRef(null);
@@ -1775,6 +1882,16 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       });
     }, [tune]);
 
+    // The poll effect must not depend on the drawing callbacks. drawSpec is rebuilt whenever
+    // `tune` changes identity, and the merge below returns a fresh object on every response, so
+    // listing it in the deps tore down the interval and re-ran the effect once per response --
+    // which fires poll() again immediately. The result was one request per answer, as fast as the
+    // device could reply, against a server that handles one request at a time out of the main
+    // loop. That is exactly the load the merged endpoint was written to remove. Refs keep the
+    // callbacks current without making the interval depend on their identity.
+    const drawRef = useRef(draw), drawSpecRef = useRef(drawSpec);
+    useEffect(() => { drawRef.current = draw; drawSpecRef.current = drawSpec; }, [draw, drawSpec]);
+
     useEffect(() => {
       let active = true;
       const poll = async () => {
@@ -1794,14 +1911,13 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           const fresh = {
             nf: d.nf, fa: d.fa, fd: d.fd, ma: d.ma, md: d.md, sa: d.sa, sd: d.sd,
             mtd: d.mtd, htd: d.htd, dts: d.dts, fg: d.fg, tmul: d.tmul,
-            fft: d.fft, flux: d.flux, trk: d.trk,
             bbl: d.bbl, bbh: d.bbh, bml: d.bml, bmh: d.bmh, bhl: d.bhl, bhh: d.bhh, ig: d.ig,
             db: d.db, dm: d.dm, dh: d.dh, tap: d.tap,
             // The sample-rate detector's own parameters, the peak picker's, and the auto range
             // switch. Every key a control binds to has to be listed here or that control never
             // learns what the device is actually running -- which is the exact failure this
             // merge was written to fix in the first place.
-            bsd: d.bsd, blo: d.blo, bhi: d.bhi, brl: d.brl, brf: d.brf, blk: d.blk,
+            blo: d.blo, bhi: d.bhi, brl: d.brl, brf: d.brf, blk: d.blk,
             vmp: d.vmp, pfp: d.pfp, pmw: d.pmw, agrMax: d.agrMax, tw: d.tw, ag: d.ag,
           };
           const now2 = Date.now();
@@ -1815,22 +1931,22 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             return merged;
           });
           if (d.nbin) setNbin(d.nbin);
-          if (d.b) { setSpec(d); drawSpec(d); }
+          if (d.b) { setSpec(d); drawSpecRef.current(d); }
           const buf = bufRef.current;
           buf.lo.push(d.lo); buf.mi.push(d.mi); buf.hi.push(d.hi);
           buf.th.push(d.th); buf.thM.push(d.thM); buf.thH.push(d.thH);
           buf.xb.push(d.xb); buf.xm.push(d.xm); buf.xh.push(d.xh);
           Object.keys(buf).forEach((k) => { if (buf[k].length > HISTORY_LEN) buf[k].shift(); });
-          draw();
+          drawRef.current();
         } catch (e) {}
       };
       // One request now carries the band values and the spectrum together. This server handles
       // requests one at a time out of the main loop, so two endpoints at 15Hz and 10Hz meant 25
       // round trips a second whose fixed cost dominated the tiny payloads -- and that load showed
       // up as second-long spikes in the header's ping. Halving the request count buys the rate.
-      poll(); const id = setInterval(poll, 40);
+      poll(); const id = setInterval(poll, AUDIO_POLL_MS);
       return () => { active = false; clearInterval(id); };
-    }, [paused, draw, drawSpec]);
+    }, [paused]);
 
     // Every tune param round-trips through the device (not just local state) so the slider always
     // reflects what's actually running -- same "don't trust the optimistic value alone" discipline
@@ -1847,7 +1963,6 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       [v, `${name} · ${v === 0 ? 'instant' : v <= 2 ? `fast (÷${1 << v})` : v <= 5 ? `medium (÷${1 << v})` : `slow (÷${1 << v})`}`]);
     const gainOpts = (max) => Array.from({ length: max + 1 }, (_, v) => [v, `Input gain · ×${1 << v}`]);
     const bandGainOpts = () => Array.from({ length: 11 }, (_, v) => [v, `Band gain · ×${1 << v}`]);
-    const fluxOn = tune && tune.flux === 1;
     const pk = live.pk || 0;
     const pkPct = Math.min(100, (pk / 32767) * 100);
     const holdPct = Math.min(100, (peakHoldRef.current.v / 32767) * 100);
@@ -1899,8 +2014,8 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <>
             <Accordion title="Detection chain" defaultOpen accent={accent}>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.55)', lineHeight: 1.5, marginBottom: 10 }}>
-                Read top to bottom. <b>Analysis</b> decides whether the three bands are real
-                frequency bands or the old single wideband signal. <b>Detector</b> is then chosen per
+                Read top to bottom. The three bands are real frequency bands, split by FFT.
+                <b>Detector</b> is then chosen per
                 band: <i>energy</i> follows the level through an attack/decay envelope — right for
                 bass, where the kick dominates the band; <i>flux</i> reacts only to a rise — needed
                 for mids, where vocals and pads sit in the band continuously and only the snare's
@@ -1908,11 +2023,10 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
                 the triggers.
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 8 }}>
-                <Dropdown value={tune.fft} onChange={(v) => applyTune('fft', parseInt(v))} options={[[1, 'Analysis · frequency bands'], [0, 'Analysis · legacy wideband']]} accent={accent} dense />
                 <Dropdown value={tune.db} onChange={(v) => applyTune('db', parseInt(v))} options={[[0, 'Bass · energy'], [1, 'Bass · flux']]} accent="#22c55e" dense />
                 <Dropdown value={tune.dm} onChange={(v) => applyTune('dm', parseInt(v))} options={[[0, 'Mid · energy'], [1, 'Mid · flux']]} accent="#fbbf24" dense />
                 <Dropdown value={tune.dh} onChange={(v) => applyTune('dh', parseInt(v))} options={[[0, 'High · energy'], [1, 'High · flux']]} accent="#22d3ee" dense />
-                <Dropdown value={tune.tap ? 2 : tune.trk} onChange={(v) => { const n = parseInt(v); if (n === 2) applyTune('tap', 1); else { applyTune('tap', 0); applyTune('trk', n); } }} options={[[2, 'Tempo · tapped (holds)'], [1, 'Tempo · auto tracker'], [0, 'Tempo · interval median']]} accent={accent} dense />
+                <Dropdown value={tune.tap ? 1 : 0} onChange={(v) => applyTune('tap', parseInt(v))} options={[[0, 'Tempo · auto from audio'], [1, 'Tempo · tapped (holds)']]} accent={accent} dense />
                 <Dropdown value={tune.tmul} onChange={(v) => applyTune('tmul', parseInt(v))} options={[[0, 'Octave · as measured'], [1, 'Octave · ×2'], [2, 'Octave · ÷2']]} accent={accent} dense />
               </div>
               <div style={{ marginTop: 9, fontFamily: '"JetBrains Mono", monospace', fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>
@@ -2086,10 +2200,10 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
       joySpeed: 2000, joyCurve: 20, joyMomentum: 50, panRev: false, tiltRev: false, panMin: 0, panMax: 255, tiltMin: 0, tiltMax: 255,
       presetNames: Array(10).fill(''), presetActive: null, presetSaveSlot: 1, presetSaveName: '',
       chaserTrigger: 0, chaserSync: 3, chaserHold: 2000, chaserFadeMode: 0, chaserFade: 2000, chaserFadeSync: 3, chaserOrder: 0, chaserFrom: 0, chaserTo: 3, showRunning: false, transMode: 0,
-      fxRunning: false, fxType: 1, fxRot: 0, fxMode: 0, fxCurve: 3, fxMS: 1000, fxSS: 10, fxSE: 10, fxZS: 10, fxZE: 10, fxTr: 0, fxSy: 3,
-      dimFxRunning: false, dimSt: 0, dimEn: 255, dimMo: 2, dimCu: 3, dimSp: 2000, dimTr: 0, dimSy: 3,
-      grFxRunning: false, grSt: 135, grEn: 190, grMo: 0, grCu: 3, grSp: 2000, grTr: 0, grSy: 3,
-      prFxRunning: false, prSt: 193, prEn: 255, prMo: 0, prCu: 3, prSp: 2000, prTr: 0, prSy: 3,
+      fxRunning: false, fxType: 1, fxRot: 0, fxMode: 0, fxCurve: 3, fxMS: 1000, fxSS: 10, fxSE: 10, fxZS: 10, fxZE: 10, fxTr: 0, fxSy: 3, fxBn: 1, fxRp: -1, fxSg: -1,
+      dimFxRunning: false, dimSt: 0, dimEn: 255, dimMo: 2, dimCu: 3, dimSp: 2000, dimTr: 0, dimSy: 3, dimBn: 1, dimRp: -1, dimSg: -1,
+      grFxRunning: false, grSt: 135, grEn: 190, grMo: 0, grCu: 3, grSp: 2000, grTr: 0, grSy: 3, grBn: 1, grRp: -1, grSg: -1,
+      prFxRunning: false, prSt: 193, prEn: 255, prMo: 0, prCu: 3, prSp: 2000, prTr: 0, prSy: 3, prBn: 1, prRp: -1, prSg: -1,
       colFxRunning: false, colSt: 0, colEn: 19, colHo: 2000, colTr: 0, colSy: 3,
       sgFxRunning: false, sgSt: 0, sgEn: 9, sgHo: 2000, sgTr: 0, sgSy: 3, sgSc: 0, sgSp: 30, sgRng: 40,
       rgFxRunning: false, rgSt: 0, rgEn: 6, rgHo: 2000, rgTr: 0, rgSy: 3, rgSc: 0, rgSp: 3,
@@ -2100,7 +2214,7 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
 
     const keyJoyRef = useKeyboardJoystick(useCallback((v) => { sendJoy(v); }, []));
 
-    const [bpm, tap, setBpm] = useTapTempo();
+    const [bpm, tap, setBpm, tapCount] = useTapTempo();
     const beat = useBeatPulse(bpm);
     const tele = useTelemetry();
 
@@ -2287,10 +2401,10 @@ const isReceiving = useRef(false);
             if (d.fA !== undefined) {
               // Running flag first (already individually gated above), then the group's parameters
               // only when no local write for that group is still pending -- see the fxDirty block.
-              next.fxRunning = fxRunning; if (!fxDirty) { next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS; }
-              next.dimFxRunning = dimFxRunning; if (!dimDirty) { next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy; }
-              next.grFxRunning = grFxRunning; if (!grDirty) { next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy; }
-              next.prFxRunning = prFxRunning; if (!prDirty) { next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy; }
+              next.fxRunning = fxRunning; if (!fxDirty) { next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS; next.fxBn = d.fBn ?? prev.fxBn; next.fxRp = d.fRp ?? prev.fxRp; next.fxSg = d.fSg ?? prev.fxSg; }
+              next.dimFxRunning = dimFxRunning; if (!dimDirty) { next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy; next.dimBn = d.dBn ?? prev.dimBn; next.dimRp = d.dRp ?? prev.dimRp; next.dimSg = d.dSg ?? prev.dimSg; }
+              next.grFxRunning = grFxRunning; if (!grDirty) { next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy; next.grBn = d.grBn ?? prev.grBn; next.grRp = d.grRp ?? prev.grRp; next.grSg = d.grSg ?? prev.grSg; }
+              next.prFxRunning = prFxRunning; if (!prDirty) { next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy; next.prBn = d.prBn ?? prev.prBn; next.prRp = d.prRp ?? prev.prRp; next.prSg = d.prSg ?? prev.prSg; }
               next.colFxRunning = colFxRunning; if (!colDirty) { next.colSt = d.cSt ?? prev.colSt; next.colEn = d.cEn ?? prev.colEn; next.colHo = d.cHo ?? prev.colHo; next.colTr = d.cTr ?? prev.colTr; next.colSy = d.cSy ?? prev.colSy; }
               next.sgFxRunning = sgFxRunning; if (!sgDirty) { next.sgSt = d.sgSt ?? prev.sgSt; next.sgEn = d.sgEn ?? prev.sgEn; next.sgHo = d.sgHo ?? prev.sgHo; next.sgTr = d.sgTr ?? prev.sgTr; next.sgSy = d.sgSy ?? prev.sgSy; next.sgSc = d.sgSc ?? prev.sgSc; next.sgSp = d.sgSp != null ? Math.round(d.sgSp * 10) : prev.sgSp; next.sgRng = d.sgRng ?? prev.sgRng; }
               next.rgFxRunning = rgFxRunning; if (!rgDirty) { next.rgSt = d.rgSt ?? prev.rgSt; next.rgEn = d.rgEn ?? prev.rgEn; next.rgHo = d.rgHo ?? prev.rgHo; next.rgTr = d.rgTr ?? prev.rgTr; next.rgSy = d.rgSy ?? prev.rgSy; next.rgSc = d.rgSc ?? prev.rgSc; next.rgSp = d.rgSp ?? prev.rgSp; }
@@ -2316,10 +2430,10 @@ const isReceiving = useRef(false);
               // diff below sees "nothing to send" and the edit is lost for good rather than merely
               // delayed by a cycle. Recomputing it only for clean groups keeps the original
               // purpose (a recalled preset's own config must not look like an unsent local edit).
-              if (!fxDirty) pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy]);
-              if (!dimDirty) pr2.dimFxState = JSON.stringify([next.dimFxRunning, next.dimSt, next.dimEn, next.dimMo, next.dimCu, next.dimSp, next.dimTr, next.dimSy]);
-              if (!grDirty) pr2.grFxState = JSON.stringify([next.grFxRunning, next.grSt, next.grEn, next.grMo, next.grCu, next.grSp, next.grTr, next.grSy]);
-              if (!prDirty) pr2.prFxState = JSON.stringify([next.prFxRunning, next.prSt, next.prEn, next.prMo, next.prCu, next.prSp, next.prTr, next.prSy]);
+              if (!fxDirty) pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy, next.fxBn, next.fxRp, next.fxSg]);
+              if (!dimDirty) pr2.dimFxState = JSON.stringify([next.dimFxRunning, next.dimSt, next.dimEn, next.dimMo, next.dimCu, next.dimSp, next.dimTr, next.dimSy, next.dimBn, next.dimRp, next.dimSg]);
+              if (!grDirty) pr2.grFxState = JSON.stringify([next.grFxRunning, next.grSt, next.grEn, next.grMo, next.grCu, next.grSp, next.grTr, next.grSy, next.grBn, next.grRp, next.grSg]);
+              if (!prDirty) pr2.prFxState = JSON.stringify([next.prFxRunning, next.prSt, next.prEn, next.prMo, next.prCu, next.prSp, next.prTr, next.prSy, next.prBn, next.prRp, next.prSg]);
               if (!colDirty) pr2.colFxState = JSON.stringify([next.colFxRunning, next.colSt, next.colEn, next.colHo, next.colTr, next.colSy]);
               if (!sgDirty) pr2.sgFxState = JSON.stringify([next.sgFxRunning, next.sgSt, next.sgEn, next.sgHo, next.sgTr, next.sgSy, next.sgSc, next.sgSp, next.sgRng]);
               if (!rgDirty) pr2.rgFxState = JSON.stringify([next.rgFxRunning, next.rgSt, next.rgEn, next.rgHo, next.rgTr, next.rgSy, next.rgSc, next.rgSp]);
@@ -2428,14 +2542,20 @@ const isReceiving = useRef(false);
           if (!fields[0]) tFetchImmediate(url, fetchId, markPending(runningKey)); else tFetch(url, fetchId, 40, markPending(runningKey));
         }
       };
-      syncFx('fxState', 'fxRunning', [s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy],
-        () => `/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}&g=${lastKnownGenRef.current}`, 'fx');
-      syncFx('dimFxState', 'dimFxRunning', [s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy],
-        () => `/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}&mv=${s.dimmer}&g=${lastKnownGenRef.current}`, 'mfx_dim');
-      syncFx('grFxState', 'grFxRunning', [s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy],
-        () => `/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}&mv=${s.goboRot}&g=${lastKnownGenRef.current}`, 'mfx_gr');
-      syncFx('prFxState', 'prFxRunning', [s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy],
-        () => `/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}&mv=${s.prismRot}&g=${lastKnownGenRef.current}`, 'mfx_pr');
+      // NOTE: the array below is the change detector -- syncFx only sends when it differs
+      // from what was last sent. A field that appears in the URL but NOT in this array can
+      // never be transmitted: the edit is dropped and the next poll writes the device's old
+      // value back over it. Adding a parameter means touching FOUR places -- this array, the
+      // URL, the poll merge, and the pr2.*State fingerprint. Missing this one cost an hour
+      // on 2026-09-03 ("die werte werden immer wieder ueberschrieben auf every 1 beat").
+      syncFx('fxState', 'fxRunning', [s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy, s.fxBn, s.fxRp, s.fxSg],
+        () => `/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}&bn=${s.fxBn}&rp=${s.fxRp}&sg=${s.fxSg}&g=${lastKnownGenRef.current}`, 'fx');
+      syncFx('dimFxState', 'dimFxRunning', [s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy, s.dimBn, s.dimRp, s.dimSg],
+        () => `/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}&bn=${s.dimBn}&rp=${s.dimRp}&sg=${s.dimSg}&mv=${s.dimmer}&g=${lastKnownGenRef.current}`, 'mfx_dim');
+      syncFx('grFxState', 'grFxRunning', [s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy, s.grBn, s.grRp, s.grSg],
+        () => `/modfx?pfx=gr&a=${s.grFxRunning?1:0}&st=${s.grSt}&en=${s.grEn}&sp=${s.grSp}&mo=${s.grMo}&cu=${s.grCu}&tr=${s.grTr}&sy=${s.grSy}&bn=${s.grBn}&rp=${s.grRp}&sg=${s.grSg}&mv=${s.goboRot}&g=${lastKnownGenRef.current}`, 'mfx_gr');
+      syncFx('prFxState', 'prFxRunning', [s.prFxRunning, s.prSt, s.prEn, s.prMo, s.prCu, s.prSp, s.prTr, s.prSy, s.prBn, s.prRp, s.prSg],
+        () => `/modfx?pfx=pr&a=${s.prFxRunning?1:0}&st=${s.prSt}&en=${s.prEn}&sp=${s.prSp}&mo=${s.prMo}&cu=${s.prCu}&tr=${s.prTr}&sy=${s.prSy}&bn=${s.prBn}&rp=${s.prRp}&sg=${s.prSg}&mv=${s.prismRot}&g=${lastKnownGenRef.current}`, 'mfx_pr');
       syncFx('colFxState', 'colFxRunning', [s.colFxRunning, s.colSt, s.colEn, s.colHo, s.colTr, s.colSy],
         () => `/colfx?a=${s.colFxRunning?1:0}&st=${s.colSt}&en=${s.colEn}&ho=${s.colHo}&tr=${s.colTr}&sy=${s.colSy}&mv=${s.colorBase + s.colorOff}&g=${lastKnownGenRef.current}`, 'cfx');
       syncFx('sgFxState', 'sgFxRunning', [s.sgFxRunning, s.sgSt, s.sgEn, s.sgHo, s.sgTr, s.sgSy, s.sgSc, s.sgSp, s.sgRng],
@@ -2553,9 +2673,9 @@ const isReceiving = useRef(false);
         <StatusBar accent={accent} onAccentChange={handleAccentChange} night={night} onNightToggle={() => setNight(n => { const next = !n; try { localStorage.setItem('hz_night', next ? '1' : '0'); } catch(e) {} return next; })} telemetry={tele} bpm={bpm} micOn={micOn} fixtureCount={fixtureCount} uiScale={uiScale} onUiScaleChange={setUiScale} />
         <Tabs tab={tab} setTab={setTab} accent={accent} tabs={['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH']} />
         <div className="tab-scroll">
-          {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
+          {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tapCount={tapCount} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
           {tab === 'FOLLOWSPOT' && <HorizonFollowspotTab accent={accent} joystickSize={195} state={state} setState={setState} onJoystick={joystickHandler} onMapTap={handleMapTap} keyJoyRef={keyJoyRef} />}
-          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
+          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tapCount={tapCount} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'AUDIO' && <HorizonAudioDebugTab accent={accent} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
           {tab === 'PATCH' && <HorizonPatchTab accent={accent} />}
         </div>

@@ -18,6 +18,11 @@
 // =========================================================
 // --- 1. HARDWARE CONFIGURATION ---
 // =========================================================
+// DMX refresh cadence. ~33 frames a second: comfortably inside the DMX512 timing limits and
+// fast enough that no fixture shows stepping, while leaving the loop time for the soft-float
+// movement maths. Used for BOTH assembling the frame and transmitting it.
+#define DMX_FRAME_INTERVAL_MS 30
+
 #define NUM_CHANNELS  18
 #define CH_DIMMER     1
 #define CH_STROBE     2
@@ -75,12 +80,16 @@ unsigned long loopMaxMs = 0;
 bool dmxAssembleEveryLoop = false;
 uint32_t loopsPerSec = 0;   // measured loop rate, see loop()
 unsigned long loopMaxWindowStart = 0;
-const float syncBeats[7] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125};
+// 16/32/64 are APPENDED rather than inserted in musical order on purpose: the index is what
+// gets persisted in every scene and preset (SceneData) and in NVS, so re-ordering this table
+// would silently re-interpret every stored show. The UI presents them in the right order.
+const float syncBeats[SYNC_BEATS_COUNT] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125,
+                                           16.0, 32.0, 64.0};
 // Movement patterns take real time to trace (pan/tilt slew is finite) — a
 // sub-beat divisor demands angular velocity the motor can't reach for a
 // full-size shape, so MovementEngine gets its own multi-beat table instead
 // of the fast dimmer/gobo-rotation divisors above.
-const float moveSyncBeats[8] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0};
+const float moveSyncBeats[MOVE_SYNC_BEATS_COUNT] = {1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0};
 
 bool bumpBlackout = false; bool bumpStrobeF = false; bool bumpStrobe50 = false; bool bumpBlinder = false;
 int activePresetSlot = 0;
@@ -202,7 +211,28 @@ StepFX colFX, sgobFX, rgobFX;
 // immediately overwrite that restore with its own fallback (the chaser's last wheel position).
 bool colWasActive = false, sgWasActive = false, rgWasActive = false;
 
-struct SceneData { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc; };
+// Scenes are stored as a raw struct blob (prefs.putBytes/getBytes), and the load checks the
+// byte count. Appending a field therefore changes sizeof and would make every stored scene fail
+// that check -- silently, and there were four named presets on the device when this was written.
+// So: NEW FIELDS GO AT THE END, and the previous layout is kept below as SceneDataV1 so a blob
+// written by the old firmware can still be recognised by its size and read into the matching
+// prefix. Never reorder or insert into the middle.
+struct SceneData { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc;;
+  // Added 2026-09-03: burst count and raster divisor per engine (see burstPhase() in
+  // FX_Engine.h). 0 in a migrated scene means "not set" and is mapped to the old behaviour,
+  // which is burst 1 and no raster.
+  int fBn, fRp, dBn, dRp, grBn, grRp, prBn, prRp;
+  // Added later the same day: pulse SPACING per engine -- how far apart the pulses start, which
+  // is separate from how long each one lasts (that is `*Sy`, the primary divisor). -1 means
+  // "same as the length", i.e. back to back, which is what every scene written before this did.
+  int fSg, dSg, grSg, prSg; };
+
+// The layout with the burst fields but without the lengths. Size only, to recognise those blobs.
+struct SceneDataV2 { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc; int fBn, fRp, dBn, dRp, grBn, grRp, prBn, prRp; };
+
+// The layout as it was before that addition. Only its size is used, to recognise old blobs.
+struct SceneDataV1 { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc;; };
+
 static SceneData chaserScenes[10]; 
 
 bool chaserActive = false;
@@ -231,7 +261,22 @@ void loadAllChaserScenes() {
     SceneData sd;
     memset(&sd, 0, sizeof(SceneData));
 
-    if (prefs.getBytes("data", &sd, sizeof(SceneData)) == sizeof(SceneData)) {
+    size_t got = prefs.getBytes("data", &sd, sizeof(SceneData));
+    if (got == sizeof(SceneData)) {
+        chaserScenes[i] = sd;
+    } else if (got == sizeof(SceneDataV2)) {
+        // Has the burst fields, not the lengths. Only the length tail needs its default.
+        sd.fSg = sd.dSg = sd.grSg = sd.prSg = -1;
+        chaserScenes[i] = sd;
+    } else if (got == sizeof(SceneDataV1)) {
+        // Written by firmware from before the burst fields existed. The prefix is byte-identical,
+        // so the read above already landed correctly; only the new tail needs its defaults --
+        // burst 1 and no raster is exactly what those scenes did when they were saved. Written
+        // out here rather than as a helper: the Arduino build hoists function prototypes above
+        // the struct definitions, so a free function taking SceneData& does not compile.
+        sd.fBn = sd.dBn = sd.grBn = sd.prBn = 1;
+        sd.fRp = sd.dRp = sd.grRp = sd.prRp = -1;
+        sd.fSg = sd.dSg = sd.grSg = sd.prSg = -1;
         chaserScenes[i] = sd;
     } else {
         for (int c = 1; c <= 18; c++) chaserScenes[i].dmx[c] = prefs.getUChar(String(c).c_str(), 0);
@@ -243,6 +288,11 @@ void loadAllChaserScenes() {
         chaserScenes[i].dA = prefs.getBool("dA", false); chaserScenes[i].dSt = prefs.getInt("dSt", 0); chaserScenes[i].dEn = prefs.getInt("dEn", 255);
         chaserScenes[i].dMo = prefs.getInt("dMo", 0); chaserScenes[i].dCu = prefs.getInt("dCu", 0); chaserScenes[i].dSp = prefs.getFloat("dSp", 30.0);
         chaserScenes[i].dTr = prefs.getInt("dTr", 0); chaserScenes[i].dSy = prefs.getInt("dSy", 3);
+        // Same defaults as the V1 migration above -- this branch reads scenes written by an
+        // even older firmware that stored one key per field.
+        chaserScenes[i].fBn = chaserScenes[i].dBn = chaserScenes[i].grBn = chaserScenes[i].prBn = 1;
+        chaserScenes[i].fRp = chaserScenes[i].dRp = chaserScenes[i].grRp = chaserScenes[i].prRp = -1;
+        chaserScenes[i].fSg = chaserScenes[i].dSg = chaserScenes[i].grSg = chaserScenes[i].prSg = -1;
         chaserScenes[i].grA = prefs.getBool("grA", false); chaserScenes[i].grSt = prefs.getInt("grSt", 135); chaserScenes[i].grEn = prefs.getInt("grEn", 190);
         chaserScenes[i].grMo = prefs.getInt("grMo", 0); chaserScenes[i].grCu = prefs.getInt("grCu", 0); chaserScenes[i].grSp = prefs.getFloat("grSp", 30.0);
         chaserScenes[i].grTr = prefs.getInt("grTr", 0); chaserScenes[i].grSy = prefs.getInt("grSy", 3);
@@ -278,6 +328,18 @@ void triggerSceneFX(int slot) {
   dimFX.active = chaserScenes[slot].dA; dimFX.startVal = chaserScenes[slot].dSt; dimFX.endVal = chaserScenes[slot].dEn;
   dimFX.mode = chaserScenes[slot].dMo; dimFX.curve = chaserScenes[slot].dCu; dimFX.speed = chaserScenes[slot].dSp;
   dimFX.trigger = chaserScenes[slot].dTr; dimFX.sync = chaserScenes[slot].dSy;
+  // Burst/raster. A scene from before these existed carries 0 here only if it came through a
+  // path that missed the migration, so clamp defensively to the old behaviour.
+  dimFX.burst = chaserScenes[slot].dBn > 0 ? chaserScenes[slot].dBn : 1;
+  dimFX.rasterSync = chaserScenes[slot].dRp;
+  gRotFX.burst = chaserScenes[slot].grBn > 0 ? chaserScenes[slot].grBn : 1;
+  gRotFX.rasterSync = chaserScenes[slot].grRp;
+  pRotFX.burst = chaserScenes[slot].prBn > 0 ? chaserScenes[slot].prBn : 1;
+  pRotFX.rasterSync = chaserScenes[slot].prRp;
+  moveFX.burst = chaserScenes[slot].fBn > 0 ? chaserScenes[slot].fBn : 1;
+  moveFX.rasterSync = chaserScenes[slot].fRp;
+  dimFX.spacingSync = chaserScenes[slot].dSg;  gRotFX.spacingSync = chaserScenes[slot].grSg;
+  pRotFX.spacingSync = chaserScenes[slot].prSg; moveFX.spacingSync = chaserScenes[slot].fSg;
   if(dimFX.active) dimFX.start(); else dimFX.stop();
 
   gRotFX.active = chaserScenes[slot].grA; gRotFX.startVal = chaserScenes[slot].grSt; gRotFX.endVal = chaserScenes[slot].grEn;
@@ -343,7 +405,7 @@ void triggerLoad(int type, int param) {
     if (type == 2 && (param < 0 || param > 9)) return;
     if (dipToBlack) {
         pendingLoadType = type; pendingLoadParam = param; isDipping = true; dipStartTime = millis(); autoFading = true; fadeStateOut = true; fadeStartTime = millis();
-        unsigned long currentFadeTime = fadeTime; if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, 6); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
+        unsigned long currentFadeTime = fadeTime; if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, SYNC_BEATS_COUNT - 1); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
         fadeDuration = currentFadeTime / 2; 
     } else {
         if (type == 1) executePreset(param); else if (type == 2) executeChaserSlot(param);
@@ -513,7 +575,7 @@ void updateEngines(unsigned long now) {
     if (fx.active) {
       bool doStep = false;
       if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; }
-      else if (fx.trigger == 1) { int safeSync = constrain(fx.sync, 0, 6); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeSync]; if (now - fx.lastStepTime >= interval) doStep = true; }
+      else if (fx.trigger == 1) { int safeSync = constrain(fx.sync, 0, SYNC_BEATS_COUNT - 1); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeSync]; if (now - fx.lastStepTime >= interval) doStep = true; }
       else if (checkAudioTrg(fx.trigger)) doStep = true;
       if (doStep) {
         fx.lastStepTime = now; fx.currentIdx += fx.step;
@@ -525,7 +587,8 @@ void updateEngines(unsigned long now) {
       // Post-step settle window: right after landing on a new gobo, hold the plain anchor value for
       // a moment before resuming the shake -- otherwise the rotation pulse (or native shake) starts
       // mid-transition and reads as choppy against the gobo-wheel step. Reported live 2026-08-18:
-      // "beim gobo wechsel sollte der shake nicht laufen, sonst sieht das choppy aus."
+      // Reported live (translated): "the shake should not run during a gobo change, it looks
+      // choppy otherwise."
       const unsigned long SHAKE_SETTLE_MS = 220;
       bool justStepped = (now - fx.lastStepTime) < SHAKE_SETTLE_MS;
       if (fx.scratch && fx.currentIdx > 0 && rotationPulse && !justStepped) {
@@ -592,12 +655,12 @@ void updateEngines(unsigned long now) {
   if (chaserActive && !isDipping) { 
     if (stepStartTime == 0) stepStartTime = now;
     unsigned long elapsed = now - stepStartTime; unsigned long currentFadeTime = fadeTime;
-    if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, 6); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
+    if (chaserFadeTrigger == 1) { int safeSync = constrain(chaserFadeSync, 0, SYNC_BEATS_COUNT - 1); currentFadeTime = (unsigned long)((60000.0f / globalBPM) * syncBeats[safeSync]); }
     if (inFade) {
       if (elapsed >= currentFadeTime) { inFade = false; stepStartTime = now; for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[nextSlot].dmx[i]; else dmxData[i] = chaserScenes[nextSlot].dmx[i]; } centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE]; joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false; triggerSceneFX(nextSlot); } 
       else { float progress = currentFadeTime > 0 ? (float)elapsed / currentFadeTime : 1.0f; for (int i = 1; i <= 18; i++) { if (i==1) dimSmoothTarget = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; else if (i==CH_FOCUS || i==CH_ZOOM) dmxData[i] = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; } long startP = (chaserScenes[currentSlot].dmx[CH_PAN] << 8) | chaserScenes[currentSlot].dmx[CH_PAN_FINE]; long endP = (chaserScenes[nextSlot].dmx[CH_PAN] << 8) | chaserScenes[nextSlot].dmx[CH_PAN_FINE]; centerPan16 = startP + (endP - startP) * progress; long startT = (chaserScenes[currentSlot].dmx[CH_TILT] << 8) | chaserScenes[currentSlot].dmx[CH_TILT_FINE]; long endT = (chaserScenes[nextSlot].dmx[CH_TILT] << 8) | chaserScenes[nextSlot].dmx[CH_TILT_FINE]; centerTilt16 = startT + (endT - startT) * progress; if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; } }
     } else { 
-      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { int safeChSync = constrain(chaserSync, 0, 6); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeChSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
+      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { int safeChSync = constrain(chaserSync, 0, SYNC_BEATS_COUNT - 1); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeChSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
       if (trg) { stepStartTime = now; currentSlot = nextSlot; if (chaserOrder == 1) nextSlot = random(chaserStartSlot, chaserEndSlot + 1); else { nextSlot++; if (nextSlot > chaserEndSlot) nextSlot = chaserStartSlot; } activePresetSlot = currentSlot + 1; if (dipToBlack) triggerLoad(2, nextSlot); else { inFade = true; for (int i = 1; i <= 18; i++) { if (!(i==CH_DIMMER || i==CH_PAN || i==CH_TILT || i==CH_FOCUS || i==CH_ZOOM || i==CH_PAN_FINE || i==CH_TILT_FINE)) dmxData[i] = chaserScenes[nextSlot].dmx[i]; } } }
     }
   }
@@ -619,7 +682,10 @@ void updateEngines(unsigned long now) {
   // how quickly the head answers the operator, and running them at 33Hz would put up to 30ms
   // between a stick movement and the response -- about a video frame, and noticeable by hand.
   static unsigned long lastDmxOut = 0;
-  const bool assembleNow = (now - lastDmxOut >= 30) || dmxAssembleEveryLoop;
+  // One constant for both tests below: the frame is assembled and sent on the same tick. Two
+  // separate literals would let them drift apart with no compile error, and the symptom -- a
+  // frame going out with stale pan/tilt in it -- looks like an engine bug, not a cadence bug.
+  const bool assembleNow = (now - lastDmxOut >= DMX_FRAME_INTERVAL_MS) || dmxAssembleEveryLoop;
   if (assembleNow) {
     byte outDmx[513]; memset(outDmx, 0, 513); 
     for(int f=0; f<numFixtures; f++) {
@@ -637,7 +703,7 @@ void updateEngines(unsigned long now) {
     memcpy((void*)dmxBuffer, outDmx, 513);
   }
 
-  if (now - lastDmxOut >= 30) {
+  if (now - lastDmxOut >= DMX_FRAME_INTERVAL_MS) {
       lastDmxOut = now; uart_set_line_inverse(DMX_UART, UART_SIGNAL_TXD_INV); delayMicroseconds(120); uart_set_line_inverse(DMX_UART, UART_SIGNAL_INV_DISABLE); delayMicroseconds(12); uart_write_bytes(DMX_UART, (const char*)dmxBuffer, maxDmxChannel + 1);
   }
 }
@@ -714,10 +780,14 @@ void loop() {
     static unsigned long lastBandScan = 0;
     if (millis() - lastBandScan > 500) {
       lastBandScan = millis();
+      // The chaser belongs in here too: chaserTrigger and chaserFadeTrigger take the same
+      // band numbers and go through the same checkAudioTrg() below. Leaving them out meant a
+      // chaser set to Mid or High never had its band running, so it only ever advanced via the
+      // 3000ms fallback -- which reads as "audio trigger does nothing on the chaser".
       auto routed = [](int band) {
         return moveFX.trigger == band || dimFX.trigger == band || gRotFX.trigger == band
             || pRotFX.trigger == band || colFX.trigger == band || sgobFX.trigger == band
-            || rgobFX.trigger == band;
+            || rgobFX.trigger == band || chaserTrigger == band || chaserFadeTrigger == band;
       };
       sdMidWanted  = routed(3);   // 3 = Mid, as used by checkAudioTrg() below
       sdHighWanted = routed(4);   // 4 = High

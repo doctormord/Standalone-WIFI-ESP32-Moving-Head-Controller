@@ -24,6 +24,14 @@
 #
 # Requires a prior `pio run` (and `pio run -t buildfs` if using --fs) so the build
 # artifacts under .pio/build/supermini/ exist.
+#
+# PARTITION TABLE: this project uses partitions_horizon.csv (app slots 1.5MB, filesystem
+# 896KB), not the stock default.csv. Moving a device that still has the old table onto it
+# REQUIRES this script (or `pio run -t upload`) WITH --fs: the table is written at 0x8000 and
+# the filesystem offset moves from 0x290000 to 0x310000, so the old filesystem content is
+# stranded where nothing looks for it and must be re-flashed. OTA cannot do any of this -- it
+# only ever writes an app slot. nvs is untouched either way, so the saved configuration
+# survives.
 
 set -euo pipefail
 
@@ -52,12 +60,16 @@ $ESPTOOL --chip esp32c3 --port "$PORT" --baud 115200 --before no-reset --after h
 
 if [ "$FLASH_FS" = "1" ]; then
   [ -f "$BUILD_DIR/littlefs.bin" ] || { echo "Missing $BUILD_DIR/littlefs.bin -- run 'pio run -t buildfs' first." >&2; exit 1; }
-  echo "Flashing LittleFS image..."
-  # Offset must match the 'spiffs' partition's start address in the active partition
-  # table -- decode it yourself if this board's table ever changes:
-  #   python3 <path-to-arduino-esp32>/tools/gen_esp32part.py .pio/build/supermini/partitions.bin
+  # Offset is DECODED from the partition table that was just built, never hardcoded: it moved
+  # once already when the table changed (default.csv 0x290000 -> partitions_horizon.csv
+  # 0x310000), and writing the filesystem at a stale offset lands it on top of an app slot.
+  GEN="$HOME/.platformio/packages/framework-arduinoespressif32/tools/gen_esp32part.py"
+  FS_OFF=$(python3 "$GEN" "$BUILD_DIR/partitions.bin" 2>/dev/null \
+           | awk -F, '$1=="spiffs"{print $4}')
+  [ -n "$FS_OFF" ] || { echo "Could not read the spiffs offset from partitions.bin." >&2; exit 1; }
+  echo "Flashing LittleFS image at $FS_OFF (decoded from partitions.bin)..."
   $ESPTOOL --chip esp32c3 --port "$PORT" --baud 115200 --before no-reset --after hard-reset \
-    write-flash 0x290000 "$BUILD_DIR/littlefs.bin"
+    write-flash "$FS_OFF" "$BUILD_DIR/littlefs.bin"
 fi
 
 echo "Done."

@@ -1,0 +1,28 @@
+# Custom partition table for the ESP32-C3 Supermini (4MB flash).
+#
+# Why: the stock `default.csv` gives each OTA app slot 0x140000 (1.25MB) and the firmware had
+# reached 94% of it, while the filesystem sat at 55% full -- the budget was in the wrong place.
+# This moves 512KB from the filesystem to the two app slots: 1.25MB -> 1.5MB each (+20%), and
+# the filesystem 1408KB -> 896KB, which still leaves ~124KB free at today's 772KB of content.
+#
+# CRITICAL, do not "tidy" these numbers:
+#   * nvs stays at 0x9000 with its original 0x5000 size. That partition holds the WiFi
+#     credentials, the fixture patch, master brightness and every preset/chaser slot. Moving or
+#     resizing it wipes the device's entire saved configuration.
+#   * app0 stays at 0x10000 so the existing flash procedure and scripts keep working.
+#   * Only app1's offset and the filesystem's offset/size change. The filesystem MUST be
+#     re-uploaded after switching to this table -- its contents do not move with it.
+#
+# Changing the partition table cannot be done over OTA: the table lives at 0x8000 and OTA only
+# ever writes an app slot. This needs one USB flash (see scripts/flash_esptool.sh).
+#
+# Layout check: 0x10000 + 0x180000 = 0x190000; + 0x180000 = 0x310000; + 0xE0000 = 0x3F0000;
+# + 0x10000 coredump = 0x400000 = 4MB exactly.
+#
+# Name,   Type, SubType, Offset,  Size,     Notes
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x180000,
+app1,     app,  ota_1,   0x190000,0x180000,
+spiffs,   data, spiffs,  0x310000,0xE0000,
+coredump, data, coredump,0x3F0000,0x10000,

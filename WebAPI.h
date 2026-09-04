@@ -35,7 +35,10 @@ void saveAudioPrefs() {
     prefs.putInt("a_mtd", tuneMidThreshDivShift);
     prefs.putInt("a_htd", tuneHighThreshDivShift);
     prefs.putInt("a_fg", tuneFftGainShift);
-    prefs.putInt("a_ig", tuneInputGainShift);
+    // Only a MANUALLY set gain is stored. Persisting the auto-ranged value would make whatever
+    // a loud passage happened to force into the shift the next boot's starting point -- and a
+    // gain latched at zero is precisely the state auto-ranging then struggles to climb out of.
+    if (!autoGain) prefs.putInt("a_ig", tuneInputGainShift);
     prefs.putInt("a_tw", tempoWindowMs);
     prefs.putInt("a_vmp", sdVarMinPct);
     prefs.putInt("a_mrp", sdMinRangePct);
@@ -64,10 +67,6 @@ void saveAudioPrefs() {
     prefs.putInt("a_bhl", tuneBinHighLo);
     prefs.putInt("a_bhh", tuneBinHighHi);
     prefs.putInt("a_sens", hwAudioSensitivity);
-    prefs.putBool("a_fft", audioUseFFT);
-    prefs.putBool("a_flux", audioUseFlux);
-    prefs.putBool("a_trk", audioUseTracker);
-    prefs.putBool("a_bsd", sdEnabled);
     prefs.putBool("a_sab", sdAllBands);
     prefs.putInt("a_blo", sdKLo);
     prefs.putInt("a_bhi", sdKHi);
@@ -81,30 +80,40 @@ void saveAudioPrefs() {
 void loadAudioPrefs() {
   prefs.begin("sys", true);   // read-only: never creates the namespace as a side effect
     tuneNoiseFloor = prefs.getInt("a_nf", tuneNoiseFloor);
-    tuneFastAttackShift = prefs.getInt("a_fa", tuneFastAttackShift);
-    tuneFastDecayShift = prefs.getInt("a_fd", tuneFastDecayShift);
-    tuneMidAttackShift = prefs.getInt("a_ma", tuneMidAttackShift);
-    tuneMidDecayShift = prefs.getInt("a_md", tuneMidDecayShift);
-    tuneSlowAttackShift = prefs.getInt("a_sa", tuneSlowAttackShift);
-    tuneSlowDecayShift = prefs.getInt("a_sd", tuneSlowDecayShift);
-    tuneDynThreshSmoothShift = prefs.getInt("a_dts", tuneDynThreshSmoothShift);
-    tuneMidThreshDivShift = prefs.getInt("a_mtd", tuneMidThreshDivShift);
-    tuneHighThreshDivShift = prefs.getInt("a_htd", tuneHighThreshDivShift);
-    tuneFftGainShift = prefs.getInt("a_fg", tuneFftGainShift);
-    tuneInputGainShift = prefs.getInt("a_ig", tuneInputGainShift);
+    tuneFastAttackShift = constrain(prefs.getInt("a_fa", tuneFastAttackShift), 0, 10);
+    tuneFastDecayShift = constrain(prefs.getInt("a_fd", tuneFastDecayShift), 0, 10);
+    // Clamped on the way in, mirroring /audio_tune's ranges. These are SHIFT amounts: a stored
+    // value out of range (older firmware, a hand-edited NVS, a partial write) is undefined
+    // behavior at the shift site, not merely a bad-sounding setting.
+    tuneMidAttackShift = constrain(prefs.getInt("a_ma", tuneMidAttackShift), 0, 10);
+    tuneMidDecayShift = constrain(prefs.getInt("a_md", tuneMidDecayShift), 0, 10);
+    tuneSlowAttackShift = constrain(prefs.getInt("a_sa", tuneSlowAttackShift), 0, 10);
+    tuneSlowDecayShift = constrain(prefs.getInt("a_sd", tuneSlowDecayShift), 0, 10);
+    tuneDynThreshSmoothShift = constrain(prefs.getInt("a_dts", tuneDynThreshSmoothShift), 0, 10);
+    tuneMidThreshDivShift = constrain(prefs.getInt("a_mtd", tuneMidThreshDivShift), 0, 10);
+    tuneHighThreshDivShift = constrain(prefs.getInt("a_htd", tuneHighThreshDivShift), 0, 10);
+    tuneFftGainShift = constrain(prefs.getInt("a_fg", tuneFftGainShift), 0, 10);
     tempoWindowMs = prefs.getInt("a_tw", tempoWindowMs);
     sdVarMinPct = prefs.getInt("a_vmp", sdVarMinPct);
     sdMinRangePct = prefs.getInt("a_mrp", sdMinRangePct);
     sdMid.sensAdd = prefs.getInt("a_sam", sdMid.sensAdd);
     sdHigh.sensAdd = prefs.getInt("a_sah", sdHigh.sensAdd);
     sdBoostMaxQ8 = prefs.getInt("a_bst", sdBoostMaxQ8);
-    sdBoostShift = prefs.getInt("a_bsh", sdBoostShift);
+    sdBoostShift = constrain(prefs.getInt("a_bsh", sdBoostShift), 6, 14);
     sdPeakFallPct = prefs.getInt("a_pfp", sdPeakFallPct);
     sdPeakMaxWaitMs = prefs.getInt("a_pmw", sdPeakMaxWaitMs);
     tempoAgreeMaxPct = prefs.getInt("a_agr", tempoAgreeMaxPct);
     tempoSlewPct = prefs.getInt("a_slew", tempoSlewPct);
     tempoJumpConfirm = prefs.getInt("a_jcf", tempoJumpConfirm);
     autoGain = prefs.getBool("a_ag", autoGain);
+    // The stored input gain is restored only when the gain is MANUAL -- and this has to come
+    // after autoGain is known, which is why it is here and not up with the other tune* loads.
+    // With auto-gain on, a_ig holds whatever a past loud passage happened to force, and a
+    // stored 0 is a trap with no way out: too little gain, so no onsets, so the climb (which is
+    // gated on incoming beats) never unlocks. Observed on the fixture 2026-09-03 -- ig=0, ag=1,
+    // input at 2.6%, zero onsets, and it only recovered because a tap armed the gain for 15s.
+    // Booting from the default is what the comment at `autoGain` has always claimed happens.
+    if (!autoGain) tuneInputGainShift = constrain(prefs.getInt("a_ig", tuneInputGainShift), 0, 5);
     agTargetPct = prefs.getInt("a_agt", agTargetPct);
     agUpDelayMs = prefs.getInt("a_agu", agUpDelayMs);
     agDownDelayMs = prefs.getInt("a_agd", agDownDelayMs);
@@ -119,10 +128,6 @@ void loadAudioPrefs() {
     tuneBinHighLo = prefs.getInt("a_bhl", tuneBinHighLo);
     tuneBinHighHi = prefs.getInt("a_bhh", tuneBinHighHi);
     hwAudioSensitivity = prefs.getInt("a_sens", hwAudioSensitivity);
-    audioUseFFT = prefs.getBool("a_fft", audioUseFFT);
-    audioUseFlux = prefs.getBool("a_flux", audioUseFlux);
-    audioUseTracker = prefs.getBool("a_trk", audioUseTracker);
-    sdEnabled = prefs.getBool("a_bsd", sdEnabled);
     sdAllBands = prefs.getBool("a_sab", sdAllBands);
     sdKLo = prefs.getInt("a_blo", sdKLo);
     sdKHi = prefs.getInt("a_bhi", sdKHi);
@@ -149,7 +154,6 @@ void loadAudioPrefs() {
   // Auto is the resting state and must survive a restart. The old code forced the latch off at
   // boot because the tapped value it existed for did not survive one; now the MODE persists and
   // the anchor does not, which is the right way round.
-  tempoTapLock = !tempoAuto;
   tapAnchorBPM = 0;
   tuneDetBass = constrain(tuneDetBass, 0, 1);
   tuneDetMid  = constrain(tuneDetMid, 0, 1);
@@ -241,10 +245,10 @@ void setupAPI() {
     json += "\"mB\":" + String(masterBrightness) + ",";
     json += "\"dip\":" + String(dipToBlack ? 1 : 0) + ",\"hwA\":" + String(hwAudioEnabled?1:0) + ",";
 
-    json += "\"fA\":" + String(moveFX.active?1:0) + ",\"fT\":" + String(moveFX.type) + ",\"fR\":" + String(moveFX.rot) + ",\"fTr\":" + String(moveFX.trigger) + ",\"fSy\":" + String(moveFX.sync) + ",\"fSS\":" + String(moveFX.spdSt) + ",\"fSE\":" + String(moveFX.spdEn) + ",\"fZS\":" + String(moveFX.szSt) + ",\"fZE\":" + String(moveFX.szEn) + ",\"fMM\":" + String(moveFX.modMo) + ",\"fMC\":" + String(moveFX.modCu) + ",\"fMS\":" + String(moveFX.modSp) + ",";
-    json += "\"dA\":" + String(dimFX.active?1:0) + ",\"dSt\":" + String(dimFX.startVal) + ",\"dEn\":" + String(dimFX.endVal) + ",\"dMo\":" + String(dimFX.mode) + ",\"dCu\":" + String(dimFX.curve) + ",\"dSp\":" + String(dimFX.speed) + ",\"dTr\":" + String(dimFX.trigger) + ",\"dSy\":" + String(dimFX.sync) + ",";
-    json += "\"grA\":" + String(gRotFX.active?1:0) + ",\"grSt\":" + String(gRotFX.startVal) + ",\"grEn\":" + String(gRotFX.endVal) + ",\"grMo\":" + String(gRotFX.mode) + ",\"grCu\":" + String(gRotFX.curve) + ",\"grSp\":" + String(gRotFX.speed) + ",\"grTr\":" + String(gRotFX.trigger) + ",\"grSy\":" + String(gRotFX.sync) + ",";
-    json += "\"prA\":" + String(pRotFX.active?1:0) + ",\"prSt\":" + String(pRotFX.startVal) + ",\"prEn\":" + String(pRotFX.endVal) + ",\"prMo\":" + String(pRotFX.mode) + ",\"prCu\":" + String(pRotFX.curve) + ",\"prSp\":" + String(pRotFX.speed) + ",\"prTr\":" + String(pRotFX.trigger) + ",\"prSy\":" + String(pRotFX.sync) + ",";
+    json += "\"fA\":" + String(moveFX.active?1:0) + ",\"fT\":" + String(moveFX.type) + ",\"fR\":" + String(moveFX.rot) + ",\"fTr\":" + String(moveFX.trigger) + ",\"fSy\":" + String(moveFX.sync) + ",\"fSS\":" + String(moveFX.spdSt) + ",\"fSE\":" + String(moveFX.spdEn) + ",\"fZS\":" + String(moveFX.szSt) + ",\"fZE\":" + String(moveFX.szEn) + ",\"fMM\":" + String(moveFX.modMo) + ",\"fMC\":" + String(moveFX.modCu) + ",\"fMS\":" + String(moveFX.modSp) + "," + "\"fBn\":" + String(moveFX.burst) + ",\"fRp\":" + String(moveFX.rasterSync) + ",\"fSg\":" + String(moveFX.spacingSync) + ",";
+    json += "\"dA\":" + String(dimFX.active?1:0) + ",\"dSt\":" + String(dimFX.startVal) + ",\"dEn\":" + String(dimFX.endVal) + ",\"dMo\":" + String(dimFX.mode) + ",\"dCu\":" + String(dimFX.curve) + ",\"dSp\":" + String(dimFX.speed) + ",\"dTr\":" + String(dimFX.trigger) + ",\"dSy\":" + String(dimFX.sync) + "," + "\"dBn\":" + String(dimFX.burst) + ",\"dRp\":" + String(dimFX.rasterSync) + ",\"dSg\":" + String(dimFX.spacingSync) + ",";
+    json += "\"grA\":" + String(gRotFX.active?1:0) + ",\"grSt\":" + String(gRotFX.startVal) + ",\"grEn\":" + String(gRotFX.endVal) + ",\"grMo\":" + String(gRotFX.mode) + ",\"grCu\":" + String(gRotFX.curve) + ",\"grSp\":" + String(gRotFX.speed) + ",\"grTr\":" + String(gRotFX.trigger) + ",\"grSy\":" + String(gRotFX.sync) + "," + "\"grBn\":" + String(gRotFX.burst) + ",\"grRp\":" + String(gRotFX.rasterSync) + ",\"grSg\":" + String(gRotFX.spacingSync) + ",";
+    json += "\"prA\":" + String(pRotFX.active?1:0) + ",\"prSt\":" + String(pRotFX.startVal) + ",\"prEn\":" + String(pRotFX.endVal) + ",\"prMo\":" + String(pRotFX.mode) + ",\"prCu\":" + String(pRotFX.curve) + ",\"prSp\":" + String(pRotFX.speed) + ",\"prTr\":" + String(pRotFX.trigger) + ",\"prSy\":" + String(pRotFX.sync) + "," + "\"prBn\":" + String(pRotFX.burst) + ",\"prRp\":" + String(pRotFX.rasterSync) + ",\"prSg\":" + String(pRotFX.spacingSync) + ",";
     json += "\"cA\":" + String(colFX.active?1:0) + ",\"cSt\":" + String(colFX.startVal) + ",\"cEn\":" + String(colFX.endVal) + ",\"cHo\":" + String(colFX.holdTime) + ",\"cTr\":" + String(colFX.trigger) + ",\"cSy\":" + String(colFX.sync) + ",";
     json += "\"sgA\":" + String(sgobFX.active?1:0) + ",\"sgSt\":" + String(sgobFX.startVal) + ",\"sgEn\":" + String(sgobFX.endVal) + ",\"sgHo\":" + String(sgobFX.holdTime) + ",\"sgTr\":" + String(sgobFX.trigger) + ",\"sgSy\":" + String(sgobFX.sync) + ",\"sgSc\":" + String(sgobFX.scratch?1:0) + ",\"sgSp\":" + String(sgobFX.scratchSpeed) + ",\"sgRng\":" + String(sgobFX.scratchRange) + ",";
     json += "\"rgA\":" + String(rgobFX.active?1:0) + ",\"rgSt\":" + String(rgobFX.startVal) + ",\"rgEn\":" + String(rgobFX.endVal) + ",\"rgHo\":" + String(rgobFX.holdTime) + ",\"rgTr\":" + String(rgobFX.trigger) + ",\"rgSy\":" + String(rgobFX.sync) + ",\"rgSc\":" + String(rgobFX.scratch?1:0) + ",\"rgSp\":" + String(rgobFX.scratchSpeed) + ",";
@@ -302,6 +306,12 @@ void setupAPI() {
     sd.dA = dimFX.active; sd.dSt = dimFX.startVal; sd.dEn = dimFX.endVal; 
     sd.dMo = dimFX.mode; sd.dCu = dimFX.curve; sd.dSp = dimFX.speed; 
     sd.dTr = dimFX.trigger; sd.dSy = dimFX.sync;
+    sd.dBn = dimFX.burst;  sd.dRp = dimFX.rasterSync;
+    sd.grBn = gRotFX.burst; sd.grRp = gRotFX.rasterSync;
+    sd.prBn = pRotFX.burst; sd.prRp = pRotFX.rasterSync;
+    sd.fBn = moveFX.burst;  sd.fRp = moveFX.rasterSync;
+    sd.dSg = dimFX.spacingSync; sd.grSg = gRotFX.spacingSync;
+    sd.prSg = pRotFX.spacingSync; sd.fSg = moveFX.spacingSync;
 
     sd.grA = gRotFX.active; sd.grSt = gRotFX.startVal; sd.grEn = gRotFX.endVal; 
     sd.grMo = gRotFX.mode; sd.grCu = gRotFX.curve; sd.grSp = gRotFX.speed; 
@@ -450,6 +460,9 @@ void setupAPI() {
       bool startFresh = !moveFX.active && (server.arg("a") == "1");
       moveFX.active = (server.arg("a") == "1");
       moveFX.type = server.arg("t").toInt(); moveFX.rot = server.arg("r").toFloat();
+      if (server.hasArg("bn")) moveFX.burst = constrain(server.arg("bn").toInt(), 1, 8);
+      if (server.hasArg("rp")) moveFX.rasterSync = constrain(server.arg("rp").toInt(), -1, MOVE_SYNC_BEATS_COUNT - 1);
+      if (server.hasArg("sg")) moveFX.spacingSync = constrain(server.arg("sg").toInt(), -1, MOVE_SYNC_BEATS_COUNT - 1);
       // Clamped to 1 (not 0): a 0% size collapses the movement pattern's amplitude to a single point
       // (fixture sits static at dead center) with the FX still reporting "running" -- looks identical
       // to a stuck/broken FX. Frontend sliders already enforce min=1, this is defense-in-depth for
@@ -458,7 +471,7 @@ void setupAPI() {
       moveFX.szSt = constrain(server.arg("zs").toInt(), 1, 100); moveFX.szEn = constrain(server.arg("ze").toInt(), 1, 100);
       moveFX.modMo = server.arg("mm").toInt(); moveFX.modCu = server.arg("mc").toInt();
       moveFX.modSp = server.arg("ms").toFloat(); moveFX.trigger = server.arg("tr").toInt();
-      moveFX.sync = constrain(server.arg("sy").toInt(), 0, 7);
+      moveFX.sync = constrain(server.arg("sy").toInt(), 0, MOVE_SYNC_BEATS_COUNT - 1);
       if(startFresh) moveFX.start(); else if (!moveFX.active) moveFX.stop();
       server.send(200, "text/plain", String(bumpGen("fx")));
   });
@@ -477,10 +490,15 @@ void setupAPI() {
         // project's established pattern. Unclamped, an out-of-range value reaches the (byte) cast
         // in updateEngines() (dmxData[9]/dmxData[11] = (byte)t) as a float outside byte range, which
         // is undefined behavior, not just wraparound.
+        // Burst count and raster divisor. Optional: a client that does not send them leaves
+        // the effect exactly as it was, which is what keeps older UI builds working.
+        if (server.hasArg("bn")) m->burst = constrain(server.arg("bn").toInt(), 1, 8);
+        if (server.hasArg("rp")) m->rasterSync = constrain(server.arg("rp").toInt(), -1, SYNC_BEATS_COUNT - 1);
+        if (server.hasArg("sg")) m->spacingSync = constrain(server.arg("sg").toInt(), -1, SYNC_BEATS_COUNT - 1);
         m->startVal = constrain(server.arg("st").toInt(), 0, 255); m->endVal = constrain(server.arg("en").toInt(), 0, 255);
         m->speed = server.arg("sp").toFloat(); m->mode = server.arg("mo").toInt();
         m->curve = server.arg("cu").toInt(); m->trigger = server.arg("tr").toInt();
-        m->sync = constrain(server.arg("sy").toInt(), 0, 6);
+        m->sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1);
         if(startFresh) m->start(); else if (!m->active) m->stop();
         // On stop, land on the Programmer tab's manual value immediately instead of leaving the
         // modulator's last live output in place. For gr/pr that means writing CH9/CH11 directly; for
@@ -510,10 +528,10 @@ void setupAPI() {
     if (server.hasArg("fade")) fadeTime = server.arg("fade").toInt();
     if (server.hasArg("hold")) holdTime = server.arg("hold").toInt();
     if (server.hasArg("trg")) chaserTrigger = server.arg("trg").toInt();
-    if (server.hasArg("sync")) chaserSync = constrain(server.arg("sync").toInt(), 0, 6);
+    if (server.hasArg("sync")) chaserSync = constrain(server.arg("sync").toInt(), 0, SYNC_BEATS_COUNT - 1);
     if (server.hasArg("ord")) chaserOrder = server.arg("ord").toInt();
     if (server.hasArg("f_trg")) chaserFadeTrigger = server.arg("f_trg").toInt();
-    if (server.hasArg("f_sync")) chaserFadeSync = constrain(server.arg("f_sync").toInt(), 0, 6);
+    if (server.hasArg("f_sync")) chaserFadeSync = constrain(server.arg("f_sync").toInt(), 0, SYNC_BEATS_COUNT - 1);
 
     // Persist here — /chaser_cfg used to own this but was dead code (never
     // called from the frontend), so chaser config never actually survived
@@ -558,7 +576,7 @@ void setupAPI() {
     server.send(200, "text/plain", String(dmxAssembleEveryLoop ? 1 : 0));
   });
 
-  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); markAudioPrefsDirty(); server.send(200, "text/plain", String(bumpGen("hwaudio"))); });
+  server.on("/hwaudio", []() { hwAudioEnabled = (server.arg("en") == "1"); if (server.hasArg("sens")) hwAudioSensitivity = constrain(server.arg("sens").toInt(), 0, 100); markAudioPrefsDirty(); server.send(200, "text/plain", String(bumpGen("hwaudio"))); });
 
   // Live band-energy telemetry for the AUDIO DEBUG tab's scrolling graph. Polled fast (frontend
   // targets ~15Hz) so build the response with one snprintf into a fixed buffer instead of this
@@ -578,12 +596,12 @@ void setupAPI() {
       "{\"lo\":%ld,\"mi\":%ld,\"hi\":%ld,\"th\":%ld,\"thM\":%ld,\"thH\":%ld,"
       "\"xb\":%d,\"xm\":%d,\"xh\":%d,"
       "\"nf\":%d,\"fa\":%d,\"fd\":%d,\"ma\":%d,\"md\":%d,\"sa\":%d,\"sd\":%d,\"mtd\":%d,\"htd\":%d,\"sens\":%d,"
-      "\"fft\":%d,\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"flux\":%d,\"dts\":%d,"
+      "\"fg\":%d,\"aUs\":%lu,\"fUs\":%lu,\"dts\":%d,"
       "\"bL\":%ld,\"mL\":%ld,\"hL\":%ld,\"bF\":%ld,\"mF\":%ld,\"hF\":%ld,"
-      "\"trk\":%d,\"tap\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"pB\":%ld,\"pH\":%ld,\"pD\":%ld,\"tmul\":%d,"
+      "\"tap\":%d,\"tBPM\":%d,\"tScore\":%ld,\"tLag\":%ld,\"tmul\":%d,"
       "\"pk\":%ld,\"clip\":%d,\"bbl\":%d,\"bbh\":%d,\"bml\":%d,\"bmh\":%d,\"bhl\":%d,\"bhh\":%d,\"ig\":%d,\"db\":%d,\"dm\":%d,\"dh\":%d,\"nbin\":%d,"
-      "\"bsd\":%d,\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
-      "\"sdEnv\":%ld,\"sdThr\":%ld,"
+      "\"blo\":%d,\"bhi\":%d,\"brl\":%d,\"brf\":%d,\"blk\":%d,"
+      "\"sdEnv\":%ld,\"sdThr\":%ld,\"bOn\":%ld,"
       "\"sdFloor\":%ld,\"sdPeak\":%ld,\"sdMad\":%ld,\"sdTrans\":%d,"
       "\"agree\":%d,\"agrMax\":%d,\"pfp\":%d,\"pmw\":%d,\"vmp\":%d,\"mrp\":%d,\"sam\":%d,\"sah\":%d,\"drift\":%d,\"ag\":%d,\"agPk\":%ld,\"tw\":%d,\"rclip\":%d,\"sab\":%d,\"mOn\":%ld,\"hOn\":%ld",
       (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy, (long)lastThBass,
@@ -591,17 +609,21 @@ void setupAPI() {
       dbgBassHit ? 1 : 0, dbgMidHit ? 1 : 0, dbgHighHit ? 1 : 0,
       tuneNoiseFloor, tuneFastAttackShift, tuneFastDecayShift, tuneMidAttackShift, tuneMidDecayShift,
       tuneSlowAttackShift, tuneSlowDecayShift, tuneMidThreshDivShift, tuneHighThreshDivShift, hwAudioSensitivity,
-      audioUseFFT ? 1 : 0, tuneFftGainShift, (unsigned long)audioLastUs, (unsigned long)fftLastUs,
-      audioUseFlux ? 1 : 0, tuneDynThreshSmoothShift,
+      tuneFftGainShift, (unsigned long)audioLastUs, (unsigned long)fftLastUs,
+      tuneDynThreshSmoothShift,
       (long)lastBassLevel, (long)lastMidLevel, (long)lastHighLevel,
       (long)lastBassFlux, (long)lastMidFlux, (long)lastHighFlux,
-      audioUseTracker ? 1 : 0, tempoTapLock ? 1 : 0, trackedBPM, (long)trackedScore,
-      (long)dbgLagMilli, (long)dbgPlainBase, (long)dbgPlainHalf, (long)dbgPlainDouble, tempoMulMode,
+      tempoAuto ? 0 : 1, trackedBPM, (long)trackedScore,
+      (long)dbgLagMilli, tempoMulMode,
       (long)micPeak, micClipCount,
       tuneBinBassLo, tuneBinBassHi, tuneBinMidLo, tuneBinMidHi, tuneBinHighLo, tuneBinHighHi, tuneInputGainShift,
       tuneDetBass, tuneDetMid, tuneDetHigh, FFT_N / 2,
-      sdEnabled ? 1 : 0, sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
+      sdKLo, sdKHi, sdRel, sdRefShift, sdLockoutMs,
       (long)sdLastEnv, (long)sdLastThr,
+      // The bass onset the engine last acted on, whichever detector produced it. A latched
+      // flag (xb) can only ever say "at least one since you asked"; a timestamp lets the
+      // INTERVALS be histogrammed, which is what distinguishes finding a grid from spraying.
+      (long)bassOnsetUsedMs,
       (long)sdFloor, (long)sdPeakStat, (long)sdVarMad, sdTransient ? 1 : 0,
       tempoAgreePct, tempoAgreeMaxPct, sdPeakFallPct, sdPeakMaxWaitMs, sdVarMinPct, sdMinRangePct, sdMid.sensAdd, sdHigh.sensAdd, sdClkDriftPpt,
       autoGain ? 1 : 0, (long)agPeakWin, tempoWindowMs, micRawClipCount, sdAllBands ? 1 : 0,
@@ -629,13 +651,10 @@ void setupAPI() {
     dbgBassHit = false; dbgMidHit = false; dbgHighHit = false;
   });
 
-  // Shift amounts are clamped 0-10: >=32 (word width) is undefined behavior for a right-shift, and
-  // this project's int32_t band energies stay well inside that range in practice anyway.
-  // Raw FFT bins for the AUDIO tab's spectrum display. Its own route rather than more fields on
-  // /api/audio_debug: 128 numbers roughly double that response, and the two are polled at
-  // different rates. Values are the unscaled magnitudes -- the client decides on log scaling,
-  // which keeps the display honest about how much energy is really there.
-
+  // Every tunable the AUDIO tab can reach. Shift amounts are clamped 0-10 (or tighter where the
+  // value is also used as `N - shift`): >= the word width is undefined behavior for a shift, and
+  // this project's int32_t band energies stay well inside that range in practice anyway. The same
+  // ranges are applied again when these are read back from NVS -- see loadAudioPrefs().
   server.on("/audio_tune", []() {
     if (server.hasArg("nf"))  tuneNoiseFloor        = constrain(server.arg("nf").toInt(), 0, 2000);
     if (server.hasArg("fa"))  tuneFastAttackShift    = constrain(server.arg("fa").toInt(), 0, 10);
@@ -650,29 +669,27 @@ void setupAPI() {
     // the FFT path could not be tested on hardware when it was written. fg is the FFT band
     // gain (left-shift) compensating the transform's 1/N scaling; it depends on the mic's
     // real output level, so it is tunable rather than baked in.
-    if (server.hasArg("fft")) audioUseFFT = (server.arg("fft") == "1");
-    // flux=0 reverts to level-based detection; dts is how fast the dynamic threshold chases
-    // the signal -- the single most relevant knob for sustained-bass material, and it was
-    // not reachable from outside at all until now.
-    if (server.hasArg("flux")) {
-      audioUseFlux = (server.arg("flux") == "1");
-      tuneDetBass = tuneDetMid = tuneDetHigh = audioUseFlux ? 1 : 0;   // legacy: all three at once
-    }
-    // Per-band detector: 0 = band energy with envelope follower, 1 = spectral flux.
+    // Per-band detector: 0 = band energy with envelope follower, 1 = spectral flux. This
+    // replaced a single `flux` switch that set all three bands at once; per-band is what the
+    // detector actually wants, since bass reads better on level and mid/high on flux.
     if (server.hasArg("db")) tuneDetBass = constrain(server.arg("db").toInt(), 0, 1);
     if (server.hasArg("dm")) tuneDetMid  = constrain(server.arg("dm").toInt(), 0, 1);
     if (server.hasArg("dh")) tuneDetHigh = constrain(server.arg("dh").toInt(), 0, 1);
-    if (server.hasArg("trk")) audioUseTracker = (server.arg("trk") == "1");
-    if (server.hasArg("tap")) { tempoTapLock = (server.arg("tap") == "1"); tempoAuto = !tempoTapLock; markAudioPrefsDirty(); }
-    if (server.hasArg("auto")) { tempoAuto = (server.arg("auto") == "1"); tempoTapLock = !tempoAuto;
+    // tap=1 means "hold what was tapped", i.e. the inverse of auto. Both spellings are kept
+    // because the AUDIO tab sends tap and the TAP button sends auto; there is only one flag.
+    if (server.hasArg("tap")) { tempoAuto = (server.arg("tap") != "1"); markAudioPrefsDirty(); }
+    if (server.hasArg("auto")) { tempoAuto = (server.arg("auto") == "1");
                                  if (tempoAuto) tapAnchorBPM = 0; markAudioPrefsDirty(); }
     // Sample-rate onset detector (the DJM-style continuous-time chain). blo/bhi are the two
     // one-pole shifts forming the bandpass, brl the envelope release, brf how slowly the
     // comparator reference tracks, blk the pulse window in ms.
-    if (server.hasArg("bsd")) sdEnabled = (server.arg("bsd") == "1");
     if (server.hasArg("sab")) sdAllBands = (server.arg("sab") == "1");
     if (server.hasArg("blo")) sdKLo = constrain(server.arg("blo").toInt(), 2, 10);
     if (server.hasArg("bhi")) sdKHi = constrain(server.arg("bhi").toInt(), 1, 9);
+    // Cross-check, not just two independent clamps: lp1 runs at kHi and lp2 at kLo, so the
+    // band only exists while kHi < kLo. blo=2&bhi=9 passed both clamps and inverted it, which
+    // leaves the detector running on noise with nothing in the UI to say so.
+    if (sdKHi >= sdKLo) sdKHi = sdKLo - 1;
     if (server.hasArg("brl")) sdRel = constrain(server.arg("brl").toInt(), 2, 12);
     if (server.hasArg("brf")) sdRefShift = constrain(server.arg("brf").toInt(), 6, 14);
     if (server.hasArg("blk")) sdLockoutMs = constrain(server.arg("blk").toInt(), 60, 600);
@@ -714,7 +731,7 @@ void setupAPI() {
       if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       colFX.active = (server.arg("a") == "1"); colFX.startVal = constrain(server.arg("st").toInt(), 0, 19); colFX.endVal = constrain(server.arg("en").toInt(), 0, 19);
       if (colFX.startVal > colFX.endVal) { int t = colFX.startVal; colFX.startVal = colFX.endVal; colFX.endVal = t; }
-      colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, 6);
+      colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1);
       updateColFXStep();
       if(colFX.active) { colFX.lastStepTime = millis(); colFX.currentIdx = colFX.startVal; }
       // See /sgobfx below: on stop, land on the Programmer tab's manual CH6 value instead of the
@@ -727,7 +744,7 @@ void setupAPI() {
       if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = constrain(server.arg("st").toInt(), 0, 9); sgobFX.endVal = constrain(server.arg("en").toInt(), 0, 9);
       if (sgobFX.startVal > sgobFX.endVal) { int t = sgobFX.startVal; sgobFX.startVal = sgobFX.endVal; sgobFX.endVal = t; }
-      sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); sgobFX.scratch = (server.arg("sc") == "1");
+      sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1); sgobFX.scratch = (server.arg("sc") == "1");
       if (server.hasArg("spd")) sgobFX.scratchSpeed = constrain(server.arg("spd").toFloat(), 0.2f, 10.0f);
       if (server.hasArg("rng")) sgobFX.scratchRange = constrain(server.arg("rng").toInt(), 0, 100);
       if(sgobFX.active) { sgobFX.lastStepTime = millis(); sgobFX.currentIdx = sgobFX.startVal; }
@@ -745,7 +762,7 @@ void setupAPI() {
       if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
       rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = constrain(server.arg("st").toInt(), 0, 6); rgobFX.endVal = constrain(server.arg("en").toInt(), 0, 6);
       if (rgobFX.startVal > rgobFX.endVal) { int t = rgobFX.startVal; rgobFX.startVal = rgobFX.endVal; rgobFX.endVal = t; }
-      rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, 6); rgobFX.scratch = (server.arg("sc") == "1");
+      rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1); rgobFX.scratch = (server.arg("sc") == "1");
       if (server.hasArg("spd")) rgobFX.scratchSpeed = constrain(server.arg("spd").toInt(), 1, 5);
       if(rgobFX.active) { rgobFX.lastStepTime = millis(); rgobFX.currentIdx = rgobFX.startVal; }
       // See /sgobfx above: on stop, land on the Programmer tab's manual CH8 value instead of the

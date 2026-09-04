@@ -145,11 +145,11 @@ Track track;
 // ---------------------------------------------------------------------------
 struct Pattern { const char* name; std::vector<double> pos; const char* note; };
 static const std::vector<Pattern> kPatterns = {
-  { "four",   { 0.0, 1.0, 2.0, 3.0 },   "Four-on-the-floor: jede Luecke ist genau ein Beat" },
-  { "hiphop", { 0.0, 0.75, 1.25, 2.5 }, "Boom-bap: Luecken 3/4, 1/2, 1 1/4, 1 1/2 Beats" },
-  { "broken", { 0.0, 1.5, 2.0, 3.25 },  "Broken: Luecken 1 1/2, 1/2, 1 1/4, 3/4 Beats" },
-  { "dnb",    { 0.0, 2.5 },             "Two-step: Luecken 2 1/2 und 1 1/2 Beats" },
-  { "half",   { 0.0, 2.0 },             "Halftime: jede Luecke zwei Beats" },
+  { "four",   { 0.0, 1.0, 2.0, 3.0 },   "Four-on-the-floor: every gap is exactly one beat" },
+  { "hiphop", { 0.0, 0.75, 1.25, 2.5 }, "Boom-bap: gaps of 3/4, 1/2, 1 1/4, 1 1/2 beats" },
+  { "broken", { 0.0, 1.5, 2.0, 3.25 },  "Broken: gaps of 1 1/2, 1/2, 1 1/4, 3/4 beats" },
+  { "dnb",    { 0.0, 2.5 },             "Two-step: gaps of 2 1/2 and 1 1/2 beats" },
+  { "half",   { 0.0, 2.0 },             "Halftime: every gap is two beats" },
 };
 static const Pattern* findPattern(const std::string& n) {
   for (auto& p : kPatterns) if (n == p.name) return &p;
@@ -241,6 +241,23 @@ static int estimate(EstKind kind, const std::vector<double>& on, double t0, doub
     if (g.size() < 3) return 0;
     if (g.size() > TEMPO_IVL_RING) g.erase(g.begin(), g.end() - TEMPO_IVL_RING);
     std::sort(g.begin(), g.end());
+    // Interval folding, mirroring tempoEvalMedian() in the firmware: a gap that is close to an
+    // integer multiple of the window's lower quartile is a MISSED kick, not a slower tempo, so
+    // it votes for the same period rather than for the multiple. Without this the sim scores a
+    // weaker estimator than the device actually runs, and every comparison drawn here would
+    // flatter whatever it is compared against.
+    {
+      double base = g[g.size() / 4];
+      if (base >= TEMPO_IVL_MIN) {
+        for (double& v : g) {
+          long k = (long)(v / base + 0.5);
+          if (k < 2) continue;
+          double folded = v / k;
+          if (folded >= TEMPO_IVL_MIN && fabs(folded - base) * 4 <= base) v = folded;
+        }
+        std::sort(g.begin(), g.end());
+      }
+    }
     double med = g[g.size()/2];
     double dev = 0;
     for (double v : g) dev += fabs(v - med);
@@ -293,7 +310,7 @@ static const char* relation(int got, double truth) {
   };
   double q = got / truth;
   for (auto& r : rel) if (fabs(q - r.r) / r.r < 0.04) return r.n;
-  return "falsch";
+  return "wrong";
 }
 
 
@@ -302,6 +319,46 @@ static const char* relation(int got, double truth) {
 // resampled to the device's 16kHz, with a lowpass first: 44.1k -> 16k without one
 // would fold everything above 8kHz straight down into the bands we detect on.
 // ---------------------------------------------------------------------------
+// Ground truth for a real recording. Without this the F-measure can only be computed against
+// the synthetic track, whose beat positions are known by construction -- which is why every
+// conclusion drawn here about real material used to rest on the reported BPM alone. Format is
+// one beat time in SECONDS per line; a second tab/space-separated column is ignored, so an
+// Audacity label export ("start<TAB>end<TAB>label") can be used unchanged. Blank lines and
+// lines starting with '#' are skipped.
+// Held outside Track because resetEngine() replaces the whole Track for every run; without
+// this the annotation was silently wiped between being parsed and being scored against.
+static std::vector<double> gAnnotatedBeats;
+
+static bool loadBeatAnnotations(const char* path, std::vector<double>& out) {
+  FILE* f = fopen(path, "r");
+  if (!f) return false;
+  char line[512];
+  while (fgets(line, sizeof line, f)) {
+    char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '#' || *p == '\n' || *p == '\r' || *p == 0) continue;
+    char* end = nullptr;
+    double t = strtod(p, &end);
+    if (end == p) continue;             // not a number: skip rather than abort
+    out.push_back(t);
+  }
+  fclose(f);
+  std::sort(out.begin(), out.end());
+  return !out.empty();
+}
+
+// Median inter-beat interval of an annotation, as BPM. This is the truth the reported tempo
+// gets compared against on a real file -- do not take it from --bpm, which describes the
+// synthetic generator and means nothing here.
+static double annotatedBPM(const std::vector<double>& beats) {
+  if (beats.size() < 2) return 0;
+  std::vector<double> ibi;
+  for (size_t i = 1; i < beats.size(); i++) ibi.push_back(beats[i] - beats[i - 1]);
+  std::sort(ibi.begin(), ibi.end());
+  double m = ibi[ibi.size() / 2];
+  return m > 0 ? 60.0 / m : 0;
+}
+
 struct Wav {
   std::vector<float> mono;      // at 16kHz
   bool loaded = false;
@@ -397,6 +454,205 @@ struct Result {
   int    drift = 0;
 };
 
+
+// =========================================================
+// --- PSYCHOACOUSTIC ONSET DETECTION FUNCTION (prototype) ---
+// =========================================================
+// Not firmware. This is the classical-DSP half of the pipeline described in Bello et al. [1]
+// and refined by Boeck & Widmer (SuperFlux, DAFx-13), built here so it can be MEASURED against
+// the detector actually running on the device before a single byte of it is ported.
+//
+// Deliberately out of scope: refs [2][3][5][6] are neural networks -- BLSTM, TCN, Transformer.
+// They are the state of the art and they are not reachable on an ESP32-C3 with no FPU and
+// ~78KB of flash left. Ref [4] adds a dynamic Bayesian network on top of an RNN, same problem.
+// What IS reachable is everything those papers use as their INPUT representation, and that is
+// where the perceptual modelling actually lives.
+//
+// Three ideas, each switchable so the contribution of each can be measured separately:
+//
+//  1. CRITICAL BANDS. Hearing does not resolve frequency linearly; it integrates energy within
+//     roughly constant-Q bands. Summing FFT bins into Bark bands means a kick competes with the
+//     other energy in ITS band, not with the whole spectrum -- which is the entire reason a
+//     kick under a loud pad is still audible to a person.
+//
+//  2. LOGARITHMIC COMPRESSION. Loudness is roughly logarithmic in amplitude. Differencing raw
+//     magnitudes makes an onset in a loud passage numerically enormous and the identical onset
+//     in a quiet passage numerically invisible; differencing log magnitudes makes them equal,
+//     which is what a listener reports. This is the single step the SuperFlux authors credit
+//     most, and it is the reason a fixed sensitivity can work across a whole set.
+//
+//  3. MAXIMUM FILTER (SuperFlux). Vibrato, portamento and any drifting partial move energy
+//     between neighbouring bands, producing a positive difference in the band it moves INTO --
+//     a false onset. Comparing against the maximum of the previous frame's neighbouring bands
+//     lets a partial wander without registering. Boeck & Widmer report up to 60% fewer false
+//     positives on vibrato-heavy material, with no additional misses.
+//
+// The FFT is the firmware's own (fftRun/fftMag), so a port would not need a new one.
+
+// Integer log2 with a linearly interpolated mantissa, Q8. No powf/logf: the C3 has no FPU, and
+// this is ~6 instructions. Worst-case error is about 0.086 in log2 units (~2.6% in magnitude),
+// which is far below the differences this function is asked to resolve.
+static inline int32_t log2Q8(uint32_t v) {
+  if (v == 0) return 0;
+  int msb = 31 - __builtin_clz(v);
+  uint32_t frac = (msb >= 8) ? ((v >> (msb - 8)) & 0xFF) : ((v << (8 - msb)) & 0xFF);
+  return (int32_t)(msb << 8) | (int32_t)frac;
+}
+
+// Bark-scale critical band edges in Hz (Zwicker), truncated at the 8kHz Nyquist of our 16kHz
+// sampling. 22 bands. The lowest ones span only two or three of our 31.25Hz bins, which is
+// coarse -- but the kick lives there and it is where a finer split would buy the least.
+static const int kBarkEdgesHz[] = {
+  20, 100, 200, 300, 400, 510, 630, 770, 920, 1080, 1270, 1480,
+  1720, 2000, 2320, 2700, 3150, 3700, 4400, 5300, 6400, 7700, 8000
+};
+static const int kNumBark = (int)(sizeof(kBarkEdgesHz) / sizeof(kBarkEdgesHz[0])) - 1;
+#define PSY_MAX_BANDS 64
+
+struct PsyCfg {
+  bool bark     = true;   // 1. critical bands instead of raw FFT bins
+  bool logComp  = true;   // 2. logarithmic magnitude compression
+  bool maxFilt  = true;   // 3. SuperFlux maximum filter over +/-1 band
+  int  mu       = 1;      // frames of lag for the difference
+  int  hop      = FFT_N;  // samples between frames; FFT_N = no overlap
+  int  deltaQ8  = 384;    // peak threshold = mean + delta*MAD, Q8 (256 == 1.0)
+  int  meanFr   = 16;     // frames in the moving mean/MAD window
+  int  refracMs = 60;     // refractory period
+  int  locMaxFr = 3;      // frames each side that the peak must dominate
+  int  bandLo   = 0;      // first band summed into the flux
+  int  bandHi   = 99;     // last band (clamped to the band count)
+  const char* name = "psy";
+};
+
+// Runs the ODF over the same source the firmware run() sees, and returns onset times in ms.
+// Offline and self-contained on purpose: it must not be able to disturb the engine it is being
+// compared against.
+static std::vector<double> psyRun(double seconds, const PsyCfg& cfg,
+                                  std::vector<double>* odfOut = nullptr) {
+  std::vector<double> onsets;
+  // Rewind the SOURCE without discarding what it was configured to play. `track = Track()` here
+  // silently reset tempo, level and kick pattern to the defaults, so every variant and every
+  // test case heard the identical default track -- which showed up as identical onset counts
+  // down every column. Same trap as resetEngine() wiping the beat annotations.
+  if (wav.loaded) {
+    wav.pos = 0;
+  } else {
+    Track cfg = track;
+    track = Track();
+    track.bpm = cfg.bpm; track.bassAmp = cfg.bassAmp; track.masterAmp = cfg.masterAmp;
+    track.kickPos = cfg.kickPos;
+  }
+
+  fftInitTables();
+  static int binOf[PSY_MAX_BANDS + 1];
+  int nBands;
+  if (cfg.bark) {
+    nBands = kNumBark;
+    for (int i = 0; i <= nBands; i++) {
+      int b = (int)((double)kBarkEdgesHz[i] * FFT_N / SAMPLING_FREQUENCY + 0.5);
+      binOf[i] = std::min(b, FFT_N / 2 - 1);
+    }
+  } else {
+    // Raw bins, decimated to the same count so the comparison is about the SCALE, not about
+    // how many numbers the flux is summed over.
+    nBands = kNumBark;
+    for (int i = 0; i <= nBands; i++) binOf[i] = (i * (FFT_N / 2 - 1)) / nBands;
+  }
+
+  std::vector<int32_t> ring(FFT_N, 0);
+  size_t ringFill = 0;
+  const int lagMax = std::max(1, cfg.mu);
+  std::vector<std::vector<int32_t>> hist(lagMax + 1, std::vector<int32_t>(nBands, 0));
+  int histAt = 0, framesSeen = 0;
+
+  std::vector<double> odf;            // one value per frame
+  std::vector<double> odfTimeMs;
+
+  uint64_t sampleIdx = 0;
+  const uint64_t total = (uint64_t)(seconds * SAMPLING_FREQUENCY);
+  while (sampleIdx < total) {
+    // Fill/slide the analysis window.
+    int need = (ringFill < (size_t)FFT_N) ? (FFT_N - (int)ringFill) : cfg.hop;
+    if (ringFill == (size_t)FFT_N) {
+      std::rotate(ring.begin(), ring.begin() + cfg.hop, ring.end());
+      for (int i = 0; i < cfg.hop; i++) { ring[FFT_N - cfg.hop + i] = simNextSample(); sampleIdx++; }
+    } else {
+      for (int i = 0; i < need; i++) { ring[ringFill++] = simNextSample(); sampleIdx++; }
+      continue;
+    }
+
+    for (int i = 0; i < FFT_N; i++) {
+      int32_t s = (ring[i] >> SAMPLE_DOWNSCALE_SHIFT_FFT) << tuneInputGainShift;
+      if (s > 32767) s = 32767; else if (s < -32767) s = -32767;
+      fftRe[i] = (int16_t)(((int32_t)s * fftWindow[i]) >> 15);
+      fftIm[i] = 0;
+    }
+    fftRun();
+
+    std::vector<int32_t>& cur = hist[histAt];
+    for (int b = 0; b < nBands; b++) {
+      int lo = binOf[b], hi = std::max(binOf[b + 1] - 1, binOf[b]);
+      int32_t sum = 0;
+      for (int i = lo; i <= hi; i++) sum += fftMag[i];
+      cur[b] = cfg.logComp ? log2Q8((uint32_t)sum + 1) : sum;
+    }
+    framesSeen++;
+
+    if (framesSeen > lagMax) {
+      const std::vector<int32_t>& prev = hist[(histAt - cfg.mu + lagMax + 1) % (lagMax + 1)];
+      int64_t flux = 0;
+      const int bLo = std::max(0, cfg.bandLo), bHi = std::min(nBands - 1, cfg.bandHi);
+      for (int b = bLo; b <= bHi; b++) {
+        int32_t ref = prev[b];
+        if (cfg.maxFilt) {                       // SuperFlux: let a partial wander one band
+          if (b > 0)          ref = std::max(ref, prev[b - 1]);
+          if (b < nBands - 1) ref = std::max(ref, prev[b + 1]);
+        }
+        int32_t d = cur[b] - ref;
+        if (d > 0) flux += d;                    // half-wave rectified: onsets, not offsets
+      }
+      odf.push_back((double)flux);
+      // Timestamp at the END of the window: that is when the evidence is complete, and it is
+      // what the firmware's own detector reports too, so the two are comparable.
+      odfTimeMs.push_back((double)sampleIdx * 1000.0 / SAMPLING_FREQUENCY);
+    }
+    histAt = (histAt + 1) % (lagMax + 1);
+  }
+
+  // --- peak picking -------------------------------------------------------
+  // The standard three-condition picker (Bello et al. [1], as parameterised by Boeck):
+  //   1. the frame is the maximum over a local neighbourhood,
+  //   2. it exceeds mean + delta * MAD over a longer trailing window,
+  //   3. enough time has passed since the last onset.
+  //
+  // Condition 1 with a neighbourhood of +/-1 frame is not enough and produced a detector that
+  // fired at a near-constant ~3 onsets/s whatever the music was doing -- which then looked like
+  // a 100% score at any tempo near 180 BPM and 0% elsewhere. A wider window is what makes the
+  // picker select events rather than sample the bed.
+  const int w1 = cfg.locMaxFr;      // frames each side for the local maximum
+  const int w3 = cfg.meanFr;        // trailing frames for mean/MAD
+  double lastMs = -1e9;
+  for (size_t n = (size_t)w1; n + w1 < odf.size(); n++) {
+    bool isMax = true;
+    for (int k = -w1; k <= w1 && isMax; k++) if (odf[n + k] > odf[n]) isMax = false;
+    if (!isMax) continue;
+    size_t from = (n >= (size_t)w3) ? n - w3 : 0;
+    if (n - from < 4) continue;
+    double mean = 0; size_t cnt = 0;
+    for (size_t k = from; k < n; k++) { mean += odf[k]; cnt++; }
+    mean /= cnt;
+    double mad = 0;
+    for (size_t k = from; k < n; k++) mad += fabs(odf[k] - mean);
+    mad /= cnt;
+    if (odf[n] < mean + (cfg.deltaQ8 / 256.0) * mad) continue;
+    if (odfTimeMs[n] - lastMs < cfg.refracMs) continue;
+    lastMs = odfTimeMs[n];
+    onsets.push_back(odfTimeMs[n]);
+  }
+  if (odfOut) *odfOut = odf;
+  return onsets;
+}
+
 Result run(double seconds) {
   Result r;
   std::mt19937 loopRng{99};
@@ -412,9 +668,12 @@ Result run(double seconds) {
 
     pollAudioEngine();
 
-    if (sdLastOnsetMs != lastOnset) {
-      lastOnset = sdLastOnsetMs;
-      if (simMicros > nextSampleAt * 1e6) r.onsets.push_back((double)sdLastOnsetMs);
+    // bassOnsetUsedMs, not sdBass.lastOnsetMs: the latter always holds the sample-rate
+    // detector's result, so with --psy this harness would have scored the detector that was
+    // NOT driving anything and reported the two as identical. It did, until this was fixed.
+    if (bassOnsetUsedMs != lastOnset) {
+      lastOnset = bassOnsetUsedMs;
+      if (simMicros > nextSampleAt * 1e6) r.onsets.push_back((double)bassOnsetUsedMs);
     }
     if (sdMid.lastOnsetMs != lastMid) {
       lastMid = sdMid.lastOnsetMs;
@@ -495,6 +754,8 @@ const Pattern* gPattern = nullptr;   // kick pattern, applied by resetEngine()
 void resetEngine(int sens, bool autogain) {
   // Fresh state for every run, so one case cannot colour the next.
   simMicros = 0; track = Track();
+  // Real ground truth outlives the reset -- see gAnnotatedBeats.
+  if (!gAnnotatedBeats.empty()) track.trueBeats = gAnnotatedBeats;
   for (SdBand* b : { &sdBass, &sdMid, &sdHigh }) {
     b->lp1 = b->lp2 = b->env = b->ref = b->refAcc = 0;
     b->lastOnsetMs = 0; b->armed = true; b->peaking = false; b->boost = 65536;
@@ -529,6 +790,7 @@ void resetEngine(int sens, bool autogain) {
 int main(int argc, char** argv) {
   double bpm = 130, secs = 60, wavGain = 1.0;
   const char* wavPath = nullptr;
+  const char* beatsPath = nullptr;
   int sens = 60; bool autogain = false; std::string mode = "single";
   std::string patName; double winMs = 8000; bool bpmGiven = false;
   double anchorRatio = 1.03;   // how wrong the simulated tap is
@@ -557,6 +819,7 @@ int main(int argc, char** argv) {
     else if (a == "--pmw") ovPeakWait = (int)val();
     else if (a == "--tw")  ovWindow   = (int)val();
     else if (a == "--file") wavPath = argv[++i];
+    else if (a == "--beats") beatsPath = argv[++i];
     else if (a == "--wavgain") wavGain = val();
     else if (a == "--pattern") patName = argv[++i];
     else if (a == "--win") winMs = val();
@@ -567,13 +830,28 @@ int main(int argc, char** argv) {
   }
 
   if (wavPath) {
-    if (!wav.load(wavPath)) { fprintf(stderr, "WAV konnte nicht gelesen werden: %s\n", wavPath); return 1; }
+    if (!wav.load(wavPath)) { fprintf(stderr, "could not read WAV: %s\n", wavPath); return 1; }
+  }
+  if (beatsPath) {
+    std::vector<double> ann;
+    if (!loadBeatAnnotations(beatsPath, ann)) {
+      fprintf(stderr, "could not read beat annotations: %s\n", beatsPath); return 1;
+    }
+    // Replaces the synthetic grid outright. Scoring, the timing error and the BPM comparison all
+    // read track.trueBeats, so this is the single point where real ground truth enters.
+    gAnnotatedBeats = ann;
+    track.trueBeats = ann;
+    bpm = annotatedBPM(ann);
+    if (bpm <= 0) { fprintf(stderr, "beat annotations do not yield a tempo: %s\n", beatsPath); return 1; }
+    fprintf(stderr, "annotations: %zu beats, %.1f s ... %.1f s, median %.1f BPM\n",
+            ann.size(), ann.front(), ann.back(), bpm);
+    if (!wavPath) fprintf(stderr, "warning: --beats without --file scores the SYNTHETIC track\n");
     wav.gain = wavGain;
   }
 
   if (!patName.empty() && mode != "compare") {
     gPattern = findPattern(patName);
-    if (!gPattern) { fprintf(stderr, "unbekanntes Muster: %s\n", patName.c_str()); return 1; }
+    if (!gPattern) { fprintf(stderr, "unknown pattern: %s\n", patName.c_str()); return 1; }
   }
 
   if (mode == "compare") {
@@ -584,30 +862,30 @@ int main(int argc, char** argv) {
     std::vector<const Pattern*> pats;
     if (!patName.empty()) {
       const Pattern* pp = findPattern(patName);
-      if (!pp) { fprintf(stderr, "unbekanntes Muster: %s\n", patName.c_str()); return 1; }
+      if (!pp) { fprintf(stderr, "unknown pattern: %s\n", patName.c_str()); return 1; }
       pats.push_back(pp);
     } else for (auto& q : kPatterns) pats.push_back(&q);
 
     std::vector<double> bpms;
     if (bpmGiven) bpms.push_back(bpm); else bpms = { 90, 98, 120, 128, 140, 174 };
 
-    printf("Fenster %.0f ms, %.0f s pro Lauf, sens=%d%s\n\n", winMs, secs, sens,
+    printf("Window %.0f ms, %.0f s per run, sens=%d%s\n\n", winMs, secs, sens,
            autogain ? ", AUTO-GAIN" : "");
     for (auto& q : kPatterns) printf("  %-7s %s\n", q.name, q.note);
-    printf("\n  Spalten: gemeldete BPM, Verhaeltnis zur Wahrheit, Anteil richtiger Fenster\n");
-    printf("  Firmware = trackedBPM live aus der Engine; Median = dasselbe Verfahren hier\n");
-    printf("  nachgebaut (Gegenprobe, dass dieses Testgeruest sauber misst).\n\n");
+    printf("\n  Columns: reported BPM, ratio to ground truth, share of correct windows\n");
+    printf("  Firmware = trackedBPM straight out of the engine; Median = the same method rebuilt\n");
+    printf("  here, as a cross-check that this harness itself measures cleanly.\n\n");
 
     // Five methods. The last two differ from the middle two ONLY in which onsets they are given,
     // which is the comparison that matters: method versus material.
     const int NM = 5;
     struct Tot { int windows = 0, ok = 0; } tot[NM];
-    const char* names[NM] = { "Median B", "ACF+H B", "+Prior B", "+Prior A", "+Anker A" };
+    const char* names[NM] = { "Median B", "ACF+H B", "+Prior B", "+Prior A", "+Anchor A" };
     EstKind kinds[NM]     = { EST_MEDIAN, EST_ACFH, EST_ACFHP, EST_ACFHP, EST_ACFHA };
     bool    useAll[NM]    = { false, false, false, true, true };
 
-    printf("  B = nur Bass (was die Firmware heute benutzt), A = Bass + Mid + High zusammen\n\n");
-    printf("  Muster   wahr  Onsets  Firmware   ");
+    printf("  B = bass only (what the firmware uses today), A = bass + mid + high combined\n\n");
+    printf("  Pattern  true  Onsets  Firmware   ");
     for (int k = 0; k < NM; k++) printf(" %-12s", names[k]);
     printf("\n");
     for (const Pattern* pp : pats) {
@@ -621,7 +899,7 @@ int main(int argc, char** argv) {
         Result r = run(secs);
         int fw = trackedBPM;
         printf("  %-7s %4.0f  %6zu  %3d %-7s", pp->name, b, r.onsets.size(), fw, relation(fw, b));
-        if (r.onsets.size() < 8 || r.onsetsAll.size() < 8) { printf(" zu wenige Onsets\n"); continue; }
+        if (r.onsets.size() < 8 || r.onsetsAll.size() < 8) { printf(" too few onsets\n"); continue; }
         double s0 = r.onsetsAll.front(), s1 = r.onsetsAll.back();
         for (int k = 0; k < NM; k++) {
           const std::vector<double>& src = useAll[k] ? r.onsetsAll : r.onsets;
@@ -645,9 +923,9 @@ int main(int argc, char** argv) {
       }
       printf("\n");
     }
-    printf("  Gesamt (Anteil richtiger Fenster ueber alle Faelle):\n");
+    printf("  Overall (share of correct windows across all cases):\n");
     for (int k = 0; k < NM; k++)
-      printf("    %-10s %3.0f%%  (%d von %d Fenstern)\n", names[k],
+      printf("    %-10s %3.0f%%  (%d of %d windows)\n", names[k],
              tot[k].windows ? 100.0 * tot[k].ok / tot[k].windows : 0.0, tot[k].ok, tot[k].windows);
     return 0;
   }
@@ -663,7 +941,7 @@ int main(int argc, char** argv) {
     Obs obs[] = {
       { "Bass", &sdBass, "40-159 Hz",     0, {} },
       { "Mid",  &sdMid,  "159-637 Hz",    0, {} },
-      { "High", &sdHigh, "ueber 1273 Hz", 0, {} },
+      { "High", &sdHigh, "above 1273 Hz", 0, {} },
     };
     std::mt19937 lr{99};
     while (simMicros < (uint64_t)(secs * 1e6)) {
@@ -677,12 +955,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    printf("Datei: %s\n", wavPath ? wavPath : "(synthetisch)");
+    printf("File: %s\n", wavPath ? wavPath : "(synthetic)");
     if (wav.loaded) printf("  %.1f s Material, auf %d Hz gewandelt, %.0fx geschleift auf %.0fs\n",
                            wav.lengthSec(), SAMPLING_FREQUENCY, secs / wav.lengthSec(), secs);
-    printf("  ig=%d, verworfene Samples %ld, Uhrenabweichung %d Promille\n\n",
+    printf("  ig=%d, dropped samples %ld, clock drift %d per mille\n\n",
            tuneInputGainShift, simI2sDropped, sdClkDriftPpt);
-    printf("  Band   Bereich          Onsets  pro s   Abstand   ergibt   Streuung\n");
+    printf("  Band   Range            Onsets  per s   Gap       gives    Spread\n");
     for (auto& o : obs) {
       std::vector<double> gaps;
       for (size_t i = 1; i < o.on.size(); i++) {
@@ -737,6 +1015,197 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+
+  if (mode == "psy") {
+    // Ablation of the psychoacoustic front end. Every variant is fed through the SAME tempo
+    // estimator the firmware runs (median of the gaps, with the interval folding), so the only
+    // thing that varies between columns is the onset detection function. That is the comparison
+    // worth making: method against material, not method against a different estimator.
+    std::vector<const Pattern*> pats;
+    if (gPattern) pats.push_back(gPattern); else for (auto& q : kPatterns) pats.push_back(&q);
+    std::vector<double> bpms = bpmGiven ? std::vector<double>{ bpm }
+                                        : std::vector<double>{ 90, 98, 120, 128, 140, 174 };
+    PsyCfg variants[4];
+    // Bands 0..4 on the Bark scale are 20..510 Hz -- the kick's range. The full-band variants
+    // are kept alongside because the difference between them is the finding, not a detail.
+    variants[0] = PsyCfg{ true,  false, false, 1, FFT_N, 384, 24, 60, 3, 0, 99, "bark full" };
+    variants[1] = PsyCfg{ true,  true,  true,  1, FFT_N, 384, 24, 60, 3, 0, 99, "SFlux full" };
+    variants[2] = PsyCfg{ true,  true,  false, 1, FFT_N, 384, 24, 60, 3, 0,  4, "log bass"   };
+    variants[3] = PsyCfg{ true,  true,  true,  1, FFT_N, 384, 24, 60, 3, 0,  4, "SFlux bass" };
+    const int NV = 4;
+
+    printf("Psychoacoustic front end, ablated. %.0f s per run, sens=%d, window %.0f ms\n\n",
+           secs, sens, winMs);
+    printf("  Every column uses the firmware's tempo estimator; only the onset function differs.\n");
+    printf("  Firmware = the sample-rate detector on the device today (time domain, bass band).\n");
+    printf("  bark full  = spectral flux over all %d Bark bands, linear magnitude\n", kNumBark);
+    printf("  SFlux full = + log compression + SuperFlux max filter (Boeck & Widmer, DAFx-13)\n");
+    printf("  log bass   = log compression, Bark bands 0..4 only (20..510 Hz, the kick)\n");
+    printf("  SFlux bass = + the SuperFlux max filter, same band range\n\n");
+
+    struct Tot { int windows = 0, ok = 0; size_t onsets = 0; } totFw, totAcf, tot[NV];
+    printf("  %-7s %5s  %-14s %-14s", "Pattern", "true", "Firmware", "SFlux+ACF");
+    for (int v = 0; v < NV; v++) printf(" %-14s", variants[v].name);
+    printf("\n");
+
+    for (const Pattern* pp : pats) {
+      for (double b : bpms) {
+        gPattern = pp;
+        resetEngine(sens, autogain);
+        track.bpm = b; track.bassAmp = bassAmp; track.masterAmp = amp;
+        Result r = run(secs);
+        printf("  %-7s %5.0f ", pp->name, b);
+
+        auto sweep = [&](const std::vector<double>& on, Tot& acc, EstKind kind = EST_MEDIAN) {
+          if (on.size() < 8) { printf(" %-14s", "-- (few)"); return; }
+          double s0 = on.front(), s1 = on.back();
+          int w = 0, ok = 0;
+          for (double t = s0 + winMs; t <= s1; t += 500.0) {
+            int val = estimate(kind, on, t - winMs, t);
+            if (!val) continue;
+            w++;
+            if (fabs(val - b) / b < 0.04) ok++;
+          }
+          acc.windows += w; acc.ok += ok; acc.onsets += on.size();
+          char buf[32];
+          snprintf(buf, sizeof buf, "%4zu on %3d%%", on.size(), w ? ok * 100 / w : 0);
+          printf(" %-14s", buf);
+        };
+
+        sweep(r.onsets, totFw);
+        {
+          // The decisive pairing: a broadband onset function with the estimator the literature
+          // actually pairs it with. A median of the gaps assumes every gap IS the beat, which is
+          // only true for a deliberately narrowband detector -- feed it a detector that hears
+          // the hi-hats too and it reads half the period. Autocorrelation with harmonic summing
+          // asks "which period explains ALL of these", which is the question a dense onset
+          // function can answer.
+          PsyCfg best{ true, true, true, 1, FFT_N, 384, 24, 60, 3, 0, 99, "SFlux+ACF" };
+          track.bpm = b; track.bassAmp = bassAmp; track.masterAmp = amp;
+          if (gPattern) track.kickPos = gPattern->pos;
+          sweep(psyRun(secs, best), totAcf, EST_ACFHP);
+        }
+        for (int v = 0; v < NV; v++) {
+          // psyRun rewinds the source itself and keeps its configuration; do not call
+          // resetEngine() here, it would put the Track back to defaults.
+          track.bpm = b; track.bassAmp = bassAmp; track.masterAmp = amp;
+          if (gPattern) track.kickPos = gPattern->pos;
+          sweep(psyRun(secs, variants[v]), tot[v]);
+        }
+        printf("\n");
+      }
+    }
+    printf("\n  Overall (share of correct windows, and total onsets found):\n");
+    printf("    %-11s %3d%%  (%d of %d windows, %zu onsets)\n", "Firmware",
+           totFw.windows ? totFw.ok * 100 / totFw.windows : 0, totFw.ok, totFw.windows, totFw.onsets);
+    printf("    %-11s %3d%%  (%d of %d windows)  <- broadband ODF + autocorrelation\n", "SFlux+ACF",
+           totAcf.windows ? totAcf.ok * 100 / totAcf.windows : 0, totAcf.ok, totAcf.windows);
+    for (int v = 0; v < NV; v++)
+      printf("    %-11s %3d%%  (%d of %d windows, %zu onsets)\n", variants[v].name,
+             tot[v].windows ? tot[v].ok * 100 / tot[v].windows : 0,
+             tot[v].ok, tot[v].windows, tot[v].onsets);
+    return 0;
+  }
+
+
+  if (mode == "psyscore") {
+    // Scores the psychoacoustic ODF's ONSETS against ground truth, rather than scoring the tempo
+    // derived from them. Needed to tell two very different failures apart: "it does not hear the
+    // events" and "it hears them all, including the ones that are not the beat".
+    if (track.trueBeats.empty() && !wav.loaded) {
+      fprintf(stderr, "psyscore needs --file with --beats, or a synthetic pattern\n"); return 1;
+    }
+    resetEngine(sens, autogain);
+    track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
+    if (gPattern) track.kickPos = gPattern->pos;
+    Result r = run(secs);
+    std::vector<double> truth = track.trueBeats;
+    double span = truth.empty() ? secs : (truth.back() - truth.front());
+    printf("Truth: %zu events over %.1f s = %.2f/s\n\n", truth.size(), span,
+           span > 0 ? truth.size() / span : 0);
+    printf("  %-12s %7s %7s  %6s %6s %6s   %s\n",
+           "variant", "onsets", "per s", "prec", "recall", "F", "offset");
+    auto show = [&](const char* nm, const std::vector<double>& on) {
+      Score sc = score(on, truth);
+      printf("  %-12s %7zu %7.2f  %5.0f%% %5.0f%% %6.3f   %+.1f ms\n", nm, on.size(),
+             on.size() / secs, sc.p * 100, sc.rec * 100, sc.f, sc.offset);
+    };
+    // Tempo from the same onsets, through both estimators, so the pairing question is answered
+    // on this signal too and not only on the synthetic patterns.
+    double truthBpm = annotatedBPM(truth);
+    auto tempoOf = [&](const std::vector<double>& on, EstKind k) {
+      if (on.size() < 8) return 0;
+      double s0 = on.front(), s1 = on.back();
+      std::vector<int> v;
+      for (double t = s0 + 8000.0; t <= s1; t += 500.0) {
+        int e = estimate(k, on, t - 8000.0, t);
+        if (e) v.push_back(e);
+      }
+      if (v.empty()) return 0;
+      std::sort(v.begin(), v.end());
+      return v[v.size() / 2];
+    };
+    show("firmware", r.onsets);
+    struct V { PsyCfg c; };
+    // w1 (the field before the band range) is the peak picker's lookahead in FRAMES. On the
+    // device each frame is 32ms of added latency, so it is not a free parameter: w1=3 costs
+    // ~96ms, about a fifth of a beat at 128 BPM. Two causal-er variants are measured alongside.
+    const int NPSY = 6;
+    PsyCfg vs[NPSY];
+    vs[0] = PsyCfg{ true, false, false, 1, FFT_N, 384, 24, 60, 3, 0, 99, "bark full" };
+    vs[1] = PsyCfg{ true, true,  false, 1, FFT_N, 384, 24, 60, 3, 0, 99, "+log" };
+    vs[2] = PsyCfg{ true, true,  true,  1, FFT_N, 384, 24, 60, 3, 0, 99, "+max (SFlux)" };
+    vs[3] = PsyCfg{ true, true,  true,  1, FFT_N, 384, 24, 60, 3, 0,  4, "SFlux bass" };
+    vs[4] = PsyCfg{ true, true,  true,  1, FFT_N, 384, 24, 60, 2, 0, 99, "SFlux w1=2" };
+    vs[5] = PsyCfg{ true, true,  true,  1, FFT_N, 384, 24, 60, 1, 0, 99, "SFlux w1=1" };
+    for (int i = 0; i < NPSY; i++) {
+      track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
+      if (gPattern) track.kickPos = gPattern->pos;
+      show(vs[i].name, psyRun(secs, vs[i]));
+    }
+    printf("\n  Tempo from these onsets (median of 8s windows), truth %.1f BPM:\n", truthBpm);
+    printf("    %-14s median %3d   ACF+H+prior %3d\n", "firmware",
+           tempoOf(r.onsets, EST_MEDIAN), tempoOf(r.onsets, EST_ACFHP));
+    for (int i = 0; i < NPSY; i++) {
+      track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
+      if (gPattern) track.kickPos = gPattern->pos;
+      std::vector<double> on = psyRun(secs, vs[i]);
+      printf("    %-14s median %3d   ACF+H+prior %3d\n", vs[i].name,
+             tempoOf(on, EST_MEDIAN), tempoOf(on, EST_ACFHP));
+    }
+    return 0;
+  }
+
+
+  if (mode == "psyband") {
+    // How much BANDWIDTH does the onset function actually need? This decides whether the input
+    // can be decimated before the FFT, which is by far the cheapest lever available: keeping the
+    // window length in seconds constant while decimating by D leaves the bin width fs/N
+    // unchanged, so the low-frequency resolution is identical -- but the transform shrinks from
+    // N log N to (N/D) log(N/D). Everything above fs/2D simply stops existing.
+    if (track.trueBeats.empty()) {
+      fprintf(stderr, "psyband needs --file with --beats\n"); return 1;
+    }
+    std::vector<double> truth = track.trueBeats;
+    printf("Bandwidth sweep. Truth %zu beats, %.1f BPM.\n", truth.size(), annotatedBPM(truth));
+    printf("Bark band k covers up to %d Hz; the FFT could be decimated to just above that.\n\n",
+           kBarkEdgesHz[kNumBark]);
+    printf("  %-9s %-13s %6s  %5s %6s %6s   %s\n",
+           "bands", "top edge", "onsets", "prec", "recall", "F", "min fs for it");
+    for (int hi : { 2, 3, 4, 5, 6, 8, 10, 13, 16, 21 }) {
+      PsyCfg c{ true, true, true, 1, FFT_N, 384, 24, 60, 3, 0, hi, "band" };
+      track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
+      std::vector<double> on = psyRun(secs, c);
+      Score sc = score(on, truth);
+      int topHz = kBarkEdgesHz[std::min(hi + 1, kNumBark)];
+      char rng[16]; snprintf(rng, sizeof rng, "0..%d", hi);
+      printf("  %-9s %5d Hz      %6zu  %4.0f%% %5.0f%% %6.3f   %5d Hz (/%d)\n",
+             rng, topHz, on.size(), sc.p * 100, sc.rec * 100, sc.f,
+             2 * topHz, SAMPLING_FREQUENCY / std::max(1, 2 * topHz));
+    }
+    return 0;
+  }
+
   if (mode == "csv") {          // one line of numbers, for shell-driven sweeps
     resetEngine(sens, autogain);
     track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
@@ -752,18 +1221,18 @@ int main(int argc, char** argv) {
     track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
     Result r = run(secs);
     Score s = score(r.onsets, track.trueBeats);
-    printf("Track %.1f BPM (Beat %.1f ms), %.0fs, sens=%d, Bass=%.2f, Pegel=%.1e%s\n",
+    printf("Track %.1f BPM (beat %.1f ms), %.0fs, sens=%d, bass=%.2f, level=%.1e%s\n",
            bpm, 60000.0 / bpm, secs, sens, bassAmp, amp, autogain ? ", AUTO-GAIN" : "");
-    printf("  Onsets %zu bei %zu echten Beats\n", r.onsets.size(), track.trueBeats.size());
-    printf("  Treffer %.0f%% / Vollstaendigkeit %.0f%% / F %.3f\n", s.p * 100, s.rec * 100, s.f);
-    printf("  Zeitfehler %.1f ms (konstanter Versatz %.1f ms)\n", s.err, s.offset);
-    printf("  gemeldete BPM %d (Median), wahr %.0f\n", medianBPM(r.bpmReadings), bpm);
-    printf("  verworfene Samples %ld, Uhrenabweichung %d Promille, ig=%d\n",
+    printf("  Onsets %zu against %zu true beats\n", r.onsets.size(), track.trueBeats.size());
+    printf("  Precision %.0f%% / Recall %.0f%% / F %.3f\n", s.p * 100, s.rec * 100, s.f);
+    printf("  Timing error %.1f ms (constant offset %.1f ms)\n", s.err, s.offset);
+    printf("  Reported BPM %d (median), true %.0f\n", medianBPM(r.bpmReadings), bpm);
+    printf("  Dropped samples %ld, clock drift %d per mille, ig=%d\n",
            r.drops, r.drift, tuneInputGainShift);
-    printf("  intern: pk=%ld clip=%d env=%ld floor=%ld peak=%ld thr=%ld dyn=%ld trans=%d fft=%d sd=%d\n",
+    printf("  internal: pk=%ld clip=%d env=%ld floor=%ld peak=%ld thr=%ld dyn=%ld trans=%d\n",
            (long)micPeak, micClipCount, (long)sdEnv, (long)sdFloor, (long)sdPeakStat,
-           (long)sdThrBlock, (long)(sdHasDynamics?1:0), sdTransient ? 1 : 0, audioUseFFT ? 1 : 0, sdEnabled ? 1 : 0);
-    printf("  Baender: lo=%ld mi=%ld hi=%ld  mad=%ld mean=%ld\n",
+           (long)sdThrBlock, (long)(sdHasDynamics?1:0), sdTransient ? 1 : 0);
+    printf("  Bands: lo=%ld mi=%ld hi=%ld  mad=%ld mean=%ld\n",
            (long)lastBassEnergy, (long)lastMidEnergy, (long)lastHighEnergy,
            (long)sdVarMad, (long)sdVarMean);
     return 0;
@@ -794,7 +1263,7 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "tempo") {
-    printf("  BPM   Onsets  Treffer  Vollst.   F     Zeitfehler  gemeldet  verworfen  Drift\n");
+    printf("  BPM   Onsets  Precis.  Recall    F     TimingErr   reported  dropped    drift\n");
     for (double b : {90.0, 110.0, 125.0, 130.0, 133.0, 140.0, 150.0, 174.0}) {
       resetEngine(sens, autogain);
       track.bpm = b; track.bassAmp = bassAmp; track.masterAmp = amp;
@@ -808,7 +1277,7 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "sens") {
-    printf("  sens  Onsets  Treffer  Vollst.   F     Zeitfehler  gemeldet\n");
+    printf("  sens  Onsets  Precis.  Recall    F     TimingErr   reported\n");
     for (int sv = 0; sv <= 100; sv += 10) {
       resetEngine(sv, autogain);
       track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = amp;
@@ -821,7 +1290,7 @@ int main(int argc, char** argv) {
   }
 
   if (mode == "level") {
-    printf("  Pegel    ig  Onsets  Treffer  Vollst.   F     gemeldet  Clipping\n");
+    printf("  Level    ig  Onsets  Precis.  Recall    F     reported  clipping\n");
     for (double a : {2.0e7, 5.0e7, 1.0e8, 2.0e8, 5.0e8, 1.0e9}) {
       resetEngine(sens, autogain);
       track.bpm = bpm; track.bassAmp = bassAmp; track.masterAmp = a;
@@ -833,6 +1302,6 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
-  fprintf(stderr, "unbekannter Modus: %s\n", mode.c_str());
+  fprintf(stderr, "unknown mode: %s\n", mode.c_str());
   return 1;
 }

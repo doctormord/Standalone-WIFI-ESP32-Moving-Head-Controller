@@ -68,6 +68,52 @@ inline float lfoShape(float p, int m, int c, bool allowRandom) {
 // =========================================================
 // --- LFO MODULATOR (Dimmer, Prism & Gobo Rotation) ---
 // =========================================================
+// Sizes of the two sync-divisor tables declared in the .ino. They live here because this is
+// where the indexing happens: a hard-coded clamp inside these classes cannot know how long the
+// table it is handed actually is, and the two tables are NOT the same length.
+//   syncBeats[]     -- dimmer / gobo-rotation / prism / wheel steppers / chaser, fast divisors
+//   moveSyncBeats[] -- MovementEngine only; pan/tilt slew is finite, so a sub-beat divisor
+//                      would demand angular velocity the motor cannot reach
+#define SYNC_BEATS_COUNT       10
+#define MOVE_SYNC_BEATS_COUNT   8
+
+// --- Burst: four numbers, and which one is primary ------------------------------------------
+// A beat-locked effect needs four separate numbers, and until 2026-09-03 one divisor answered
+// all of them:
+//
+//   rasterBeats    when the whole figure starts again           (the UI's "Sync")
+//   burst          how many pulses there are                    ("Count")
+//   lengthBeats    how long ONE pulse lasts                     ("Length")  <- the primary one
+//   spacingBeats   how far apart the pulses START, >= length    ("Spacing", defaults to length)
+//
+// LENGTH is primary and SPACING falls back to it, not the other way round. That ordering was
+// wrong at first and it showed immediately: with Count at 1 there is nothing to space, so the
+// "Spacing" control was silently setting the pulse length while "Length · fills slot" sat next
+// to it doing nothing. Reported live with screenshots -- "spacing und length muessen getauscht
+// werden, sonst macht es keinen sinn". Now Length always means what it says, and Spacing only
+// adds a gap behind each pulse.
+//
+// Length == spacing fills the slot (a smooth swell); length much shorter than spacing gives a
+// short stab and darkness until the next one. That difference is the whole point of having both.
+//
+// Outside a pulse the phase is held at 1.0, which is the END of the curve and therefore outputs
+// startVal -- dark, for the usual flash/decay setting. Defaults reproduce the old behaviour
+// exactly: burst 1, spacing == length, raster == length reduces this to `frac(beats / length)`.
+static inline float burstPhase(float beatsIn, float lengthBeats, int burst,
+                               float rasterBeats, float spacingBeats) {
+    if (lengthBeats <= 0.0f) return 0.0f;
+    if (burst < 1) burst = 1;
+    if (spacingBeats <= 0.0f || spacingBeats < lengthBeats) spacingBeats = lengthBeats;
+    float span = spacingBeats * (float)burst;
+    if (rasterBeats < span) rasterBeats = span;   // a raster shorter than the burst would clip it
+    float pos = fmodf(beatsIn, rasterBeats);
+    if (pos < 0.0f) pos += rasterBeats;
+    if (pos >= span) return 1.0f;                 // between figures
+    float k = fmodf(pos, spacingBeats);           // position inside this pulse's slot
+    if (k >= lengthBeats) return 1.0f;            // pulse over, dark until the next slot
+    return k / lengthBeats;                       // the curve, compressed into `length`
+}
+
 class Modulator {
 public:
     bool active = false;
@@ -78,6 +124,11 @@ public:
     float speed = 30.0f;
     int trigger = 0;
     int sync = 3;
+    // Burst controls, see burstPhase() above. burst = passes per raster; rasterSync = index into
+    // the same divisor table as `sync`, or -1 for "no pause", which is the old behaviour.
+    int burst = 1;
+    int rasterSync = -1;
+    int spacingSync = -1;     // -1 = same as the length, i.e. pulses run back to back
     float phase = 0.0f;
     // Beat position of the last audio hit, so an audio-triggered LFO can run on the beat clock
     // like the BPM-sync mode does instead of on its own free-running speed. Set via audioHit(),
@@ -111,7 +162,7 @@ public:
             // a fifth of its range and looked like it was not working. Reported live 2026-08-31.
             // Anchoring to the beat count at the last hit makes one cycle last exactly
             // syncBeats[sync] beats and restart on each hit, which is what the two controls read as.
-            int safeSync = constrain(sync, 0, 6);
+            int safeSync = constrain(sync, 0, SYNC_BEATS_COUNT - 1);
             float span = syncBeats[safeSync];
             if (audioHitPending) {
                 audioHitPending = false;
@@ -126,15 +177,19 @@ public:
                     audioAnchored = true;
                 }
             }
-            float cyclePos = (beatsElapsedTotal - audioAnchorBeats) / span;
-            if (cyclePos < 0.0f) cyclePos = 0.0f;
-            phase = cyclePos - floorf(cyclePos);
+            float since = beatsElapsedTotal - audioAnchorBeats;
+            if (since < 0.0f) since = 0.0f;
+            phase = burstPhase(since, span, burst,
+                               rasterSync < 0 ? span * (float)(burst < 1 ? 1 : burst)
+                                              : syncBeats[constrain(rasterSync, 0, SYNC_BEATS_COUNT - 1)],
+                               spacingSync < 0 ? span
+                                              : syncBeats[constrain(spacingSync, 0, SYNC_BEATS_COUNT - 1)]);
         } else if (trigger == 0) {
             // speed is the full LFO cycle duration in ms (matches the UI slider's ms range).
             float periodMs = speed < 1.0f ? 1.0f : speed;
             phase += (dt * 1000.0f) / periodMs;
         } else if (trigger == 1) {
-            int safeSync = constrain(sync, 0, 6);
+            int safeSync = constrain(sync, 0, SYNC_BEATS_COUNT - 1);
             // beatsElapsedTotal increases smoothly and monotonically with real elapsed beats
             // (see updateEngines()) -- dividing by the cycle length in beats and keeping only
             // the fractional part gives a phase that wraps exactly every `sync` beats,
@@ -142,8 +197,12 @@ public:
             // beat, for live audio). Using (now - masterSyncTime) % interval here used to break
             // any divisor > 1 beat, since masterSyncTime is restamped on every single detected
             // beat -- the modulo numerator could then never grow past one beat's worth of ms.
-            float cyclePos = beatsElapsedTotal / syncBeats[safeSync];
-            phase = cyclePos - floorf(cyclePos);
+            float shape = syncBeats[safeSync];
+            phase = burstPhase(beatsElapsedTotal, shape, burst,
+                               rasterSync < 0 ? shape * (float)(burst < 1 ? 1 : burst)
+                                              : syncBeats[constrain(rasterSync, 0, SYNC_BEATS_COUNT - 1)],
+                               spacingSync < 0 ? shape
+                                              : syncBeats[constrain(spacingSync, 0, SYNC_BEATS_COUNT - 1)]);
         }
 
         if (phase > 1.0f) phase -= 1.0f;
@@ -171,6 +230,14 @@ public:
     float modSp = 1000.0f;
     int trigger = 0;
     int sync = 3;
+    // Burst controls, see burstPhase(). In BPM-sync mode enginePhase is derived from modPhase,
+    // so a raster genuinely parks the PATTERN -- during the pause modPhase is 1.0, which is a
+    // full revolution and therefore the point the shape started from. On an audio trigger the
+    // pattern integrates its own speed instead (see the branch below), so there the raster only
+    // gates the size/speed modulation, not the movement.
+    int burst = 1;
+    int rasterSync = -1;
+    int spacingSync = -1;
     float modPhase = 0.0f;
     float audioAnchorBeats = 0.0f;
     bool audioHitPending = false;
@@ -195,7 +262,7 @@ public:
         if (trigger >= 2) {
             // Same fix as Modulator above: the Sync divisor applies to audio triggers too, instead
             // of the pattern free-running at modSp while the hit merely reset the phase.
-            int safeSync = constrain(sync, 0, 7);
+            int safeSync = constrain(sync, 0, MOVE_SYNC_BEATS_COUNT - 1);
             float span = syncBeats[safeSync];
             if (audioHitPending) {
                 audioHitPending = false;
@@ -205,9 +272,13 @@ public:
                     audioAnchored = true;
                 }
             }
-            float cyclePos = (beatsElapsedTotal - audioAnchorBeats) / span;
-            if (cyclePos < 0.0f) cyclePos = 0.0f;
-            modPhase = cyclePos - floorf(cyclePos);
+            float since = beatsElapsedTotal - audioAnchorBeats;
+            if (since < 0.0f) since = 0.0f;
+            modPhase = burstPhase(since, span, burst,
+                                  rasterSync < 0 ? span * (float)(burst < 1 ? 1 : burst)
+                                                 : syncBeats[constrain(rasterSync, 0, MOVE_SYNC_BEATS_COUNT - 1)],
+                                  spacingSync < 0 ? span
+                                                 : syncBeats[constrain(spacingSync, 0, MOVE_SYNC_BEATS_COUNT - 1)]);
         } else if (trigger == 0) {
             // modSp is presented in the UI identically to Modulator::speed (a 0-10000ms slider,
             // see TriggerBlock's "Modulation speed" / "Manual speed" labels sharing the same
@@ -220,12 +291,16 @@ public:
             float periodMs = modSp < 1.0f ? 1.0f : modSp;
             modPhase += (dt * 1000.0f) / periodMs;
         } else if (trigger == 1) {
-            int safeSync = constrain(sync, 0, 7);
+            int safeSync = constrain(sync, 0, MOVE_SYNC_BEATS_COUNT - 1);
             // See Modulator::process() for why this is beat-count-based rather than
             // (now - masterSyncTime) % interval -- masterSyncTime gets re-anchored on every
             // detected beat, which broke every sync divisor above 1 beat.
-            float cyclePos = beatsElapsedTotal / syncBeats[safeSync];
-            modPhase = cyclePos - floorf(cyclePos);
+            float shape = syncBeats[safeSync];
+            modPhase = burstPhase(beatsElapsedTotal, shape, burst,
+                                  rasterSync < 0 ? shape * (float)(burst < 1 ? 1 : burst)
+                                                 : syncBeats[constrain(rasterSync, 0, MOVE_SYNC_BEATS_COUNT - 1)],
+                                  spacingSync < 0 ? shape
+                                                 : syncBeats[constrain(spacingSync, 0, MOVE_SYNC_BEATS_COUNT - 1)]);
         }
         if (modPhase > 1.0f) modPhase -= 1.0f;
         if (modPhase < 0.0f) modPhase += 1.0f;

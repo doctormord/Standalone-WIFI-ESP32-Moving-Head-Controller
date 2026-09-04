@@ -248,7 +248,7 @@ Once on WiFi, the device is reachable at `http://movinghead.local` (mDNS) or via
 
 A `platformio.ini` is also included for command-line compile checks without the Arduino IDE:
 - `pio run` — compiles the firmware.
-- `pio run -t buildfs` — builds the LittleFS filesystem image from `data/` and verifies it actually fits the ~1.4MB LittleFS partition (fails loudly instead of silently truncating).
+- `pio run -t buildfs` — builds the LittleFS filesystem image from `data/` and verifies it actually fits the 896KB LittleFS partition (fails loudly instead of silently truncating). The project uses a custom partition table, `partitions_horizon.csv`: 1.5MB per OTA app slot and 896KB of filesystem, instead of the stock 1.25MB/1408KB. Switching a device onto it needs one USB flash with the filesystem included — the table is written at `0x8000` and OTA only ever writes an app slot.
 
 Two further checks run entirely on the host:
 
