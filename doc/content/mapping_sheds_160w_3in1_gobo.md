@@ -370,8 +370,34 @@ in der oberen Hälfte — unauffällig, aber unverifiziert.
 
 **Abgleich:** Frontend sendet `s.frost ? 200 : 0` — korrekt.
 
-### CH13/CH14 — Zoom / Focus
-Beide `0–255` linear. Kein Fix nötig.
+### CH13 — Focus, CH14 — Zoom
+
+**Reihenfolge korrigiert 2026-09-04.** Diese Überschrift lautete „CH13/CH14 — Zoom / Focus",
+also in der Reihenfolge Zoom-zuerst. Alle anderen Paarüberschriften in diesem Dokument sind
+positional („CH3/CH4 — Pan/Tilt", „CH15/CH16 — Pan Fine / Tilt Fine"), weshalb sie sich als
+CH13 = Zoom lesen ließ — und um ein Haar dazu geführt hätte, die korrekte Belegung im Code
+(`CH_FOCUS 13`, `CH_ZOOM 14`) zu „reparieren". Am Gerät bestätigt: **CH13 ist Focus, CH14 ist
+Zoom**, so wie es im Code und in der Oberfläche steht.
+
+**`0–255 linear` stimmt für beide.** Am 2026-09-04 kam die Meldung, CH14 zeige zwischen 0 und
+130 keine Wirkung auf die Bildgröße. Ein Sweep am Gerät (Fokus auf CH13=128 festgehalten, CH14
+in 17 Stufen von 0 auf 255) widerlegte das: der Zoom arbeitet über den ganzen Bereich.
+
+Was den Eindruck erzeugt hat, ist Optik, nicht DMX: **mit einem rotierenden Gobo im Strahlengang
+ist die Größenänderung kaum zu sehen.** Zoom verschiebt Linsen und verändert damit zugleich die
+Schärfeebene; das Gobo sitzt in der Brennebene, also wird sein Bild beim Zoomen unscharf, statt
+sichtbar größer zu werden. Man sieht „weicher", nicht „größer". Ohne Gobo, im offenen Beam, ist
+der Effekt eindeutig.
+
+Praktische Folge für die Bedienung: **Zoom und Fokus gehören zusammen nachgeführt.** Wer zoomt,
+muss den Fokus mitziehen, sonst wirkt der Zoom wie eine Fehlfunktion. Größere Pulte machen das
+automatisch („Zoom/Focus Tracking"); hier ist es Handarbeit.
+
+**Kein Fix nötig, weder im Code noch in der Oberfläche.** Diese Passage stand einen Tag lang
+falsch hier — sie behauptete auf Verdacht eine tote Zone unterhalb von 130 und leitete daraus
+ab, der Regler verschenke seinen halben Weg. Der Sweep am Gerät sagt das Gegenteil. Notiert als
+Warnung: eine Fehlermeldung ist eine Beobachtung, keine Diagnose, und gehört nicht als Befund
+dokumentiert, bevor sie gemessen ist.
 
 ### CH15/CH16 — Pan Fine / Tilt Fine
 Beide `0–255`, 8-Bit-Feinanteil zu CH3/CH4 (ergibt 16-Bit-Auflösung
