@@ -50,6 +50,34 @@ struct StepFX {
 // shake the fixture. The Movement FX curve dropdown therefore does not offer it, and this
 // flag makes movement fall back to Linear if an older saved scene still carries curve 5 --
 // which is exactly the behaviour those scenes already had before this fix.
+// Arduino's PI is a DOUBLE literal (Arduino.h: `#define PI 3.14159265358979323846...`, no `f`),
+// so every `x * PI_F` inside otherwise-float code silently promotes to double, multiplies in
+// double, and converts back. On the ESP32-C3 there is no FPU at all, so double is the most
+// expensive arithmetic available -- far worse than float, which is itself emulated. Counting the
+// calls in the disassembled firmware on 2026-09-04 found __extendsfdf2 / __muldf3 /
+// __truncdfsf2 around each use, seven apiece in MovementEngine::process(), getValues() and
+// updateEngines() -- squarely in the per-frame path. Use this instead; it costs nothing to type
+// and keeps the whole expression in single precision.
+#define PI_F 3.14159265358979323846f
+
+// --- Why there is no sine lookup table here ------------------------------------------------
+// One was written and measured on 2026-09-04, and removed again. sinf()/cosf() are software-
+// emulated and cost about 2377 cycles apiece, so a 1025-entry table with linear interpolation
+// looked like an obvious win -- accuracy came out at 0.19 of a 16-bit pan step, well below what
+// the fixture resolves.
+//
+// It made the engine SLOWER: 6.6% -> 6.9% of one core, measured on the device at a fixed tempo.
+// The disassembly says why. The interpolation was written in float, and on a chip with no FPU
+// every step of it is a library call too -- the generated fastSin() was 67 instructions with
+// seven calls (__mulsf3, __subsf3, __addsf3, __fixsfsi, __floatsisf and floorf), against 43
+// instructions for sinf() itself. One expensive call had been traded for seven middling ones.
+//
+// The lesson, if this is ever revisited: A LOOKUP TABLE ONLY PAYS OFF IF IT CAN BE ADDRESSED
+// WITH INTEGERS. The right shape is a fixed-point phase accumulator whose top bits index the
+// table directly -- no division, no floorf, no float at all, which is exactly how the FFT's
+// twiddle tables in Audio_Engine.h work. That means changing the phase representation through
+// the whole movement engine, and the CPU measurement (~14% of one core) says nothing needs it.
+
 inline float lfoShape(float p, int m, int c, bool allowRandom) {
     // Mode: 0=Forward (Saw), 1=PingPong (Triangle), 2=Reverse (Decay)
     float val = p;
@@ -59,7 +87,7 @@ inline float lfoShape(float p, int m, int c, bool allowRandom) {
     // Curve: 0=Linear, 1=Quad, 2=Cubic, 3=Sine, 4=Gauss, 5=Random
     if (c == 1) return val * val;
     if (c == 2) return val * val * val;
-    if (c == 3) return 0.5f - 0.5f * cosf(val * PI);
+    if (c == 3) return 0.5f - 0.5f * cosf(val * PI_F);
     if (c == 4) { float x = (val - 0.5f) * 2.0f; return expf(-(x * x) * 5.0f); }
     if (c == 5) return allowRandom ? (random(0, 1000) / 1000.0f) : val;
     return val; // 0 = Linear, and any unknown value
@@ -238,6 +266,12 @@ public:
     int burst = 1;
     int rasterSync = -1;
     int spacingSync = -1;
+    // Cached rotation. `rot` is a user setting, but getValues() runs once per FIXTURE per frame,
+    // so recomputing its sine and cosine there meant sixteen emulated trig calls a frame at eight
+    // fixtures for a number that had not changed. The sentinel is unreachable by any real angle,
+    // so the first call fills the cache.
+    float rotCachedDeg = 1e30f;
+    float rotCos = 1.0f, rotSin = 0.0f;
     float modPhase = 0.0f;
     float audioAnchorBeats = 0.0f;
     bool audioHitPending = false;
@@ -325,15 +359,15 @@ public:
             // integrating currentSpeed, so one revolution always starts
             // exactly on a beat and completes exactly at the end of
             // `sync` beats, with no drift and no dependency on frame timing.
-            enginePhase = modPhase * PI * 2.0f;
+            enginePhase = modPhase * PI_F * 2.0f;
         } else {
             enginePhase += currentSpeed * dt * 5.0f;
-            if (enginePhase > PI * 2.0f) enginePhase -= PI * 2.0f;
+            if (enginePhase > PI_F * 2.0f) enginePhase -= PI_F * 2.0f;
         }
     }
 
     void getValues(int centerP, int centerT, int fixturePhase, bool invP, bool invT, int &outP, int &outT) {
-        float pOffset = (fixturePhase / 360.0f) * PI * 2.0f;
+        float pOffset = (fixturePhase / 360.0f) * PI_F * 2.0f;
         float p = enginePhase + pOffset;
         float x = 0, y = 0;
 
@@ -356,8 +390,12 @@ public:
         x *= currentSize * 32767.0f;
         y *= currentSize * 32767.0f;
 
-        float rRad = rot * (PI / 180.0f);
-        float cosR = cosf(rRad), sinR = sinf(rRad);
+        if (rot != rotCachedDeg) {
+            rotCachedDeg = rot;
+            const float rRad = rot * (PI_F / 180.0f);
+            rotCos = cosf(rRad); rotSin = sinf(rRad);
+        }
+        const float cosR = rotCos, sinR = rotSin;
         float rx = x * cosR - y * sinR;
         float ry = x * sinR + y * cosR;
 

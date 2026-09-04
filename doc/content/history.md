@@ -6275,3 +6275,128 @@ eine — auch bei einem einzigen Impuls. Spacing hat erst ab zwei eine. Der Wert
 Randbedingungen gehört nach vorn und trägt den echten Wert; der bedingte fällt zurück. Ein
 Screenshot mit Count 1 hat das in drei Sekunden gezeigt, was aus der Formel allein nicht
 sichtbar war.
+
+## 2026-09-04 — Assembler? Nein. Aber im erzeugten Code lagen 24 double-Operationen je Frame
+
+Frage aus dem Chat: ob sich etwas in Assembler machen oder mit Bitmanipulation vereinfachen ließe.
+Ausgangslage war unbequem: die CPU-Messung vom Vortag sagt **~14 % eines Kerns**, es gibt also
+kein Problem zu lösen. Statt zu spekulieren wurde das Binary disassembliert und gezählt.
+
+### Der Fund
+
+`riscv32-esp-elf-objdump -d firmware.elf`, dann die Aufrufe der Soft-Float-Hilfsroutinen je
+Funktion gezählt. Im Pro-Frame-Pfad standen **24 Aufrufe der double-Variante** — `__extendsfdf2`,
+`__muldf3`, `__truncdfsf2`. Auf einem Chip **ohne jede FPU** ist double die teuerste verfügbare
+Rechenart; float ist schon emuliert, double deutlich schlimmer.
+
+Die Ursache war eine Zeile Arduino:
+
+    Arduino.h:46:  #define PI  3.1415926535897932384626433832795     <- kein f!
+
+Jedes `val * PI` in ansonsten reinem float-Code promoviert damit auf double, rechnet dort und
+konvertiert zurück. Fünf Stellen in `FX_Engine.h`, eine im Sketch, drei in `Audio_Engine.h`.
+Dazu zwei bare `60000.0 / globalBPM` ohne Suffix.
+
+    double-Operationen je Frame     Start   nach PI_F   nach 60000.0f
+      updateEngines                     7           4               0
+      MovementEngine::process           7           0               0
+      MovementEngine::getValues         7           0               0
+      lfoShape                          3           0               0
+      SUMME                            24           4               0
+
+### Was es am Gerät bringt
+
+Gemessen mit identischem FX-Zustand (Movement + Dimmer + Gobo-Rotation, alle auf BPM-Sync),
+je zwei Läufe à 20 s vor und nach dem Flash:
+
+    vorher   engUs 310-315 us   ->  7,9 % eines Kerns
+    nachher  engUs 292-295 us   ->  7,4 %
+
+Rund **6 % schneller** und 216 Bytes kleiner. Ehrlich eingeordnet: real, aber klein — die
+Doubles waren nur ein Teil der Arbeit. Der Rest sind ~145 float-Soft-Aufrufe je Aufruf, das
+513-Byte-memset und die Kanalkomposition.
+
+### Die eigentliche Antwort auf die Frage
+
+**Assembler: nein.** Die Soft-Float-Routinen der Toolchain sind bereits handoptimierte Assembly.
+Etwas Eigenes würde libgcc nicht schlagen und wäre unwartbar.
+
+**Festkomma und Bit-Tricks: das wäre der echte Hebel — nur brauchen wir ihn nicht.** Der Weg
+läge fest und ist in diesem Projekt bereits erprobt: die FFT rechnet mit int16-Twiddle-Tabellen
+und einer wurzelfreien Betragsnäherung. Dasselbe Muster auf die LFO- und Bewegungsmathematik
+angewandt (Q16.16 plus Viertelwellen-Sinustabelle) würde `updateEngines` deutlich drücken. Es
+ist aber ein Umbau des numerisch empfindlichen Kerns für Rechenzeit, die niemand vermisst.
+
+Was billiger wäre als beides, falls es je eng wird: die `.process()`-Aufrufe laufen bewusst mit
+voller Schleifenrate (~250/s), damit der Kopf schnell auf den Joystick reagiert. Auf 100/s
+gedrosselt wären sie immer noch unterhalb der Wahrnehmungsschwelle und kosteten 60 % weniger.
+Eine Abwägung, keine Optimierung — und heute unnötig.
+
+### Zum dritten Mal am selben Tag: die falsche Referenz gelesen
+
+Mitten in der Analyse meldete ein `grep`, `syncBeats[]` habe wieder nur sieben Einträge und die
+Clamps stünden bei `0, 6` — als wäre die halbe Arbeit des Vortags verschwunden. Ursache: ein
+`cd` in ein Unterverzeichnis hatte die Shell danach in den **Haupt-Checkout** zurückgesetzt, der
+auf dem alten Branch steht. Gelesen wurden also die falschen Dateien.
+
+Kein Schaden — der Worktree war unversehrt und im Haupt-Checkout wurde nichts verändert. Aber es
+ist derselbe Fehlertyp wie beim Tap-Zähler, bei der Beat-Annotation, bei der Onset-Quelle und
+beim House-statt-D&B-Track: **gegen die falsche Referenz gemessen.** Merkmal auch hier: ein
+Ergebnis, das zu drastisch ist, um zu stimmen. Vor dem Alarm gehört geprüft, *worauf* man gerade
+schaut — `pwd`, `git branch`, der Build-Stempel.
+
+## 2026-09-04 — Tabellen und Konstanten: was ich probiert, gemessen und wieder verworfen habe
+
+Frage aus dem Chat: ob sich mit Tabellen oder vorberechneten Konstanten noch etwas holen lässt,
+weil doch immer dasselbe herauskommt. Zwei Kandidaten gefunden, beide **pro Fixture und pro
+Frame** in `getValues()`:
+
+    float pOffset = (fixturePhase / 360.0f) * PI_F * 2.0f;   // fixturePhase ist eine Patch-Konstante
+    float rRad = rot * (PI_F / 180.0f);
+    float cosR = cosf(rRad), sinR = sinf(rRad);              // rot aendert sich nur am Regler
+
+### Die Sinustabelle: gebaut, gemessen, verworfen
+
+1025 Einträge mit linearer Interpolation, Genauigkeit vorher geprüft: 0,19 von 65535 Pan-Schritten
+— unter der Auflösung des Ausgangs. (256 Einträge wären 2,5 Schritte gewesen; physikalisch
+unsichtbar, aber auf der falschen Seite der eigenen Messlatte.)
+
+Am Gerät, Tempo festgenagelt auf 120, Movement Typ 3, gleiche Parameter vor und nach dem Flash:
+
+    sinf/cosf            engUs 256-258 us  ->  6,60-6,71 %
+    mit Sinustabelle     engUs 265 us      ->  6,86-6,97 %
+
+**Langsamer.** Das Disassemblat sagt warum: die erzeugte `fastSin()` ist 67 Instruktionen mit
+**sieben** Bibliotheksaufrufen — `__mulsf3`, `__subsf3`, `__addsf3`, `__fixsfsi`, `__floatsisf`
+und `floorf`. `sinf()` selbst sind 43 Instruktionen. Ich hatte die Adressrechnung der Tabelle in
+**float** geschrieben, und auf einem Chip ohne FPU ist jeder Schritt davon selbst ein Aufruf.
+Ein teurer Aufruf gegen sieben mittlere getauscht.
+
+**Die Lehre, die bleibt: eine Tabelle zahlt sich nur aus, wenn sie mit GANZZAHLEN adressiert
+werden kann.** Die richtige Form ist ein Festkomma-Phasenakkumulator, dessen obere Bits direkt
+den Index bilden — keine Division, kein `floorf`, kein float. Genau so arbeiten die
+Twiddle-Tabellen der FFT in `Audio_Engine.h`. Das hieße, die Phasendarstellung der gesamten
+Bewegungsmaschine umzustellen, und die CPU-Messung sagt, dass es niemand braucht.
+
+### Der Rotations-Cache: behalten, aber ehrlich eingeordnet
+
+`rot` ist eine Reglerstellung, `getValues()` läuft aber einmal pro **Fixture** pro Frame — bei
+acht Fixtures waren das sechzehn emulierte Trig-Aufrufe je Frame für eine Zahl, die sich nicht
+geändert hatte. Jetzt gegen den Winkel gecacht: das erste Fixture eines Frames zahlt, der Rest
+ist frei.
+
+Gemessen mit **einem** Fixture: 6,76 % gegen 6,60–6,71 % Baseline — also **innerhalb des
+Rauschens, kein nachweisbarer Gewinn.** Behalten wird es trotzdem, weil es Arbeit *entfernt*
+statt sie zu tauschen, nichts kostet und mit der Fixture-Zahl skaliert — genau der Fall, den
+`handover.md` unter Skalierung als Sorge führt.
+
+### Die Antwort auf die Frage
+
+Ja, es gibt solche Stellen. Nein, sie sind bei einem Fixture nicht messbar, weil `getValues()`
+nur auf der 30-ms-Kadenz läuft und seine Trigonometrie dort etwa 0,2 % eines Kerns kostet — unter
+dem Messrauschen von ±0,2 Prozentpunkten.
+
+Und ein Hinweis auf das Instrument: **`engUs` ist die Dauer des letzten Aufrufs**, während
+`updateEngines` rund achtmal häufiger läuft als es den Frame zusammenbaut. Der Median misst also
+überwiegend den billigen Pfad. `engMax` taugt auch nicht, das fängt WLAN-Spitzen von 3,3 ms ein.
+Wer die Bahn-Trigonometrie wirklich isolieren will, braucht einen eigenen Zähler um `getValues()`.

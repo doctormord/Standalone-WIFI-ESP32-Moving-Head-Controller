@@ -255,6 +255,42 @@ Nebenbefund: **Gauss + Reverse ist identisch zu Gauss + Forward**, weil die Gloc
 0,5 liegt und das Umdrehen sie auf sich selbst spiegelt. Bei dieser Kurve hat das Modus-Menü
 faktisch nur zwei Ergebnisse statt drei.
 
+## Kommandierte Amplitude ist tempo-unabhaengig, die tatsaechliche nicht
+
+Am 2026-09-04 live bemerkt: nach einem Flash schien die Bewegung "groesser und langsamer", und
+man hoerte es am Motor. Gemessen ueber `op`/`ot` auf `/api/get_dmx` (die wirklich ausgegebene
+Pan/Tilt-Position von Fixture 0), gleiche FX-Parameter, nur das Tempo variiert:
+
+    172 BPM (Kreis 1,40 s)   Pan 39318 Schritte
+    120 BPM (Kreis 2,00 s)   Pan 39319 Schritte
+
+Der Controller sendet also bei jedem Tempo dieselbe Amplitude. Was sich aendert, ist das
+**Fixture**: bei 1,4 s pro Umdrehung folgt der Motor der kommandierten Bahn nicht mehr, die
+tatsaechliche Auslenkung faellt kleiner aus und der Lauf klingt angestrengter. Das ist Mechanik,
+kein Fehler -- aber es heisst, dass ein schneller Sync-Teiler die Figur physisch verkleinert.
+
+Praktische Folge: **nach jedem Flash ist der Tap-Anker weg und `globalBPM` faellt auf seinen
+Startwert.** Eine beat-synchrone Bewegung laeuft danach in einem anderen Tempo und sieht deshalb
+anders aus, ohne dass sich an ihr etwas geaendert haette. Vor jedem Vorher/Nachher-Vergleich am
+Licht also das Tempo festnageln (Manuell-Modus, `/beat?bpm=`), nicht nur die FX-Parameter.
+
+## Rechnen ohne FPU: die Regel, die 24 Operationen je Frame gekostet hat
+
+Der ESP32-C3 hat **keine FPU**. Jede float-Operation ist eine Bibliotheksfunktion, jede
+double-Operation eine deutlich teurere. Daraus folgt eine Regel, die im Quelltext unsichtbar ist:
+
+**Jedes Literal in Fließkomma-Ausdrücken braucht ein `f`.** Und Arduinos eigenes `PI` ist ein
+double-Literal (`Arduino.h:46`, ohne Suffix), weshalb dieses Projekt `PI_F` benutzt.
+
+Ohne das promoviert der ganze Ausdruck auf double, rechnet dort und konvertiert zurück. Am
+2026-09-04 im disassemblierten Binary gezählt: **24 double-Operationen je Frame**, allein aus
+`PI` und zwei `60000.0`. Nach der Korrektur null, und am Gerät 7,9 % → 7,4 % eines Kerns.
+
+So findet man es wieder:
+
+    riscv32-esp-elf-objdump -d .pio/build/supermini/firmware.elf > fw.asm
+    # dann je Funktion die Aufrufe von __muldf3 / __extendsfdf2 / __truncdfsf2 zaehlen
+
 ## Performance & Skalierung
 
 - **Kein FPU am ESP32-C3** (RV32IMC, 1 Core @ 160 MHz). Jedes

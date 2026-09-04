@@ -18,6 +18,14 @@
 // useful point. N doubles with it, so the bin width stays 31.25Hz and every configured band edge
 // keeps its meaning; only the highest usable bin moves from 127 to 255. Also puts the mic nearer
 // its specified clock range. Costs about 900us per frame instead of 400us, still under 3% CPU.
+// Arduino's own PI is a DOUBLE literal (Arduino.h, no `f` suffix), so `x * PI` in float code
+// promotes the whole expression to double -- the most expensive arithmetic on a chip with no
+// FPU. FX_Engine.h defines the same constant; guarded here because sim/ compiles THIS header on
+// its own, without FX_Engine.h, and would otherwise not build. Keep both in step.
+#ifndef PI_F
+#define PI_F 3.14159265358979323846f
+#endif
+
 #define SAMPLING_FREQUENCY 16000
 // One FFT frame. 512 @ 16kHz = 32ms of audio and 31.25Hz per bin -- fine enough to separate kick
 // from snare from hi-hat, short enough that a frame still fits inside one poll interval.
@@ -206,13 +214,13 @@ inline int32_t fftMag[FFT_N / 2];
 // Built once at boot. cosf/sinf are float, but this runs exactly once -- never on the audio path.
 inline void fftInitTables() {
   for (int i = 0; i < FFT_N / 2; i++) {
-    fftTwCos[i] = (int16_t)(cosf(2.0f * PI * i / FFT_N) * 32767.0f);
-    fftTwSin[i] = (int16_t)(-sinf(2.0f * PI * i / FFT_N) * 32767.0f);
+    fftTwCos[i] = (int16_t)(cosf(2.0f * PI_F * i / FFT_N) * 32767.0f);
+    fftTwSin[i] = (int16_t)(-sinf(2.0f * PI_F * i / FFT_N) * 32767.0f);
   }
   // Hann window: without it a tone between two bins smears across the whole spectrum
   // (spectral leakage) and the band sums stop meaning anything.
   for (int i = 0; i < FFT_N; i++) {
-    fftWindow[i] = (int16_t)((0.5f - 0.5f * cosf(2.0f * PI * i / (FFT_N - 1))) * 32767.0f);
+    fftWindow[i] = (int16_t)((0.5f - 0.5f * cosf(2.0f * PI_F * i / (FFT_N - 1))) * 32767.0f);
   }
 }
 

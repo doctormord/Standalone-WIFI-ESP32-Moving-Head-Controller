@@ -83,6 +83,11 @@ unsigned long loopMaxWindowStart = 0;
 // 16/32/64 are APPENDED rather than inserted in musical order on purpose: the index is what
 // gets persisted in every scene and preset (SceneData) and in NVS, so re-ordering this table
 // would silently re-interpret every stored show. The UI presents them in the right order.
+// Note the `f` suffixes on every literal in the beat maths below and in FX_Engine.h.
+// Without one, a bare `60000.0` or Arduino's own `PI` makes the whole expression
+// DOUBLE, and the C3 has no FPU at all -- double is several times more expensive than
+// float, which is itself emulated. Counting the calls in the disassembly on 2026-09-04
+// found 24 double operations per frame from exactly that; 20 of them were `PI`.
 const float syncBeats[SYNC_BEATS_COUNT] = {8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.125,
                                            16.0, 32.0, 64.0};
 // Movement patterns take real time to trace (pan/tilt slew is finite) — a
@@ -553,7 +558,7 @@ void updateEngines(unsigned long now) {
 
   if (autoFading) {
     float progress = fadeDuration > 0 ? (float)(now - fadeStartTime) / (float)fadeDuration : 1.0f; if (progress >= 1.0f) { progress = 1.0f; autoFading = false; }
-    float v = progress; if (fadeCurve == 1) v = progress * progress; else if (fadeCurve == 3) v = 0.5f - 0.5f * cosf(progress * PI); 
+    float v = progress; if (fadeCurve == 1) v = progress * progress; else if (fadeCurve == 3) v = 0.5f - 0.5f * cosf(progress * PI_F); 
     fadeMultiplier = fadeStateOut ? (1.0f - v) : v; 
   } else { fadeMultiplier = fadeStateOut ? 0.0f : 1.0f; }
   
@@ -575,7 +580,7 @@ void updateEngines(unsigned long now) {
     if (fx.active) {
       bool doStep = false;
       if (fx.trigger == 0) { if (now - fx.lastStepTime >= fx.holdTime) doStep = true; }
-      else if (fx.trigger == 1) { int safeSync = constrain(fx.sync, 0, SYNC_BEATS_COUNT - 1); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeSync]; if (now - fx.lastStepTime >= interval) doStep = true; }
+      else if (fx.trigger == 1) { int safeSync = constrain(fx.sync, 0, SYNC_BEATS_COUNT - 1); unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeSync]; if (now - fx.lastStepTime >= interval) doStep = true; }
       else if (checkAudioTrg(fx.trigger)) doStep = true;
       if (doStep) {
         fx.lastStepTime = now; fx.currentIdx += fx.step;
@@ -660,7 +665,7 @@ void updateEngines(unsigned long now) {
       if (elapsed >= currentFadeTime) { inFade = false; stepStartTime = now; for (int i = 1; i <= 18; i++) { if(i == 1) dimSmoothTarget = chaserScenes[nextSlot].dmx[i]; else dmxData[i] = chaserScenes[nextSlot].dmx[i]; } centerPan16 = (dmxData[CH_PAN] << 8) | dmxData[CH_PAN_FINE]; centerTilt16 = (dmxData[CH_TILT] << 8) | dmxData[CH_TILT_FINE]; joySmoothX = 0.0f; joySmoothY = 0.0f; mapIsMoving = false; triggerSceneFX(nextSlot); } 
       else { float progress = currentFadeTime > 0 ? (float)elapsed / currentFadeTime : 1.0f; for (int i = 1; i <= 18; i++) { if (i==1) dimSmoothTarget = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; else if (i==CH_FOCUS || i==CH_ZOOM) dmxData[i] = chaserScenes[currentSlot].dmx[i] + (chaserScenes[nextSlot].dmx[i] - chaserScenes[currentSlot].dmx[i]) * progress; } long startP = (chaserScenes[currentSlot].dmx[CH_PAN] << 8) | chaserScenes[currentSlot].dmx[CH_PAN_FINE]; long endP = (chaserScenes[nextSlot].dmx[CH_PAN] << 8) | chaserScenes[nextSlot].dmx[CH_PAN_FINE]; centerPan16 = startP + (endP - startP) * progress; long startT = (chaserScenes[currentSlot].dmx[CH_TILT] << 8) | chaserScenes[currentSlot].dmx[CH_TILT_FINE]; long endT = (chaserScenes[nextSlot].dmx[CH_TILT] << 8) | chaserScenes[nextSlot].dmx[CH_TILT_FINE]; centerTilt16 = startT + (endT - startT) * progress; if (!moveFX.active) { dmxData[CH_PAN] = centerPan16 >> 8; dmxData[CH_PAN_FINE] = centerPan16 & 0xFF; dmxData[CH_TILT] = centerTilt16 >> 8; dmxData[CH_TILT_FINE] = centerTilt16 & 0xFF; } }
     } else { 
-      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { int safeChSync = constrain(chaserSync, 0, SYNC_BEATS_COUNT - 1); unsigned long interval = (60000.0 / globalBPM) * syncBeats[safeChSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
+      bool trg = false; if (chaserTrigger == 0) { if (elapsed >= holdTime) trg = true; } else if (chaserTrigger == 1) { int safeChSync = constrain(chaserSync, 0, SYNC_BEATS_COUNT - 1); unsigned long interval = (60000.0f / globalBPM) * syncBeats[safeChSync]; if (elapsed >= interval) trg = true; } else { if (checkAudioTrg(chaserTrigger)) trg = true; if (elapsed > 3000) trg = true; }
       if (trg) { stepStartTime = now; currentSlot = nextSlot; if (chaserOrder == 1) nextSlot = random(chaserStartSlot, chaserEndSlot + 1); else { nextSlot++; if (nextSlot > chaserEndSlot) nextSlot = chaserStartSlot; } activePresetSlot = currentSlot + 1; if (dipToBlack) triggerLoad(2, nextSlot); else { inFade = true; for (int i = 1; i <= 18; i++) { if (!(i==CH_DIMMER || i==CH_PAN || i==CH_TILT || i==CH_FOCUS || i==CH_ZOOM || i==CH_PAN_FINE || i==CH_TILT_FINE)) dmxData[i] = chaserScenes[nextSlot].dmx[i]; } } }
     }
   }

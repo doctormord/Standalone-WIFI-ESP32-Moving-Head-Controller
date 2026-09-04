@@ -1,8 +1,8 @@
 # NEXT CHAT STARTS HERE
 
-Stand 2026-09-03 abends. Branch `future`, **Flash 78,4 %** (war 94,0 %). Nicht committet.
-Auf dem Gerät läuft dieser Stand: `bld Sep 3 2026 13:05:44`, per OTA geflasht und über den
-Build-Stempel verifiziert.
+Stand 2026-09-04. Branch `worktree-audio-panel`, **Flash 78,6 %** (war 94,0 %), committet und
+auf `origin/future` gepusht. Auf dem Gerät läuft dieser Stand: `bld Sep 4 2026 13:36:32`, per
+OTA geflasht und über den Build-Stempel verifiziert.
 
 ## Was gilt
 
@@ -49,8 +49,9 @@ Unter den Feldern steht in Worten, was dabei herauskommt — grau wenn es aufgeh
 Warnung wenn Count × Spacing das Sync-Raster überschreitet (dann läuft es durch, weil die
 Firmware keine halbe Kurve abschneiden kann).
 
-Standard ist Count 1, `Length · fills slot`, `Sync · free run` — bitgleich zum Verhalten vor
-dieser Änderung, gespeicherte Szenen ändern sich also nicht.
+Standard ist Count 1, `Spacing · back to back`, `Sync · free run` — bitgleich zum Verhalten vor
+dieser Änderung (größte Abweichung 0.000000000 über 40 Beats), gespeicherte Szenen ändern sich
+also nicht.
 
 **Beim Erweitern von `SceneData` aufpassen:** der Block wird roh gespeichert und beim Laden auf
 exakte Größe geprüft. Es gibt inzwischen drei Layouts (`SceneDataV1`, `SceneDataV2`, aktuell),
@@ -89,6 +90,26 @@ die halbe Streuung wie bei 172.
 Signatur, falls es je wieder klemmt: `ig` klein, `pk` winzig, `xb` dauerhaft 0 auf
 `/api/audio_debug`. Sofortmaßnahme: tappen, oder `?ig=3` von Hand.
 
+## Rechnen auf einem Chip ohne FPU
+
+Zwei Regeln, beide am 2026-09-04 im Disassemblat nachgewiesen und am Gerät gemessen:
+
+- **Jedes Fließkomma-Literal braucht sein `f`, und Arduinos `PI` ist ein double.** Ohne das
+  promoviert der ganze Ausdruck auf double, was der C3 noch teurer emuliert als float. Gefunden
+  waren 24 double-Operationen je Frame; nach der Korrektur null, 7,9 % → 7,4 % eines Kerns. Das
+  Projekt benutzt deshalb `PI_F` aus `FX_Engine.h`.
+- **Eine Nachschlagetabelle zahlt sich nur mit Ganzzahl-Adressierung aus.** Eine Sinustabelle
+  wurde gebaut, gemessen und wieder entfernt: sie war *langsamer* (6,6 → 6,9 %), weil die
+  Interpolation in float geschrieben war und damit selbst sieben Bibliotheksaufrufe kostete.
+  Die Begründung steht ausführlich im Kommentar in `FX_Engine.h`, damit es niemand erneut
+  probiert. Der richtige Weg wäre ein Festkomma-Phasenakkumulator — und den braucht niemand,
+  siehe die CPU-Zahlen unten.
+
+**Vorsicht beim Messen:** `engUs` ist die Dauer des *letzten* Aufrufs, und `updateEngines` läuft
+rund achtmal häufiger als es den DMX-Frame zusammenbaut — der Median misst also überwiegend den
+billigen Pfad. `engMax` fängt WLAN-Spitzen von über 3 ms ein. Wer die Bewegungs-Trigonometrie
+isolieren will, braucht einen eigenen Zähler um `getValues()`.
+
 ## CPU: gemessen, Frage geschlossen
 
     updateEngines   252 us -> 4,3 %      Audio-Block 3036 us -> 9,5 % (davon FFT 1211 us = 3,8 %)
@@ -115,6 +136,19 @@ der FS-Offset wandert von `0x290000` nach `0x310000`. `nvs` bleibt in jedem Fall
     cd sim && c++ -std=c++17 -O2 -I fake -I .. -o simbeat sim.cpp
     ./simbeat --mode compare                   Schätzer gegeneinander
     ./simbeat --mode single --file X.wav --beats X.beats
+
+## Beim Vergleichen am Licht: erst das Tempo festnageln
+
+**Jeder Flash löscht den Tap-Anker, und `globalBPM` fällt auf seinen Startwert.** Eine
+beat-synchrone Bewegung läuft danach in einem anderen Tempo und sieht anders aus, ohne dass sich
+an ihr etwas geändert hätte — am 2026-09-04 genau so passiert und erst nach einer Messung
+aufgeklärt. Also vor jedem Vorher/Nachher: Manuell-Modus und `/beat?bpm=` setzen, nicht nur die
+FX-Parameter.
+
+Dazu eine Fixture-Eigenschaft: die **kommandierte** Amplitude ist tempo-unabhängig (gemessen über
+`op`/`ot` auf `/api/get_dmx`: 39318 gegen 39319 Schritte bei 172 und 120 BPM), die
+**tatsächliche** nicht. Bei schneller Bahn folgt der Motor nicht mehr, die Figur wird physisch
+kleiner und klingt angestrengter.
 
 ## Was ausprobiert und verworfen wurde
 
