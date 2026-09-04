@@ -6400,3 +6400,144 @@ Und ein Hinweis auf das Instrument: **`engUs` ist die Dauer des letzten Aufrufs*
 `updateEngines` rund achtmal häufiger läuft als es den Frame zusammenbaut. Der Median misst also
 überwiegend den billigen Pfad. `engMax` taugt auch nicht, das fängt WLAN-Spitzen von 3,3 ms ein.
 Wer die Bahn-Trigonometrie wirklich isolieren will, braucht einen eigenen Zähler um `getValues()`.
+
+## 2026-09-04 — Szenen als geschlüsseltes JSON auf dem Dateisystem
+
+Auftrag: das Preset-System so bauen, dass neue Felder nichts mehr kaputtmachen können — und die
+Frage, ob LittleFS nicht ohnehin besser wäre, weil man es dann herunterladen und aufheben kann.
+Beides ja, und das zweite ist die Voraussetzung für das erste.
+
+### Warum das alte Format die Ursache war, nicht ein Bedienfehler
+
+`SceneData` lag als **roher Struct-Block** in NVS, und der Ladepfad prüfte `getBytes(...) ==
+sizeof(SceneData)`. Ein neues Feld ändert `sizeof`, also fällt **jede gespeicherte Szene** durch
+diese Prüfung — stillschweigend, ohne Fehler, ohne Log. An einem einzigen Tag wurde das zweimal
+nur dadurch abgefangen, dass die vorigen Layouts als `SceneDataV1` und `SceneDataV2` erhalten
+blieben, allein damit ihre Größe wiedererkannt wird. Auf dem Gerät lagen dabei durchgehend vier
+benannte Presets.
+
+Das ist kein Problem, das man mit Sorgfalt löst, sondern eines, das man abschafft.
+
+### Was geprüft und verworfen wurde
+
+**NVS mit einem Schlüssel je Feld** wäre ebenfalls selbstbeschreibend und additiv — und der alte
+Ladepfad hatte sogar schon einen solchen Zweig. 68 Felder × 10 Slots à ~32 Byte Eintragsoverhead
+passen aber nicht in die 20-KB-`nvs`-Partition. Damit war die Frage aus dem Chat entschieden:
+das Dateisystem ist nicht nur bequemer, es ist der einzige Ort, an dem es hineinpasst.
+
+**Eine Datei je Slot** scheidet aus, weil LittleFS in 4096-Byte-Blöcken belegt: zehn Dateien
+kosteten 40 KB von rund 64 KB freiem Platz. Also eine gemeinsame Datei, ~7 KB.
+
+### Das Format, und die eine Eigenschaft, um die es geht
+
+`/scenes.json`, nach Feldnamen geschlüsselt. Der Loader füllt ein `SceneData` mit den
+Vorgabewerten und überschreibt dann nur die Schlüssel, die tatsächlich in der Datei stehen:
+
+    chaserScenes[i] = SceneData();                       // Vorgaben aus dem Struct
+    #define X(f) chaserScenes[i].f = o[#f] | chaserScenes[i].f;
+    SCENE_FIELDS(X)
+
+Ein später hinzugefügtes Feld fehlt in alten Dateien und behält damit seinen Standard — und
+deshalb tragen jetzt **alle 68 Felder ihre Vorgabe direkt im Struct**, aufgesammelt aus dem alten
+NVS-Ladepfad. Vorher stand die Vorgabe nur dort, verstreut über 56 `prefs.getInt(...)`-Aufrufe.
+
+**Speichern und Laden werden aus derselben Liste `SCENE_FIELDS` erzeugt.** Ein Feld nur halb
+einzubauen ist damit nicht mehr möglich — genau die Fehlerklasse, die am Vortag eine Stunde
+gekostet hat, als ein Parameter in zehn von elf Stellen stand.
+
+Auf die Frage aus dem Chat, ob die Vorgabewerte auch in die JSON sollen: **ja, jedes Feld wird
+geschrieben, auch die auf Standard.** Eine Sicherung muss vollständig sein, um lesbar zu sein,
+und eine gespeicherte Show darf ihre Bedeutung nicht ändern, nur weil später ein Default
+geändert wird.
+
+### Verifiziert am Gerät, mit den echten vier Presets
+
+- **Migration:** Datei fehlte, NVS-Blobs wurden gelesen, `/scenes.json` (7097 Bytes, 10 Slots,
+  70 Felder je Slot) geschrieben. Namen erhalten.
+- **Rundlauf:** eine Szene mit 20 charakteristischen Werten gespeichert, Gerät neu gestartet,
+  abgerufen — alle 20 identisch.
+- **Die Kernzusage:** fünf Schlüssel (`fBn`, `fSg`, `dSy`, `dCu`, `grSt`) aus einer
+  heruntergeladenen Datei entfernt und hochgeladen. Die fünf kamen als dokumentierte Vorgabe
+  zurück (1, −1, 3, 0, 135), alle übrigen unverändert.
+- **Kaputte Uploads:** abgeschnittenes JSON, Nicht-JSON und JSON ohne `s`-Array werden mit 400
+  und Begründung abgewiesen; die laufenden Szenen bleiben unangetastet. Der Upload wird erst
+  geparst und dann eingetauscht.
+
+Kosten: 19 KB Flash (ArduinoJson plus beide Richtungen), 80,0 % statt 78,6 %. In die
+`scN`-NVS-Namespaces schreibt nichts mehr, nur noch ein lesender Zugriff für die Migration — die
+alten Daten liegen also als Netz weiter da.
+
+### Und noch ein kaputtes Messinstrument
+
+Der erste Migrationsvergleich meldete „Abweichung" für alle vier Slots. Der Fingerabdruck war
+über die DMX-Kanäle gebildet, und mit laufendem Movement ändern sich Pan/Tilt fortlaufend — der
+Hash war **derselbe Slot zweimal hintereinander schon nicht reproduzierbar**. Das Instrument war
+kaputt, nicht die Daten. Erst der Vergleich statischer Felder und der Rundlauf über Neustart
+sagten etwas aus.
+
+Das ist innerhalb dieser Woche der fünfte Fall derselben Art. Die Gegenprobe ist billig und
+gehört vor jede Interpretation: **dieselbe Messung zweimal am unveränderten System — kommt
+zweimal dasselbe heraus?**
+
+## 2026-09-04 (Nachtrag) — Migrationspfad raus, Sicherungsknöpfe rein, Oberfläche gezippt
+
+Drei Punkte aus dem Backlog, in einem Zug.
+
+### 1. Der NVS-Migrationspfad ist weg
+
+Vorbedingung war, dass das Gerät einmal mit der neuen Firmware gebootet und `/scenes.json`
+geschrieben hat — geprüft, bevor irgendetwas gelöscht wurde (7097 Bytes, vier Namen). Danach
+entfernt: der Lesezweig über die alten Blöcke sowie `SceneDataV1` und `SceneDataV2`, die nur noch
+existierten, damit ihre Größe einen alten Block wiedererkennt.
+
+Fehlt die Datei jetzt, starten die Slots **leer**. Das ist Absicht: eine ehrliche leere Show ist
+besser als eine halb aus einer anderen Quelle geratene.
+
+**Damit entsteht eine neue Gefahr, und sie ist wichtiger als die entfernte:** ein
+Dateisystem-Flash überschreibt `/scenes.json`, und es gibt nichts mehr, woraus es sich
+rekonstruieren ließe. Steht jetzt ganz oben in `handoff.md` und in `CLAUDE.md`.
+
+### 2. Sichern und Wiederherstellen im PATCH-Tab
+
+Zwei Knöpfe auf dieselben Endpunkte, die es schon gab. Der Download ist ein `<a download>`, der
+Upload ein verstecktes `<input type=file>` plus `FormData`.
+
+Beim Einbau prompt in die Block-Scoping-Falle getreten, vor der `CLAUDE.md` warnt: `useRef` und
+`useCallback` waren im Block des PATCH-Tabs nicht destrukturiert. Das **transpiliert fehlerfrei**
+und wirft erst beim Rendern eine ReferenceError — der Tab wäre weiß geblieben, und
+`check_ui.sh` hätte „all 8 blocks transpile cleanly" gemeldet.
+
+Deshalb prüft `check_ui.sh` das jetzt: es meldet jeden React-Hook, der in einem Block **benutzt,
+aber dort nicht destrukturiert** wird. Gegenprobe gemacht — der Prüfer findet genau diesen Fehler
+und lässt die reparierte Datei durch. Das ist die zweite Fehlerklasse, die das Skript nun
+abfängt, statt sich auf Aufmerksamkeit zu verlassen.
+
+### 3. Die Oberfläche wird gezippt ausgeliefert
+
+**221.032 → 61.789 Bytes, 72 % gespart.** Freier Platz im Dateisystem: **60 KB → 216 KB.**
+
+Die Quelle liegt jetzt in `ui/index.html` statt `data/`, damit die unkomprimierte Fassung gar
+nicht erst mitgeliefert werden *kann*; `scripts/gzip_ui.py` erzeugt `data/index.html.gz`, und
+`platformio.ini` ruft es beim Bauen des Dateisystem-Images auf. Ausgeliefert wird die `.gz`;
+`streamFile()` setzt `Content-Encoding` selbst, `Cache-Control: no-store` muss explizit gesetzt
+werden und ist es.
+
+**Ein Fehler dabei, der lehrreich ist:** zuerst hing das Gzippen als `AddPreAction("buildfs")`.
+Der Build meldete brav „index.html 221032 -> 61789 bytes gzipped", die Datei lag danach auf der
+Platte — **und war trotzdem nicht im Image.** PlatformIO stellt die Dateiliste für das Image
+zusammen, wenn das Extra-Skript *ausgewertet* wird, also bevor eine Pre-Action läuft. Das Gerät
+kam mit der „no UI installed"-Seite hoch.
+
+Behoben, indem die Kompression beim Laden des Skripts läuft statt als Aktion. Und die Lehre, die
+ich fast übersehen hätte: **die Erfolgsmeldung des Werkzeugs war korrekt und trotzdem irreführend
+— sie bestätigte, dass komprimiert wurde, nicht dass es ankommt.** Erst der Griff ins fertige
+Image (`b'index.html.gz' in littlefs.bin`) hat es gezeigt. Nebenbei war dadurch auch meine erste
+Platzmessung falsch: die „280 KB frei" galten für ein Image ohne Oberfläche, echt sind 216 KB.
+
+### Verifiziert
+
+Firmware und Dateisystem geflasht, dabei der Ernstfall unfreiwillig mitgeprüft: nach dem
+FS-Flash waren alle Preset-Namen leer, die zuvor gezogene Sicherung hat sie vollständig
+zurückgebracht. Ausgelieferte Seite entpackt zu 221.032 Bytes und ist **byte-identisch mit
+`ui/index.html`**; `Content-Encoding: gzip` und `Cache-Control: no-store` stehen im Header;
+Slot 4 ruft mit denselben Werten ab wie vor dem ganzen Umbau.

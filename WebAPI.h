@@ -2,6 +2,9 @@
 #include <Arduino.h>
 
 extern void loadAllChaserScenes();
+extern bool scenesSaveFile();
+extern bool scenesLoadFile();
+extern const char* SCENES_PATH;
 
 static File fsUploadFile;
 
@@ -173,9 +176,9 @@ void setupAPI() {
   loadAudioPrefs();
 
   
-  if (!LittleFS.exists("/index.html")) {
+  if (!LittleFS.exists("/index.html.gz")) {
     server.on("/", HTTP_GET, []() {
-      String html = "<!DOCTYPE html><html><head><title>Setup Mode</title></head><body style='background:#121212;color:white;text-align:center;'><h2>SYSTEM SETUP</h2><p>No index.html found. Please upload Web-GUI.</p><form method='POST' action='/upload_gui' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='INSTALL'></form></body></html>";
+      String html = "<!DOCTYPE html><html><head><title>Setup Mode</title></head><body style='background:#121212;color:white;text-align:center;'><h2>SYSTEM SETUP</h2><p>No UI installed. Upload data/index.html.gz (the gzipped build, not the raw HTML).</p><form method='POST' action='/upload_gui' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='INSTALL'></form></body></html>";
       server.send(200, "text/html", html);
     });
 
@@ -184,7 +187,7 @@ void setupAPI() {
       delay(1000); ESP.restart();
     }, []() {
       HTTPUpload& upload = server.upload();
-      if (upload.status == UPLOAD_FILE_START) { if (LittleFS.exists("/index.html")) LittleFS.remove("/index.html"); fsUploadFile = LittleFS.open("/index.html", "w"); }
+      if (upload.status == UPLOAD_FILE_START) { if (LittleFS.exists("/index.html.gz")) LittleFS.remove("/index.html.gz"); fsUploadFile = LittleFS.open("/index.html.gz", "w"); }
       else if (upload.status == UPLOAD_FILE_WRITE) { if (fsUploadFile) fsUploadFile.write(upload.buf, upload.currentSize); }
       else if (upload.status == UPLOAD_FILE_END) { if (fsUploadFile) fsUploadFile.close(); }
     });
@@ -194,7 +197,20 @@ void setupAPI() {
     // and could keep serving a stale, already-open tab's in-memory bundle indefinitely -- looked
     // like a live frontend/backend desync bug when it was actually just stale JS. Reported live
     // 2026-08-20 (dimFxRunning shown as active locally while /api/get_dmx's "dA" was already 0).
-    server.serveStatic("/", LittleFS, "/index.html", "no-store");
+    // Served gzipped: the filesystem partition is the tight budget on this device, and the
+    // uncompressed UI was ~216KB of 896KB. streamFile() sees the ".gz" name and sets
+    // Content-Encoding itself -- adding it by hand duplicates the header and breaks the page
+    // (see the vendor routes below for the same note). Cache-Control has to be set explicitly
+    // though, and it matters: this library sends neither ETag nor Last-Modified, so without
+    // no-store a browser can keep serving an already-open tab's stale bundle indefinitely,
+    // which reads as a frontend/backend desync bug. Reported live 2026-08-20.
+    server.on("/", HTTP_GET, []() {
+      File f = LittleFS.open("/index.html.gz", "r");
+      if (!f) { server.send(404, "text/plain", "no UI installed"); return; }
+      server.sendHeader("Cache-Control", "no-store");
+      server.streamFile(f, "text/html");
+      f.close();
+    });
   }
 
   // React/ReactDOM/Babel, stored gzip-compressed on LittleFS and served locally so the
@@ -293,8 +309,11 @@ void setupAPI() {
     if(sgobFX.active) dmxData[CH_GOBO] = sGoboMap[constrain(sgobFX.currentIdx, 0, 9)];
     if(rgobFX.active) dmxData[CH_GOBO_ROT] = rGoboMap[constrain(rgobFX.currentIdx, 0, 6)];
 
+    // Default-constructed, NOT memset to zero. Every field carries its proper default in the
+    // struct now, so a field this handler forgets to assign keeps a sensible value instead of
+    // silently becoming 0 -- which for things like dSy (sync divisor) or fT (pattern type) is
+    // not a neutral value but a different effect.
     SceneData sd;
-    memset(&sd, 0, sizeof(SceneData));
 
     for(int i=1; i<=18; i++) sd.dmx[i] = dmxData[i];
     
@@ -330,18 +349,10 @@ void setupAPI() {
     sd.rgA = rgobFX.active; sd.rgSt = rgobFX.startVal; sd.rgEn = rgobFX.endVal; 
     sd.rgHo = (uint32_t)rgobFX.holdTime; sd.rgTr = rgobFX.trigger; sd.rgSy = rgobFX.sync; sd.rgSc = rgobFX.scratch;
 
-    prefs.begin(("sc" + String(s)).c_str(), false);
-    prefs.clear();
-    prefs.putString("n", n);
-    size_t written = prefs.putBytes("data", &sd, sizeof(SceneData));
-    prefs.end();
-
-    if (written != sizeof(SceneData)) { server.send(500, "text/plain", "storage error"); return; }
-
-    // sd already holds exactly what was just persisted, and presetNames[s-1]
-    // was set above — update in-memory state directly instead of reloading
-    // all 10 NVS slots from flash.
+    // In-memory first, then one write of the whole file. Scenes are keyed JSON on LittleFS now,
+    // not a struct blob per NVS namespace -- see the note above loadAllChaserScenes().
     chaserScenes[s - 1] = sd;
+    if (!scenesSaveFile()) { server.send(500, "text/plain", "storage error"); return; }
     server.send(200, "text/plain", String(bumpGen("save")));
   });
 
@@ -349,6 +360,52 @@ void setupAPI() {
   // leaving every other already-saved parameter (FX, colors, gobos, speeds)
   // untouched -- lets a pre-programmed slot be re-aimed on site without the
   // full load/edit/save round trip through the Programmer tab.
+  // Download the scenes as a file, and put one back. This is what the keyed-JSON format buys
+  // beyond safety: the programmed show is a thing you can keep, diff and restore, instead of
+  // living only in an opaque flash partition.
+  server.on("/api/scenes", HTTP_GET, []() {
+    File f = LittleFS.open(SCENES_PATH, "r");
+    if (!f) { server.send(404, "text/plain", "no scenes file"); return; }
+    server.sendHeader("Content-Disposition", "attachment; filename=\"scenes.json\"");
+    server.streamFile(f, "application/json");
+    f.close();
+  });
+
+  // Restore. The upload is written to a temporary file and only swapped in once it has been
+  // PARSED successfully -- a truncated or hand-mangled file must not be able to replace a
+  // working show. On success the slots are reloaded so the restore takes effect immediately,
+  // without a reboot.
+  server.on("/api/scenes", HTTP_POST, []() {
+    if (!LittleFS.exists("/scenes.up")) { server.send(400, "text/plain", "no upload"); return; }
+    File chk = LittleFS.open("/scenes.up", "r");
+    JsonDocument probe;
+    DeserializationError err = deserializeJson(probe, chk);
+    bool ok = !err && !probe["s"].isNull();
+    chk.close();
+    if (!ok) {
+      LittleFS.remove("/scenes.up");
+      server.send(400, "text/plain", String("not a valid scenes file: ") + (err ? err.c_str() : "missing \"s\" array"));
+      return;
+    }
+    LittleFS.remove(SCENES_PATH);
+    if (!LittleFS.rename("/scenes.up", SCENES_PATH)) {
+      LittleFS.remove("/scenes.up");
+      server.send(500, "text/plain", "could not replace scenes file"); return;
+    }
+    scenesLoadFile();
+    server.send(200, "text/plain", String(bumpGen("scenes_restore")));
+  }, []() {
+    HTTPUpload& up = server.upload();
+    if (up.status == UPLOAD_FILE_START) {
+      LittleFS.remove("/scenes.up");
+      fsUploadFile = LittleFS.open("/scenes.up", "w");
+    } else if (up.status == UPLOAD_FILE_WRITE) {
+      if (fsUploadFile) fsUploadFile.write(up.buf, up.currentSize);
+    } else if (up.status == UPLOAD_FILE_END) {
+      if (fsUploadFile) fsUploadFile.close();
+    }
+  });
+
   server.on("/save_center", []() {
     int s = server.arg("slot").toInt();
     if (s < 1 || s > 10) { server.send(400, "text/plain", "invalid slot"); return; }
@@ -358,11 +415,7 @@ void setupAPI() {
     chaserScenes[s - 1].dmx[CH_TILT]      = (byte)(centerTilt16 >> 8);
     chaserScenes[s - 1].dmx[CH_TILT_FINE] = (byte)(centerTilt16 & 0xFF);
 
-    prefs.begin(("sc" + String(s)).c_str(), false);
-    size_t written = prefs.putBytes("data", &chaserScenes[s - 1], sizeof(SceneData));
-    prefs.end();
-
-    if (written != sizeof(SceneData)) { server.send(500, "text/plain", "storage error"); return; }
+    if (!scenesSaveFile()) { server.send(500, "text/plain", "storage error"); return; }
     server.send(200, "OK");
   });
 

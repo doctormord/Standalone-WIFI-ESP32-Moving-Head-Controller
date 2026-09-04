@@ -3,3 +3,4 @@
 sim/simbeat
 tracks/
 __pycache__/
+data/index.html.gz

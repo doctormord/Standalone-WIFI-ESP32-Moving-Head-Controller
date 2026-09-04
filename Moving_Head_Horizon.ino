@@ -8,6 +8,7 @@
 #include <Update.h> 
 #include <LittleFS.h>
 #include "driver/uart.h"
+#include <ArduinoJson.h>
 #include "FX_Engine.h" 
 #include "Audio_Engine.h"
 
@@ -216,27 +217,34 @@ StepFX colFX, sgobFX, rgobFX;
 // immediately overwrite that restore with its own fallback (the chaser's last wheel position).
 bool colWasActive = false, sgWasActive = false, rgWasActive = false;
 
-// Scenes are stored as a raw struct blob (prefs.putBytes/getBytes), and the load checks the
-// byte count. Appending a field therefore changes sizeof and would make every stored scene fail
-// that check -- silently, and there were four named presets on the device when this was written.
-// So: NEW FIELDS GO AT THE END, and the previous layout is kept below as SceneDataV1 so a blob
-// written by the old firmware can still be recognised by its size and read into the matching
-// prefix. Never reorder or insert into the middle.
-struct SceneData { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc;;
-  // Added 2026-09-03: burst count and raster divisor per engine (see burstPhase() in
-  // FX_Engine.h). 0 in a migrated scene means "not set" and is mapped to the old behaviour,
-  // which is burst 1 and no raster.
-  int fBn, fRp, dBn, dRp, grBn, grRp, prBn, prRp;
-  // Added later the same day: pulse SPACING per engine -- how far apart the pulses start, which
-  // is separate from how long each one lasts (that is `*Sy`, the primary divisor). -1 means
-  // "same as the length", i.e. back to back, which is what every scene written before this did.
-  int fSg, dSg, grSg, prSg; };
-
-// The layout with the burst fields but without the lengths. Size only, to recognise those blobs.
-struct SceneDataV2 { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc; int fBn, fRp, dBn, dRp, grBn, grRp, prBn, prRp; };
-
-// The layout as it was before that addition. Only its size is used, to recognise old blobs.
-struct SceneDataV1 { byte dmx[19]; bool fA, dA, grA, prA, cA, sgA, rgA; int fT, fTr, fSy, fSS, fSE, fZS, fZE, fMM, fMC; float fR, fMS; int dSt, dEn, dMo, dCu, dTr, dSy; float dSp; int grSt, grEn, grMo, grCu, grTr, grSy; float grSp; int prSt, prEn, prMo, prCu, prTr, prSy; float prSp; int cSt, cEn, cTr, cSy; uint32_t cHo; int sgSt, sgEn, sgTr, sgSy; uint32_t sgHo; bool sgSc; int rgSt, rgEn, rgTr, rgSy; uint32_t rgHo; bool rgSc;; };
+// Every field carries its DEFAULT here, and that is load-bearing: the scene loader fills a
+// default-constructed SceneData and then overwrites only the keys the stored file actually has.
+// A field added later is therefore simply absent from older files and keeps the value written
+// here -- which must be the one that reproduces the behaviour from before it existed. This is
+// what replaced the old raw-struct-blob storage, where every new field changed sizeof() and
+// silently invalidated every saved scene.
+struct SceneData {
+  byte dmx[19] = {0};
+  bool fA = false, dA = false, grA = false, prA = false, cA = false, sgA = false, rgA = false;
+  int fT = 1, fTr = 0, fSy = 3, fSS = 50, fSE = 50, fZS = 30, fZE = 30, fMM = 0, fMC = 0;
+  float fR = 0.0f, fMS = 10.0f;
+  int dSt = 0, dEn = 255, dMo = 0, dCu = 0, dTr = 0, dSy = 3;
+  float dSp = 30.0f;
+  int grSt = 135, grEn = 190, grMo = 0, grCu = 0, grTr = 0, grSy = 3;
+  float grSp = 30.0f;
+  int prSt = 193, prEn = 255, prMo = 0, prCu = 0, prTr = 0, prSy = 3;
+  float prSp = 30.0f;
+  int cSt = 0, cEn = 0, cTr = 0, cSy = 3;
+  uint32_t cHo = 1000;
+  int sgSt = 0, sgEn = 0, sgTr = 0, sgSy = 3;
+  uint32_t sgHo = 1000;
+  bool sgSc = false;
+  int rgSt = 0, rgEn = 0, rgTr = 0, rgSy = 3;
+  uint32_t rgHo = 1000;
+  bool rgSc = false;
+  int fBn = 1, fRp = -1, dBn = 1, dRp = -1, grBn = 1, grRp = -1, prBn = 1, prRp = -1;
+  int fSg = -1, dSg = -1, grSg = -1, prSg = -1;
+};
 
 static SceneData chaserScenes[10]; 
 
@@ -258,63 +266,118 @@ int jogBend = 0;
 // --- SCENE EXECUTION HELPERS ---
 // =========================================================
 
-void loadAllChaserScenes() {
-  for (int i = 0; i < 10; i++) {
-    prefs.begin(("sc" + String(i + 1)).c_str(), true);
-    presetNames[i] = prefs.getString("n", "");
-    
-    SceneData sd;
-    memset(&sd, 0, sizeof(SceneData));
+// ============================================================================
+// --- SCENE STORAGE ----------------------------------------------------------
+// ============================================================================
+// Scenes live in ONE JSON file on LittleFS, keyed by field name.
+//
+// They used to be a raw struct blob in NVS whose length was checked on load, which meant every
+// new field changed sizeof() and made every saved scene fail that check -- silently. It was
+// survived twice in one day only by keeping the previous layouts around (SceneDataV1/V2) purely
+// so their size could be recognised. That does not scale, and one missed migration loses the
+// user's programmed show.
+//
+// Keyed storage removes the failure mode instead of managing it: the loader starts from a
+// default-constructed SceneData and overwrites only the keys the file actually contains, so a
+// field added later is simply absent from older files and keeps its default. Nothing to migrate,
+// ever again.
+//
+// One file, not ten: LittleFS allocates in 4096-byte blocks, and ten files would cost 40KB of a
+// partition with about 64KB free. All ten slots together are a few KB.
+//
+// Why not per-field NVS keys, which would also be self-describing: 68 fields x 10 slots at ~32
+// bytes of entry overhead does not fit the 20KB nvs partition. The filesystem is the only place
+// this fits -- and it has the side benefit the whole thing was asked for, that the file can be
+// downloaded, kept and put back.
+//
+// EVERY field is written, including those still at their default. A backup has to be complete to
+// be readable, and a saved show must not change meaning later because a default changed.
+//
+// THE ONE RULE FOR ADDING A FIELD: add it to SceneData (with the default that reproduces the old
+// behaviour) and to SCENE_FIELDS below. Both directions are generated from that single list, so
+// they cannot drift apart.
 
-    size_t got = prefs.getBytes("data", &sd, sizeof(SceneData));
-    if (got == sizeof(SceneData)) {
-        chaserScenes[i] = sd;
-    } else if (got == sizeof(SceneDataV2)) {
-        // Has the burst fields, not the lengths. Only the length tail needs its default.
-        sd.fSg = sd.dSg = sd.grSg = sd.prSg = -1;
-        chaserScenes[i] = sd;
-    } else if (got == sizeof(SceneDataV1)) {
-        // Written by firmware from before the burst fields existed. The prefix is byte-identical,
-        // so the read above already landed correctly; only the new tail needs its defaults --
-        // burst 1 and no raster is exactly what those scenes did when they were saved. Written
-        // out here rather than as a helper: the Arduino build hoists function prototypes above
-        // the struct definitions, so a free function taking SceneData& does not compile.
-        sd.fBn = sd.dBn = sd.grBn = sd.prBn = 1;
-        sd.fRp = sd.dRp = sd.grRp = sd.prRp = -1;
-        sd.fSg = sd.dSg = sd.grSg = sd.prSg = -1;
-        chaserScenes[i] = sd;
-    } else {
-        for (int c = 1; c <= 18; c++) chaserScenes[i].dmx[c] = prefs.getUChar(String(c).c_str(), 0);
-        chaserScenes[i].fA = prefs.getBool("fA", false); chaserScenes[i].fT = prefs.getInt("fT", 1); chaserScenes[i].fR = prefs.getFloat("fR", 0.0);
-        chaserScenes[i].fTr = prefs.getInt("fTr", 0); chaserScenes[i].fSy = prefs.getInt("fSy", 3);
-        chaserScenes[i].fSS = prefs.getInt("fSS", 50); chaserScenes[i].fSE = prefs.getInt("fSE", 50);
-        chaserScenes[i].fZS = prefs.getInt("fZS", 30); chaserScenes[i].fZE = prefs.getInt("fZE", 30);
-        chaserScenes[i].fMM = prefs.getInt("fMM", 0); chaserScenes[i].fMC = prefs.getInt("fMC", 0); chaserScenes[i].fMS = prefs.getFloat("fMS", 10.0);
-        chaserScenes[i].dA = prefs.getBool("dA", false); chaserScenes[i].dSt = prefs.getInt("dSt", 0); chaserScenes[i].dEn = prefs.getInt("dEn", 255);
-        chaserScenes[i].dMo = prefs.getInt("dMo", 0); chaserScenes[i].dCu = prefs.getInt("dCu", 0); chaserScenes[i].dSp = prefs.getFloat("dSp", 30.0);
-        chaserScenes[i].dTr = prefs.getInt("dTr", 0); chaserScenes[i].dSy = prefs.getInt("dSy", 3);
-        // Same defaults as the V1 migration above -- this branch reads scenes written by an
-        // even older firmware that stored one key per field.
-        chaserScenes[i].fBn = chaserScenes[i].dBn = chaserScenes[i].grBn = chaserScenes[i].prBn = 1;
-        chaserScenes[i].fRp = chaserScenes[i].dRp = chaserScenes[i].grRp = chaserScenes[i].prRp = -1;
-        chaserScenes[i].fSg = chaserScenes[i].dSg = chaserScenes[i].grSg = chaserScenes[i].prSg = -1;
-        chaserScenes[i].grA = prefs.getBool("grA", false); chaserScenes[i].grSt = prefs.getInt("grSt", 135); chaserScenes[i].grEn = prefs.getInt("grEn", 190);
-        chaserScenes[i].grMo = prefs.getInt("grMo", 0); chaserScenes[i].grCu = prefs.getInt("grCu", 0); chaserScenes[i].grSp = prefs.getFloat("grSp", 30.0);
-        chaserScenes[i].grTr = prefs.getInt("grTr", 0); chaserScenes[i].grSy = prefs.getInt("grSy", 3);
-        chaserScenes[i].prA = prefs.getBool("prA", false); chaserScenes[i].prSt = prefs.getInt("prSt", 193); chaserScenes[i].prEn = prefs.getInt("prEn", 255);
-        chaserScenes[i].prMo = prefs.getInt("prMo", 0); chaserScenes[i].prCu = prefs.getInt("prCu", 0); chaserScenes[i].prSp = prefs.getFloat("prSp", 30.0);
-        chaserScenes[i].prTr = prefs.getInt("prTr", 0); chaserScenes[i].prSy = prefs.getInt("prSy", 3);
-        chaserScenes[i].cA = prefs.getBool("cA", false); chaserScenes[i].cSt = prefs.getInt("cSt", 0); chaserScenes[i].cEn = prefs.getInt("cEn", 0);
-        chaserScenes[i].cHo = prefs.getInt("cHo", 1000); chaserScenes[i].cTr = prefs.getInt("cTr", 0); chaserScenes[i].cSy = prefs.getInt("cSy", 3);
-        chaserScenes[i].sgA = prefs.getBool("sgA", false); chaserScenes[i].sgSt = prefs.getInt("sgSt", 0); chaserScenes[i].sgEn = prefs.getInt("sgEn", 0);
-        chaserScenes[i].sgHo = prefs.getInt("sgHo", 1000); chaserScenes[i].sgTr = prefs.getInt("sgTr", 0); chaserScenes[i].sgSy = prefs.getInt("sgSy", 3);
-        chaserScenes[i].sgSc = prefs.getBool("sgSc", false);
-        chaserScenes[i].rgA = prefs.getBool("rgA", false); chaserScenes[i].rgSt = prefs.getInt("rgSt", 0); chaserScenes[i].rgEn = prefs.getInt("rgEn", 0);
-        chaserScenes[i].rgHo = prefs.getInt("rgHo", 1000); chaserScenes[i].rgTr = prefs.getInt("rgTr", 0); chaserScenes[i].rgSy = prefs.getInt("rgSy", 3);
-        chaserScenes[i].rgSc = prefs.getBool("rgSc", false);
-    }
-    prefs.end();
+#define SCENE_FIELDS(X) \
+  X(fA) X(dA) X(grA) X(prA) X(cA) X(sgA) X(rgA) X(fT) \
+  X(fTr) X(fSy) X(fSS) X(fSE) X(fZS) X(fZE) X(fMM) X(fMC) \
+  X(fR) X(fMS) X(dSt) X(dEn) X(dMo) X(dCu) X(dTr) X(dSy) \
+  X(dSp) X(grSt) X(grEn) X(grMo) X(grCu) X(grTr) X(grSy) X(grSp) \
+  X(prSt) X(prEn) X(prMo) X(prCu) X(prTr) X(prSy) X(prSp) X(cSt) \
+  X(cEn) X(cTr) X(cSy) X(cHo) X(sgSt) X(sgEn) X(sgTr) X(sgSy) \
+  X(sgHo) X(sgSc) X(rgSt) X(rgEn) X(rgTr) X(rgSy) X(rgHo) X(rgSc) \
+  X(fBn) X(fRp) X(dBn) X(dRp) X(grBn) X(grRp) X(prBn) X(prRp) \
+  X(fSg) X(dSg) X(grSg) X(prSg)
+
+const char* SCENES_PATH = "/scenes.json";
+const char* SCENES_TMP  = "/scenes.tmp";
+
+// Serialises all ten slots. Written to a temporary file and renamed over the real one, so a
+// power cut during the write leaves the previous scenes intact rather than a half file.
+bool scenesSaveFile() {
+  JsonDocument doc;
+  doc["v"] = 1;
+  JsonArray arr = doc["s"].to<JsonArray>();
+  for (int i = 0; i < 10; i++) {
+    JsonObject o = arr.add<JsonObject>();
+    o["n"] = presetNames[i];
+    JsonArray d = o["dmx"].to<JsonArray>();
+    for (int c = 0; c < 19; c++) d.add(chaserScenes[i].dmx[c]);
+    #define X(f) o[#f] = chaserScenes[i].f;
+    SCENE_FIELDS(X)
+    #undef X
   }
+  LittleFS.remove(SCENES_TMP);
+  File f = LittleFS.open(SCENES_TMP, "w");
+  if (!f) return false;
+  size_t written = serializeJson(doc, f);
+  f.close();
+  if (written == 0) { LittleFS.remove(SCENES_TMP); return false; }
+  LittleFS.remove(SCENES_PATH);
+  return LittleFS.rename(SCENES_TMP, SCENES_PATH);
+}
+
+// Returns false if there is no file or it will not parse, which is the signal to fall back to
+// the old NVS blobs and migrate them.
+bool scenesLoadFile() {
+  File f = LittleFS.open(SCENES_PATH, "r");
+  if (!f) return false;
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err) return false;
+  JsonArray arr = doc["s"];
+  if (arr.isNull()) return false;
+  for (int i = 0; i < 10; i++) {
+    // Reset to defaults FIRST. Every key the file lacks then keeps the default rather than
+    // whatever happened to be in memory -- that is the whole point of the format.
+    chaserScenes[i] = SceneData();
+    if (i >= (int)arr.size()) { presetNames[i] = ""; continue; }
+    JsonObject o = arr[i];
+    if (o.isNull()) { presetNames[i] = ""; continue; }
+    presetNames[i] = (const char*)(o["n"] | "");
+    JsonArray d = o["dmx"];
+    if (!d.isNull()) for (int c = 0; c < 19 && c < (int)d.size(); c++)
+      chaserScenes[i].dmx[c] = (byte)constrain((int)d[c], 0, 255);
+    // `|` yields the stored value, or the default already in place when the key is missing or
+    // of the wrong type. One operator, applied uniformly -- there is no per-field logic to get
+    // wrong.
+    #define X(f) chaserScenes[i].f = o[#f] | chaserScenes[i].f;
+    SCENE_FIELDS(X)
+    #undef X
+  }
+  return true;
+}
+
+void loadAllChaserScenes() {
+  // Scenes are keyed JSON on LittleFS -- see the note above scenesSaveFile(). If the file is
+  // missing or unreadable the slots stay at their defaults rather than being invented from
+  // somewhere else; an empty show is honest, a half-guessed one is not.
+  //
+  // The one-time import from the old NVS struct blobs was removed on 2026-09-04, once the
+  // device had booted the new firmware and written its file. Restoring it would mean bringing
+  // back SceneDataV1/V2, which existed only so their sizeof() could recognise an old blob.
+  if (scenesLoadFile()) return;
+  for (int i = 0; i < 10; i++) { chaserScenes[i] = SceneData(); presetNames[i] = ""; }
 }
 
 // Shared by triggerSceneFX() and the /colfx HTTP handler so the parity rule

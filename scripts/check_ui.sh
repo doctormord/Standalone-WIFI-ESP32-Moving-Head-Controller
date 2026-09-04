@@ -28,9 +28,23 @@ while ((m = re.exec(html)) !== null) {
   } catch (e) {
     bad++;
     console.log(`  block ${i} (line ${line}): FAILED ${e.message.split('\n')[0]}`);
+    continue;
+  }
+  // Scope check, not a syntax check. Each block is its own scope and destructures the React
+  // hooks it needs from `React` at the top; a hook used but not destructured IN THAT BLOCK
+  // transpiles perfectly and then throws a ReferenceError at render, blanking the tab. That has
+  // happened twice -- most recently on 2026-09-04, when useRef/useCallback were added to the
+  // PATCH tab whose block only had useState and useEffect.
+  const decl = m[1].match(/const \{([^}]*)\}\s*=\s*React\s*;/);
+  const have = new Set((decl ? decl[1] : '').split(',').map((x) => x.trim()).filter(Boolean));
+  const HOOKS = ['useState','useEffect','useRef','useCallback','useMemo','useReducer','useLayoutEffect','useContext'];
+  const missing = HOOKS.filter((h) => new RegExp('(^|[^.\\w])' + h + '\\s*\\(').test(m[1]) && !have.has(h));
+  if (missing.length) {
+    bad++;
+    console.log(`  block ${i} (line ${line}): USES ${missing.join(', ')} but does not destructure ${missing.length > 1 ? 'them' : 'it'} from React in this block`);
   }
 }
 console.log(bad ? `\n${bad} block(s) failed` : `\nall ${i} blocks transpile cleanly`);
 process.exit(bad ? 1 : 0);
 JS
-node "$TMP/check.js" data/index.html "$TMP"
+node "$TMP/check.js" ui/index.html "$TMP"

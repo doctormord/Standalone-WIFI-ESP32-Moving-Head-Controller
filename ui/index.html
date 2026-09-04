@@ -1665,7 +1665,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
 <script type="text/babel">
 // horizon-patch.jsx
 (function () {
-  const { useState, useEffect } = React;
+  const { useState, useEffect, useRef, useCallback } = React;
 
   function FirmwareInfo({ colStyle, labelStyle }) {
     const [info, setInfo] = useState('loading…');
@@ -1685,6 +1685,22 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     const [fixtures, setFixtures] = useState([{ a: 1, ip: 0, it: 0, ph: 0 }]);
     const [fanStart, setFanStart] = useState(0); const [fanEnd, setFanEnd] = useState(360);
     const [status, setStatus] = useState(''); const [ssid, setSsid] = useState(''); const [pass, setPass] = useState('');
+    // Scene backup. The device stores presets and chaser scenes as one keyed JSON file, so a
+    // backup is literally that file -- no export format to keep in step with the firmware.
+    const scenesFileRef = useRef(null);
+    const [sceneMsg, setSceneMsg] = useState('');
+    const restoreScenes = useCallback((file) => {
+      if (!file) return;
+      setSceneMsg('restoring…');
+      const fd = new FormData();
+      fd.append('file', file, 'scenes.json');
+      // The device parses the upload before swapping it in, so a bad file comes back as 400
+      // with a reason rather than replacing a working show.
+      fetch('/api/scenes', { method: 'POST', body: fd })
+        .then((r) => r.text().then((t) => ({ ok: r.ok, t })))
+        .then(({ ok, t }) => setSceneMsg(ok ? 'restored — reload the page to see the names' : ('rejected: ' + t)))
+        .catch((e) => setSceneMsg('failed: ' + e));
+    }, []);
 
     useEffect(() => { fetch('/api/patch').then(r => r.json()).then(d => { if (d && d.length) setFixtures(d); }).catch(() => {}); }, []);
 
@@ -1743,6 +1759,22 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
             <div style={{ marginBottom: 8 }}><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>SSID</div><input type="text" value={ssid} onChange={e => setSsid(e.target.value)} placeholder="Network name" style={inputStyle} /></div>
             <div style={{ marginBottom: 10 }}><div style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)', marginBottom: 4 }}>Password</div><input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="Password" style={inputStyle} /></div>
             <button onClick={saveWifi} style={{ width: '100%', padding: '10px 0', background: 'rgba(59,130,246,0.16)', border: '1px solid rgba(59,130,246,0.35)', borderRadius: 10, color: '#93c5fd', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>Save & Restart</button>
+          </div>
+          <div style={colStyle}>
+            <div style={labelStyle}>Scenes · backup</div>
+            <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, marginBottom: 10 }}>
+              All ten preset and chaser slots, as one file. Keep it before reprogramming a show —
+              restoring puts every slot back exactly as it was.
+            </div>
+            <a href="/api/scenes" download="scenes.json" style={{ display: 'block', textAlign: 'center', padding: '10px 0', marginBottom: 8, background: 'rgba(34,197,94,0.16)', border: '1px solid rgba(34,197,94,0.4)', borderRadius: 9, color: '#4ade80', fontWeight: 700, fontSize: 11.5, textDecoration: 'none', letterSpacing: 0.6 }}>
+              ↓ DOWNLOAD SCENES
+            </a>
+            <input ref={scenesFileRef} type="file" accept=".json,application/json" style={{ display: 'none' }}
+                   onChange={(e) => { restoreScenes(e.target.files && e.target.files[0]); e.target.value = ''; }} />
+            <button onClick={() => scenesFileRef.current && scenesFileRef.current.click()} style={{ width: '100%', padding: '10px 0', background: 'rgba(251,191,36,0.14)', border: '1px solid rgba(251,191,36,0.38)', borderRadius: 9, color: '#fbbf24', fontWeight: 700, fontSize: 11.5, cursor: 'pointer', letterSpacing: 0.6 }}>
+              ↑ RESTORE FROM FILE
+            </button>
+            {sceneMsg ? <div style={{ marginTop: 8, fontSize: 10.5, lineHeight: 1.5, color: sceneMsg.startsWith('restored') ? '#4ade80' : (sceneMsg === 'restoring…' ? 'rgba(255,255,255,0.5)' : '#f87171') }}>{sceneMsg}</div> : null}
           </div>
           <FirmwareInfo colStyle={colStyle} labelStyle={labelStyle} />
           <div style={{ ...colStyle, fontSize: 10.5, color: 'rgba(255,255,255,0.4)', lineHeight: 1.7 }}>

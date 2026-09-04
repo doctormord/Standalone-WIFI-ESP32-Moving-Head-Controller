@@ -354,6 +354,28 @@ drei (Kurve wiederholt sich innerhalb eines aktiven Fensters, dann Pause)? Erste
 „1 Beat dimmen alle 4" ab, letzteres zusätzlich „vier Kreise, dann parken". Zwei Parameter sind
 ein Bedienelement je Effekt, drei sind zwei.
 
+### ~~Offen nach dem Szenen-Umbau (2026-09-04)~~ — **alle drei erledigt am selben Tag**
+
+NVS-Migrationspfad entfernt, Sicherungsknöpfe im PATCH-Tab, Oberfläche gezippt (60 → 216 KB
+frei). Details in `history.md`. Ursprüngliche Notizen:
+
+- **Den NVS-Migrationspfad irgendwann entfernen.** `loadAllChaserScenes()` liest die alten
+  Struct-Blobs noch, falls `/scenes.json` fehlt, und `SceneDataV1`/`SceneDataV2` existieren nur
+  noch, damit deren Größe erkannt wird. Sobald kein Gerät mehr mit altem Stand unterwegs ist,
+  kann das komplett weg — das sind drei Struct-Definitionen und ein Zweig. Vorher sicherstellen,
+  dass jedes betroffene Gerät einmal mit der neuen Firmware gebootet hat (dann existiert die
+  Datei), sonst sind die Szenen weg.
+
+- **Kein Bedienelement für Sichern/Wiederherstellen.** `GET /api/scenes` und `POST /api/scenes`
+  gibt es, aber nur per URL bzw. `curl -F`. Ein Knopfpaar im SETTINGS-Tab („Szenen sichern" /
+  „Szenen laden") wäre naheliegend und klein — Download ist ein einfacher Link, der Upload ein
+  `<input type=file>` plus `FormData`.
+
+- **Das Dateisystem ist der enge Posten, nicht mehr der App-Bereich.** ~60 KB frei bei 896 KB.
+  `index.html` (~216 KB) wird unkomprimiert ausgeliefert; es zu gzippen wie die Vendor-Dateien
+  würde über 100 KB freimachen. Kostet einen Schritt beim Bauen und ist deshalb noch nicht
+  gemacht.
+
 ## 🚀 Zukünftige Features (Feature Requests)
 
 - **Hardware-Joystick via ADS1115 (I²C):** 16-bit ADC, schreibt direkt

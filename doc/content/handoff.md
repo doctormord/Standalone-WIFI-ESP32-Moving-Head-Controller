@@ -16,6 +16,54 @@ Die Grundregeln aus der Messsession vom 2026-09-02, alle am Fixture belegt und u
 - **Vier-Viertel läuft ohne Tap.** Am Gerät auf House 122 gemessen: 2,00 Onsets/s bei einer
   Beatrate von 2,03, **86 % der Abstände exakt ein Beat**, Tempo ohne jede Eingabe auf 0 % genau.
 
+## ⚠ Ein Dateisystem-Flash löscht die Szenen
+
+`/scenes.json` liegt auf derselben Partition wie die Oberfläche, und `uploadfs` überschreibt sie
+vollständig. Der frühere Rückfall auf die NVS-Blobs ist entfernt — **es gibt nichts mehr, woraus
+sich die Szenen rekonstruieren ließen.**
+
+    vorher:  Szenen sichern   (PATCH-Tab "DOWNLOAD SCENES", oder GET /api/scenes)
+    danach:  zurueckspielen   (PATCH-Tab "RESTORE FROM FILE", oder POST /api/scenes)
+
+Am 2026-09-04 genau so durchgespielt: nach dem Dateisystem-Flash waren alle Namen leer, die
+Sicherung hat sie vollständig zurückgebracht. Die Firmware allein per OTA zu flashen ist
+unkritisch, nur das Dateisystem nicht.
+
+## Szenen liegen jetzt als JSON auf dem Dateisystem
+
+Presets und Chaser-Szenen stehen in **einer** Datei, `/scenes.json`, nach Feldnamen geschlüsselt.
+Vorher war es ein roher Struct-Block in NVS, dessen Länge beim Laden geprüft wurde — jedes neue
+Feld änderte `sizeof` und ließ **jede gespeicherte Szene stillschweigend durchfallen**. An einem
+Tag ist das zweimal nur durch Migrationszweige abgefangen worden; das skaliert nicht, und ein
+übersehener Fall kostet die programmierte Show.
+
+**Wie es jetzt nicht mehr kaputtgehen kann:** der Loader füllt ein `SceneData` mit den
+Vorgabewerten aus dem Struct und überschreibt dann *nur die Schlüssel, die die Datei enthält*.
+Ein später hinzugefügtes Feld fehlt in alten Dateien einfach und behält seinen Standard. Am Gerät
+verifiziert: fünf Schlüssel aus einer Datei entfernt, hochgeladen — die fünf kamen als Vorgabe
+zurück, alle anderen unverändert.
+
+**Ein Feld hinzufügen heißt jetzt: `SceneData` (mit Default) und `SCENE_FIELDS`.** Speichern und
+Laden werden beide aus dieser einen Liste erzeugt und können nicht auseinanderlaufen.
+
+    GET  /api/scenes    laedt die Datei herunter (Content-Disposition, also Datei-Dialog)
+    POST /api/scenes    spielt eine zurueck -- multipart, z.B. curl -F "file=@scenes.json"
+
+Im **PATCH-Tab** gibt es dafür zwei Knöpfe („DOWNLOAD SCENES" / „RESTORE FROM FILE"); die
+Endpunkte darunter sind dieselben.
+
+Der Upload wird erst **geparst** und dann eingetauscht; eine abgeschnittene oder verfremdete
+Datei wird mit 400 und Begründung abgewiesen, ohne die laufenden Szenen anzufassen. Geprüft mit
+abgeschnittenem JSON, Nicht-JSON und JSON ohne `s`-Array.
+
+**Der NVS-Migrationspfad ist entfernt** (2026-09-04), nachdem das Gerät einmal mit der neuen
+Firmware gebootet und seine Datei geschrieben hatte. `SceneDataV1`/`V2` existierten nur, damit
+ihre Größe einen alten Block erkennt, und sind mit weg. Fehlt die Datei, starten die Slots leer —
+eine ehrliche leere Show ist besser als eine halb geratene.
+
+Größe: ~7 KB für zehn Slots. Eine Datei statt zehn, weil LittleFS in 4-KB-Blöcken belegt und
+zehn Dateien allein 40 KB gekostet hätten.
+
 ## DER NÄCHSTE PUNKT: greift der Tap-Anker auf D&B überhaupt?
 
 Am 2026-09-03 gemessen, ausgelieferter Detektor, Anker per Tap auf 172 gesetzt, Track echte 172:
