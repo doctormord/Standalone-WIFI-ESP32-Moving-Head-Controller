@@ -1469,7 +1469,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     'rgSt', 'rgEn', 'rgHo', 'rgTr', 'rgSy', 'rgFxRunning', 'rgSc', 'rgSp',
   ];
 
-  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, tapCount, tempoAuto, onToggleAuto, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync }) {
+  function ProgrammerTab({ accent, joystickSize, state, setState, bpm, tap, tapCount, tempoAuto, onToggleAuto, keyJoyRef, onJoystick, micOn, onMicToggle, hwSens, setHwSens, onPresetRecall, onPresetSave, onHardSync, onKillAll }) {
     // Tracks "has anything changed since the last recall/save" via a per-field
     // baseline snapshot (not just a boolean) so a partial save -- e.g. Save
     // Center, which only persists pan/tilt -- can clear just the fields it
@@ -1481,12 +1481,19 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     const suppressDirtyRef = useRef(false);
     const baselineRef = useRef({});
     const [dirty, setDirty] = useState(false);
+    // While a recall is landing, changes are not counted as edits; the baseline is re-taken once
+    // onPresetRecall's promise reports the recalled state merged (rebaseTick). This used to
+    // suppress exactly ONE change instead -- if the recalled values arrived over two polls the
+    // second looked like an edit, and if they matched what was already shown the suppression
+    // stayed armed and swallowed the user's next real edit, so the next recall discarded it unwarned.
+    const [rebaseTick, setRebaseTick] = useState(0);
     const captureBaseline = (keys = PROG_DIRTY_KEYS) => { const b = { ...baselineRef.current }; keys.forEach((k) => { b[k] = state[k]; }); baselineRef.current = b; };
     useEffect(() => {
       if (isFirstRunRef.current) { isFirstRunRef.current = false; captureBaseline(); return; }
-      if (suppressDirtyRef.current) { suppressDirtyRef.current = false; captureBaseline(); return; }
+      if (suppressDirtyRef.current) return;
       setDirty(PROG_DIRTY_KEYS.some((k) => state[k] !== baselineRef.current[k]));
     }, PROG_DIRTY_KEYS.map((k) => state[k]));
+    useEffect(() => { if (rebaseTick === 0) return; suppressDirtyRef.current = false; captureBaseline(); setDirty(false); }, [rebaseTick]);
 
     const guardedRecall = async (slot) => {
       if (dirty) {
@@ -1495,7 +1502,7 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
       }
       suppressDirtyRef.current = true;
       setDirty(false);
-      onPresetRecall(slot);
+      Promise.resolve(onPresetRecall(slot)).finally(() => setRebaseTick((n) => n + 1));
     };
     const guardedSave = (slot, name) => { onPresetSave(slot, name); captureBaseline(); setDirty(false); };
 
@@ -1504,9 +1511,13 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <button onClick={() => {
             if(!confirm('Reset programmer to default clear state?')) return;
-            fetch('/kill_fx');
-            fetch('/set_all?c1=0&c2=0&c3=127&c4=127&c15=255&c16=255&c5=0&c6=0&c7=0&c8=0&c9=0&c10=0&c11=0&c12=0&c13=0&c14=0&c17=0');
-            setState(s => ({ ...s, dimmer: 0, strobe: 0, colorBase: 0, colorOff: 0, color: 0, sgoboBase: 0, sgoboOff: 0, rgoboBase: 0, rgoboOff: 0, goboRot: 0, prism: false, frost: false, prismRot: 0, focus: 0, zoom: 0, macro: 0, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, presetActive: null }));
+            // FX stop goes through killAllFx and the channel values through the state-sync effect
+            // (track() -> /set_all), so both are generation-gated. The raw /kill_fx + /set_all this
+            // used to fire armed nothing, so a poll already in flight could put the old values back.
+            // Pan/tilt are not tracked by that effect, so their centering is still sent directly.
+            onKillAll();
+            fetch('/set_all?c3=127&c4=127&c15=255&c16=255');
+            setState(s => ({ ...s, dimmer: 0, strobe: 0, motorSpeed: 0, colorBase: 0, colorOff: 0, color: 0, sgoboBase: 0, sgoboOff: 0, rgoboBase: 0, rgoboOff: 0, goboRot: 0, prism: false, frost: false, prismRot: 0, focus: 0, zoom: 0, macro: 0 }));
           }}
           style={{ padding: '14px 0', background: '#f8fafc', color: '#0a0a0c', borderRadius: 12, border: 'none', fontSize: 13, fontWeight: 800, letterSpacing: 1.2, cursor: 'pointer', boxShadow: '0 0 36px rgba(248,250,252,0.18)' }}>
             ☀ CLEAR PROGRAMMER (DEFAULT)
@@ -2284,7 +2295,7 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
 
     const [muted, setMuted] = useState(false);
     const [micOn, setMicOn] = useState(false);
-    const [hwSens, setHwSens] = useState(() => { const saved = parseInt(localStorage.getItem('hz_hwsens')); return isNaN(saved) ? 50 : saved; });
+    const [hwSens, setHwSens] = useState(50); // replaced by the device's own value on the first poll (d.hS)
     const [fixtureCount, setFixtureCount] = useState(1);
 
     const [state, setState] = useState({
@@ -2335,7 +2346,24 @@ const isReceiving = useRef(false);
     // slot recalled repeatedly landed with Dimmer FX active/inactive inconsistently even after
     // the frontend-only fixes.
     const lastKnownGenRef = useRef(0);
-    const markPending = (f) => (text) => { const g = parseInt(text, 10); if (!isNaN(g)) pendingGenRef.current[f] = g; };
+    // armSeqRef[f] counts armPending(f) calls. markPending(f) captures the count at the moment it
+    // is created (always right after its own armPending), and a response only releases the gate
+    // if no newer write for `f` has been armed since. Without this, the reply to an OLDER write
+    // (an in-flight tFetch whose successor is still queued, or a plain request overtaken by a
+    // tFetchImmediate stop) dropped the gate from Infinity to its own lower generation while the
+    // newer write was still outstanding -- and a poll landing in that gap merged the pre-edit
+    // value back and rewrote the group's baseline to it.
+    const armSeqRef = useRef({});
+    // Set once the poll effect below has mounted; lets a write path trigger an immediate re-poll.
+    const syncNowRef = useRef(null);
+    const markPending = (f) => { const seq = armSeqRef.current[f]; return (text) => {
+      if (armSeqRef.current[f] !== seq) return;
+      const g = parseInt(text, 10); if (!isNaN(g)) pendingGenRef.current[f] = g;
+      // "<gen>s": the backend rejected the write as built before the latest /recall (see
+      // isStaleWrite in WebAPI.h). The control still shows the rejected value, so rebase now
+      // instead of leaving it wrong until the next 2s poll quietly reverts it.
+      if (typeof text === 'string' && text.trim().endsWith('s')) syncNowRef.current?.();
+    }; };
     // Provisionally blocks poll updates to `f` (set to Infinity) until the confirming response's
     // markPending call replaces it with the real generation -- see syncFx below. tFetch's debounce
     // queue can silently drop a queued call's own callback if a THIRD call for the same id arrives
@@ -2347,7 +2375,10 @@ const isReceiving = useRef(false);
     // safety-net timeout guarantees self-healing within a few seconds even if that confirming
     // callback never arrives, instead of a silent permanent freeze. Reported live 2026-08-25:
     // Dimmer FX / rotating gobo state not reliably updating after repeated fast preset switching.
-    const armPending = (f) => { pendingGenRef.current[f] = Infinity; setTimeout(() => { if (pendingGenRef.current[f] === Infinity) pendingGenRef.current[f] = 0; }, 3000); };
+    // Only the newest arm's timer may release the gate -- an earlier timer firing while a later
+    // write is still outstanding would otherwise unblock the poll 3s after the FIRST of a burst
+    // of edits (e.g. a slider drag), not after the last one.
+    const armPending = (f) => { const seq = (armSeqRef.current[f] || 0) + 1; armSeqRef.current[f] = seq; pendingGenRef.current[f] = Infinity; setTimeout(() => { if (armSeqRef.current[f] === seq && pendingGenRef.current[f] === Infinity) pendingGenRef.current[f] = 0; }, 3000); };
 
     // Wake-up for edits that the isReceiving window below refuses to send.
     //
@@ -2544,12 +2575,20 @@ const isReceiving = useRef(false);
           // never extended to these two.
           if (d.fO !== undefined && !isLocalDirty('muted', d.gen)) setMuted(d.fO === 1);
           if (d.hwA !== undefined && !isLocalDirty('micOn', d.gen)) setMicOn(d.hwA === 1);
+          // The sensitivity lives in NVS on the device (a_sens) and is shared by every tab and
+          // client. It used to live only in this browser's localStorage and was never read back,
+          // so toggling HW MIC pushed whatever this browser last had over the device's value.
+          if (d.hS != null && !isLocalDirty('hwSens', d.gen)) setHwSens(d.hS);
 
           // Longer timeout (300ms) for slow browser engines, so the UI has reliably finished rendering
-          setTimeout(() => { isReceiving.current = false; }, 300);
+          // One shared timer: an immediate re-poll (syncNowRef) can overlap the interval poll, and the
+          // earlier poll's timer must not close the later one's window early.
+          clearTimeout(recvTimer); recvTimer = setTimeout(() => { isReceiving.current = false; }, 300);
         } catch(e) {}
       };
-      sync(); const id = setInterval(sync, 2000); return () => clearInterval(id);
+      let recvTimer = null;
+      syncNowRef.current = sync;
+      sync(); const id = setInterval(sync, 2000); return () => { clearInterval(id); clearTimeout(recvTimer); syncNowRef.current = null; };
     }, []);
 
     useEffect(() => {
@@ -2690,23 +2729,30 @@ const isReceiving = useRef(false);
       // triggers no render). See deferSync.
     }, [state, syncTick]);
 
+    // Re-polls as soon as the recall is confirmed instead of waiting up to 2s for the next interval
+    // poll. Until this client has seen the post-recall generation, every FX edit it sends carries an
+    // older "g" and is rejected by isStaleWrite() -- so a value changed in the Programmer tab right
+    // after tapping a preset was silently dropped and then reverted by the next poll, and only stuck
+    // when picked a second time. The returned promise settles once that rebase poll has been merged,
+    // which is when the Programmer tab takes its "unsaved changes" baseline.
     const recallPreset = useCallback((slot) => {
       armPending('presetActive'); // see syncFx's comment -- provisional until the response confirms the real generation
-      fetch('/recall?slot=' + slot).then((r) => r.text()).then(markPending('presetActive')).catch(() => {});
       setState(s => ({ ...s, presetActive: slot }));
+      return fetch('/recall?slot=' + slot).then((r) => r.text()).then(markPending('presetActive')).then(() => syncNowRef.current?.()).catch(() => {});
     }, []);
     const savePreset = useCallback((slot, name) => {
       armPending('presetNames');
+      const confirmSave = markPending('presetNames');
       fetch(`/save?slot=${slot}&n=${encodeURIComponent(name)}`).then((r) => r.text()).then((text) => {
-        markPending('presetNames')(text);
+        confirmSave(text);
         setState(s => { const pn = [...s.presetNames]; pn[slot - 1] = name; return { ...s, presetNames: pn }; });
         showToast(`✓ Preset ${slot} saved — "${name}"`, 'ok'); haptic(12);
       }).catch(() => showToast('✗ Save failed', 'err'));
     }, []);
     const killAllFx = useCallback(() => {
       const killedKeys = ['fxRunning', 'dimFxRunning', 'grFxRunning', 'prFxRunning', 'colFxRunning', 'sgFxRunning', 'rgFxRunning', 'showRunning', 'presetActive'];
-      killedKeys.forEach((k) => armPending(k));
-      fetch('/kill_fx').then((r) => r.text()).then((text) => { const g = parseInt(text, 10); if (!isNaN(g)) killedKeys.forEach((k) => { pendingGenRef.current[k] = g; }); }).catch(() => {});
+      const confirms = killedKeys.map((k) => { armPending(k); return markPending(k); });
+      fetch('/kill_fx').then((r) => r.text()).then((text) => confirms.forEach((c) => c(text))).catch(() => {});
       setState(s => ({ ...s, fxRunning: false, dimFxRunning: false, grFxRunning: false, prFxRunning: false, colFxRunning: false, sgFxRunning: false, rgFxRunning: false, showRunning: false, presetActive: null }));
     }, []);
     
@@ -2721,7 +2767,10 @@ const isReceiving = useRef(false);
     }, [state.fadeTime, state.fadeCurve]);
 
     const handleMic = useCallback(() => { const next = !micOn; armPending('micOn'); fetch(`/hwaudio?en=${next ? 1 : 0}&sens=${hwSens}`).then((r) => r.text()).then(markPending('micOn')).catch(() => {}); setMicOn(next); }, [micOn, hwSens]);
-    useEffect(() => { try { localStorage.setItem('hz_hwsens', hwSens); } catch(e) {} if (micOn) { fetch(`/hwaudio?en=1&sens=${hwSens}`).catch(() => {}); } }, [hwSens]);
+    // Sent whether or not the mic is on: the old effect only sent while it was on, so a change made
+    // with the mic off reached the device only as a side effect of the next HW MIC toggle. A user
+    // edit, not an effect on hwSens, so a poll-delivered value is never echoed back.
+    const changeHwSens = useCallback((v) => { setHwSens(v); armPending('hwSens'); tFetch(`/hwaudio?en=${micOn ? 1 : 0}&sens=${v}`, 'hwsens', 40, markPending('hwSens')); }, [micOn]);
     // Tempo mode, read back from the device so it survives a reload and a second browser sees it.
     const tempoAuto = tele.raw ? tele.raw.tAuto !== 0 : true;
     const setTempoAuto = useCallback((v) => { fetch('/audio_tune?auto=' + (v ? 1 : 0)).catch(() => {}); }, []);
@@ -2767,10 +2816,10 @@ const isReceiving = useRef(false);
         <StatusBar accent={accent} onAccentChange={handleAccentChange} night={night} onNightToggle={() => setNight(n => { const next = !n; try { localStorage.setItem('hz_night', next ? '1' : '0'); } catch(e) {} return next; })} telemetry={tele} bpm={bpm} micOn={micOn} fixtureCount={fixtureCount} uiScale={uiScale} onUiScaleChange={setUiScale} />
         <Tabs tab={tab} setTab={setTab} accent={accent} tabs={['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH']} />
         <div className="tab-scroll">
-          {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tapCount={tapCount} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
+          {tab === 'LIVE' && <HorizonLiveTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tapCount={tapCount} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} muted={muted} onUnmute={handleMute} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={changeHwSens} onKillAll={killAllFx} onHardSync={hardSync} onJog={handleJog} onJogRelease={releaseJog} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onBlackout={() => handleBlackoutOn()} keyJoyRef={keyJoyRef} />}
           {tab === 'FOLLOWSPOT' && <HorizonFollowspotTab accent={accent} joystickSize={195} state={state} setState={setState} onJoystick={joystickHandler} onMapTap={handleMapTap} keyJoyRef={keyJoyRef} />}
-          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tapCount={tapCount} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
-          {tab === 'AUDIO' && <HorizonAudioDebugTab accent={accent} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={(v) => { setHwSens(v); }} />}
+          {tab === 'PROGRAMMER' && <HorizonProgrammerTab accent={accent} joystickSize={195} state={state} setState={setState} bpm={bpm} tap={tapWithFirmware} tapCount={tapCount} tempoAuto={tempoAuto} onToggleAuto={setTempoAuto} onHardSync={hardSync} onJoystick={joystickHandler} onPresetRecall={recallPreset} onPresetSave={savePreset} onKillAll={killAllFx} keyJoyRef={keyJoyRef} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={changeHwSens} />}
+          {tab === 'AUDIO' && <HorizonAudioDebugTab accent={accent} micOn={micOn} onMicToggle={handleMic} hwSens={hwSens} setHwSens={changeHwSens} />}
           {tab === 'PATCH' && <HorizonPatchTab accent={accent} />}
         </div>
         <MutedWarning show={muted} onUnmute={handleMute} />

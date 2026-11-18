@@ -1,8 +1,31 @@
 # NEXT CHAT STARTS HERE
 
-Stand 2026-09-04. Branch `worktree-audio-panel`, **Flash 78,6 %** (war 94,0 %), committet und
-auf `origin/future` gepusht. Auf dem Gerät läuft dieser Stand: `bld Sep 4 2026 13:36:32`, per
-OTA geflasht und über den Build-Stempel verifiziert.
+Stand 2026-11-18. Branch **`prog-sync-port`** (von `future` @ `2224c5b`), gepusht, **noch nicht
+nach `future` gemergt** — erst nach dem Test am Gerät. Gerät: `192.168.178.154`
+(`movinghead.local`). Flash 79,8 %.
+
+## Offen: Programmer-Tab-Sync-Fixes am Gerät abnehmen
+
+Fünf Fixes am gemeinsamen Schreib-/Poll-Pfad (Details `history.md` 2026-11-18). Kompiliert,
+`check_ui.sh` und `buildfs` grün — **am Gerät noch nicht getestet.** Die Oberfläche braucht
+einen Dateisystem-Flash, also **vorher Szenen sichern** (siehe unten), danach zurückspielen.
+
+1. Preset antippen, **sofort** (< 1 s) einen FX-Wert ändern — muss stehen bleiben.
+2. Mehrere Werte schnell nacheinander ändern / Slider ziehen — kein Rücksprung.
+3. Mic-Sensitivity im AUDIO-Tab setzen → im Programmer-Tab derselbe Wert; HW MIC toggeln und
+   Seite neu laden → Wert bleibt.
+4. CLEAR PROGRAMMER: alle FX aus, Kanäle 0, nichts springt beim nächsten Poll zurück.
+5. Wert ändern → anderen Preset antippen → Warnung erscheint; direkt nach einem Recall erneut
+   antippen → keine Warnung.
+
+Passt alles: `prog-sync-port` nach `future` mergen. Der alte Worktree `prog-sync-fix-2`
+(Stand vor dem Port) kann dann weg.
+
+## Vorheriger Stand (2026-09-04, weiterhin gültig)
+
+Branch `worktree-audio-panel`, committet und auf `origin/future` gepusht (am 2026-11-18 als
+`2224c5b` nachgeholt — die Arbeit lag bis dahin uncommittet im Worktree, lief aber schon auf dem
+Gerät). Am 2026-11-18 per OTA geflasht: `bld Nov 18 2026 22:42:23`.
 
 ## Was gilt
 

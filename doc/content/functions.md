@@ -327,7 +327,9 @@ frontend uses to decide when a poll response is fresh enough to be allowed to ov
 optimistic local value (`pendingGenRef`/`isLocalDirty` in `data/index.html`). The FX routes
 (`/fx`, `/modfx`, `/colfx`, `/sgobfx`, `/rgobfx`, `/chaser`) additionally *check* an incoming `g`
 argument via `isStaleWrite()` and reject writes built before the most recent `/recall`, replying
-with the current generation unchanged. As of 2026-08-25 `/set_all`, `/beat`, `/masterdim`,
+with the current generation unchanged **plus a trailing `s`** (e.g. `"42s"`, since 2026-11-18) —
+`parseInt` still reads the generation, and the frontend re-polls `/api/get_dmx` immediately on
+seeing the marker instead of leaving the rejected value on screen until the next 2s poll. As of 2026-08-25 `/set_all`, `/beat`, `/masterdim`,
 `/smooth`, `/trans`, `/autofade`, `/unmute` and `/hwaudio` return the generation too; they
 previously replied `server.send(200, "OK")`, which is the two-argument overload and therefore sent
 `"OK"` as the *Content-Type* with an empty body. Routes still replying a bare `"OK"` (`/bump`,
@@ -337,7 +339,7 @@ previously replied `server.send(200, "OK")`, which is the two-argument overload 
 |---|---|---|---|
 | `/` | GET | — | Serves the SPA (`index.html` from LittleFS), or the setup-mode upload page if no GUI has been installed yet. |
 | `/upload_gui` | POST (multipart) | `update` (file) | Uploads a new `index.html` to LittleFS (first-boot provisioning path); reboots the device. |
-| `/api/get_dmx` | GET | — | Full state snapshot as JSON: all 18 DMX channel values, pan/tilt (`cp`/`ct`), BPM, active preset, chaser-active flag, preset names, dimmer-smoothing/fade/master-brightness/dip/hw-audio state, and every FX engine's complete parameter set. Polled by the frontend every ~2s. Also includes `op`/`ot`: fixture 0's actual live Movement FX output (post-`getValues()`, what really goes out over DMX) — unlike `cp`/`ct`, which are only the pattern's *center* and stay static while an FX animates around them. Debug fields, added 2026-08-20 to diagnose the tilt fold defect (see `MovementEngine::getValues()` above) by sampling the real output trajectory instead of guessing at it. |
+| `/api/get_dmx` | GET | — | Full state snapshot as JSON: all 18 DMX channel values, pan/tilt (`cp`/`ct`), BPM, active preset, chaser-active flag, preset names, dimmer-smoothing/fade/master-brightness/dip/hw-audio state (`hwA`, plus `hS` = `hwAudioSensitivity` since 2026-11-18 — the frontend's single source for the mic-sensitivity sliders, which no longer use localStorage), and every FX engine's complete parameter set. Polled by the frontend every ~2s. Also includes `op`/`ot`: fixture 0's actual live Movement FX output (post-`getValues()`, what really goes out over DMX) — unlike `cp`/`ct`, which are only the pattern's *center* and stay static while an FX animates around them. Debug fields, added 2026-08-20 to diagnose the tilt fold defect (see `MovementEngine::getValues()` above) by sampling the real output trajectory instead of guessing at it. |
 | `/api/state` | GET | — | Compact live state as JSON: firmware version (`fw`, from `FW_VERSION`), active preset, BPM, chaser-active, hw-audio-enabled, fade-out flag, one-shot audio trigger flags (`trB`/`trM`/`trH`, cleared after read), preset names, and `bld` — the firmware's build date and time (`__DATE__ " " __TIME__`). `bld` exists so that "did the flash actually take" is a lookup rather than a guess: file size is not proof, and a failed OTA has been mistaken for a successful one. Polled by the frontend every ~500ms. |
 | `/api/patch` | GET | — | JSON array of the current fixture patch (`addr`, pan/tilt invert, phase) for each patched fixture. |
 | `/save` | GET | `slot` (1–10), `n` (preset name) | Snapshots the current live DMX channels + all FX engine parameters into `chaserScenes[slot-1]` and persists it (plus `n` as the preset name) to NVS namespace `"sc<slot>"`. Reloads all scenes afterward. |

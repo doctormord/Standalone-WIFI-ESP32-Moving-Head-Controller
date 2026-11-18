@@ -14,6 +14,9 @@ static File fsUploadFile;
 // applied, silently re-impose the PREVIOUS preset's FX state over the just-recalled one.
 // Missing "g" (a route that doesn't send it) is treated as not stale, so this only guards
 // routes that opt in.
+// A rejected write replies "<gen>s" instead of "<gen>": parseInt() on the frontend still reads the
+// generation, and the trailing "s" tells it the edit was dropped, so it re-polls straight away
+// rather than leaving the control showing a value the device never took until the next 2s poll.
 bool isStaleWrite() {
   return server.hasArg("g") && (uint32_t)server.arg("g").toInt() < lastRecallGen;
 }
@@ -259,7 +262,7 @@ void setupAPI() {
     json += "\"pn\":["; for(int i=0; i<10; i++) { json += "\"" + presetNames[i] + "\"" + (i<9?",":""); } json += "],";
     json += "\"dSm\":" + String(dimSmoothVal) + ",\"fO\":" + String(fadeStateOut ? 1 : 0) + ",";
     json += "\"mB\":" + String(masterBrightness) + ",";
-    json += "\"dip\":" + String(dipToBlack ? 1 : 0) + ",\"hwA\":" + String(hwAudioEnabled?1:0) + ",";
+    json += "\"dip\":" + String(dipToBlack ? 1 : 0) + ",\"hwA\":" + String(hwAudioEnabled?1:0) + ",\"hS\":" + String(hwAudioSensitivity) + ",";
 
     json += "\"fA\":" + String(moveFX.active?1:0) + ",\"fT\":" + String(moveFX.type) + ",\"fR\":" + String(moveFX.rot) + ",\"fTr\":" + String(moveFX.trigger) + ",\"fSy\":" + String(moveFX.sync) + ",\"fSS\":" + String(moveFX.spdSt) + ",\"fSE\":" + String(moveFX.spdEn) + ",\"fZS\":" + String(moveFX.szSt) + ",\"fZE\":" + String(moveFX.szEn) + ",\"fMM\":" + String(moveFX.modMo) + ",\"fMC\":" + String(moveFX.modCu) + ",\"fMS\":" + String(moveFX.modSp) + "," + "\"fBn\":" + String(moveFX.burst) + ",\"fRp\":" + String(moveFX.rasterSync) + ",\"fSg\":" + String(moveFX.spacingSync) + ",\"fGeo\":" + String(moveFX.geoTrue?1:0) + ",\"fGeoRef\":" + String(moveFX.geoTiltRef) + ",";
     json += "\"dA\":" + String(dimFX.active?1:0) + ",\"dSt\":" + String(dimFX.startVal) + ",\"dEn\":" + String(dimFX.endVal) + ",\"dMo\":" + String(dimFX.mode) + ",\"dCu\":" + String(dimFX.curve) + ",\"dSp\":" + String(dimFX.speed) + ",\"dTr\":" + String(dimFX.trigger) + ",\"dSy\":" + String(dimFX.sync) + "," + "\"dBn\":" + String(dimFX.burst) + ",\"dRp\":" + String(dimFX.rasterSync) + ",\"dSg\":" + String(dimFX.spacingSync) + ",";
@@ -510,7 +513,7 @@ void setupAPI() {
   });
 
   server.on("/fx", []() {
-      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen) + "s"); return; }
       bool startFresh = !moveFX.active && (server.arg("a") == "1");
       moveFX.active = (server.arg("a") == "1");
       moveFX.type = server.arg("t").toInt(); moveFX.rot = server.arg("r").toFloat();
@@ -545,7 +548,7 @@ void setupAPI() {
   });
 
   server.on("/modfx", []() {
-      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen) + "s"); return; }
       String pfx = server.arg("pfx");
       Modulator* m = nullptr;
       int ch = -1; // CH9/CH11 for gr/pr -- dim restores via dimSmoothTarget instead, see below
@@ -586,7 +589,7 @@ void setupAPI() {
     // chaser group was the one FX group with no protection at all -- it bumped the generation but
     // never checked one, and the frontend sent no "g" either, so an echo still in flight from
     // before a recall could land after it and stomp the freshly recalled chaser config.
-    if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
+    if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen) + "s"); return; }
     bool wasActive = chaserActive;
     bool startFresh = !chaserActive && (server.arg("act") == "1");
     chaserActive = (server.arg("act") == "1");
@@ -796,7 +799,7 @@ void setupAPI() {
   });
 
   server.on("/colfx", []() {
-      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen) + "s"); return; }
       colFX.active = (server.arg("a") == "1"); colFX.startVal = constrain(server.arg("st").toInt(), 0, 19); colFX.endVal = constrain(server.arg("en").toInt(), 0, 19);
       if (colFX.startVal > colFX.endVal) { int t = colFX.startVal; colFX.startVal = colFX.endVal; colFX.endVal = t; }
       colFX.holdTime = server.arg("ho").toInt(); colFX.trigger = server.arg("tr").toInt(); colFX.sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1);
@@ -809,7 +812,7 @@ void setupAPI() {
   });
 
   server.on("/sgobfx", []() {
-      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen) + "s"); return; }
       sgobFX.active = (server.arg("a") == "1"); sgobFX.startVal = constrain(server.arg("st").toInt(), 0, 9); sgobFX.endVal = constrain(server.arg("en").toInt(), 0, 9);
       if (sgobFX.startVal > sgobFX.endVal) { int t = sgobFX.startVal; sgobFX.startVal = sgobFX.endVal; sgobFX.endVal = t; }
       sgobFX.holdTime = server.arg("ho").toInt(); sgobFX.trigger = server.arg("tr").toInt(); sgobFX.sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1); sgobFX.scratch = (server.arg("sc") == "1");
@@ -827,7 +830,7 @@ void setupAPI() {
   });
 
   server.on("/rgobfx", []() {
-      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen)); return; }
+      if (isStaleWrite()) { server.send(200, "text/plain", String(stateGen) + "s"); return; }
       rgobFX.active = (server.arg("a") == "1"); rgobFX.startVal = constrain(server.arg("st").toInt(), 0, 6); rgobFX.endVal = constrain(server.arg("en").toInt(), 0, 6);
       if (rgobFX.startVal > rgobFX.endVal) { int t = rgobFX.startVal; rgobFX.startVal = rgobFX.endVal; rgobFX.endVal = t; }
       rgobFX.holdTime = server.arg("ho").toInt(); rgobFX.trigger = server.arg("tr").toInt(); rgobFX.sync = constrain(server.arg("sy").toInt(), 0, SYNC_BEATS_COUNT - 1); rgobFX.scratch = (server.arg("sc") == "1");

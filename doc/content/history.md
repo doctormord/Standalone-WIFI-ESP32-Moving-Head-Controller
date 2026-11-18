@@ -6695,3 +6695,42 @@ mehr gelesen -- die Toleranz gegen fehlende Felder gilt in beide Richtungen.
 Ein Wert gehoert dorthin, wo sein **Geltungsbereich** liegt, nicht dorthin, wo er zufaellig
 gebraucht wird. Beim Einbauen lag es nahe, alles Neue in die Szene zu legen, weil das gerade der
 bequeme Weg war. Die richtige Frage ist: aendert sich das mit dem Look oder mit dem Aufbau?
+
+## 2026-11-18 — Aufräumen, und die Programmer-Sync-Fixes auf den aktuellen Stand portiert
+
+### Bestandsaufnahme
+Das Gerät lief **neuer als GitHub**: Die Session vom 2026-09-04 (echte Kreise, Rückfrage vor dem
+Wiederherstellen, Level als Rig-Einstellung) hatte geflasht, aber nie committet. Als `2224c5b`
+nach `future` gepusht und die Firmware per OTA nachgezogen (`bld Nov 18 2026 22:42:23`; erster
+Versuch lief in den espota-Timeout und änderte nichts, zweiter mit `-t 60` ging durch).
+Dateisystem bewusst nicht geflasht, um `/scenes.json` nicht zu riskieren — es fehlt dem Gerät nur
+ein Hilfetext unter SET LEVEL.
+
+GitHub verweigerte den Push zunächst wegen E-Mail-Datenschutz; der Commit-Autor ist seitdem die
+Noreply-Adresse (`19574122+doctormord@users.noreply.github.com`, als Repo-Git-Config gesetzt).
+Aufgeräumt: Worktree/Branch `worktree-audio-panel` und Remote-Branch
+`worktree-movement-sync-ui` (beide vollständig in `future` enthalten). `main` unverändert.
+
+### Port der Sync-Fixes vom 2026-10-17
+Die Fixes vom 2026-10-17 lagen uncommittet auf einem 44 Commits alten Stand und ließen sich nicht
+mehr direkt anwenden (UI nach `ui/index.html` verschoben). Gegen `future` geprüft: **fünf von
+sechs weiterhin nötig**, der Zielcode jeweils unverändert; nur der SYNC-Button war inzwischen
+unabhängig gefixt (`da9c8e7`). Von Hand auf Branch `prog-sync-port` übertragen:
+
+1. Sofortiger Poll nach `/recall`; abgelehnte Writes antworten `"<gen>s"` und lösen einen
+   Re-Poll aus (statt ~2 s lang verworfene FX-Edits, die der nächste Poll zurücksetzte).
+2. `armSeqRef`: Antwort/Timer eines älteren Writes gibt das Gate eines neueren nicht mehr frei.
+   Zusätzlich `savePreset` korrigiert: holte sein `markPending` erst in der Antwort statt beim
+   Senden.
+3. Mic-Sensitivity vom Gerät gelesen (`hS` in `/api/get_dmx`), kein `localStorage` mehr; der
+   Slider sendet auch bei ausgeschaltetem Mic.
+4. CLEAR PROGRAMMER über `killAllFx()` und den gegateten Kanalpfad.
+5. „Ungespeicherte Änderungen"-Baseline erst, wenn der Recall gemergt ist.
+
+Beim Durchsehen des Ports selbst einen Fehler gefunden, den kein Check gefangen hätte: der
+Effect, der nach dem Recall die Unterdrückung wieder aufhebt, fehlte — die Warnung wäre nach dem
+ersten Recall dauerhaft stumm geblieben. Ergänzt; danach die hinzugefügten Zeilen gegen das
+Original verglichen, jede Abweichung erklärt.
+
+Geprüft: `check_ui.sh` (inkl. Hook-Check), `pio run` (79,8 %), `buildfs`. **Am Gerät nicht
+getestet** — Testplan in `handoff.md`.
