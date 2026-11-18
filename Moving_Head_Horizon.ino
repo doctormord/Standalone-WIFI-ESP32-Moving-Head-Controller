@@ -244,6 +244,12 @@ struct SceneData {
   bool rgSc = false;
   int fBn = 1, fRp = -1, dBn = 1, dRp = -1, grBn = 1, grRp = -1, prBn = 1, prRp = -1;
   int fSg = -1, dSg = -1, grSg = -1, prSg = -1;
+  // Whether this scene uses the true-geometry correction. Off by default: it changes how every
+  // existing show looks. The correction's tilt REFERENCE is deliberately NOT here -- it
+  // describes how the fixture is rigged, not what the scene looks like, so it lives in the
+  // global settings. Storing it per scene meant recalling an older preset silently undid the
+  // calibration.
+  bool fGeo = false;
 };
 
 static SceneData chaserScenes[10]; 
@@ -306,7 +312,7 @@ int jogBend = 0;
   X(cEn) X(cTr) X(cSy) X(cHo) X(sgSt) X(sgEn) X(sgTr) X(sgSy) \
   X(sgHo) X(sgSc) X(rgSt) X(rgEn) X(rgTr) X(rgSy) X(rgHo) X(rgSc) \
   X(fBn) X(fRp) X(dBn) X(dRp) X(grBn) X(grRp) X(prBn) X(prRp) \
-  X(fSg) X(dSg) X(grSg) X(prSg)
+  X(fSg) X(dSg) X(grSg) X(prSg) X(fGeo)
 
 const char* SCENES_PATH = "/scenes.json";
 const char* SCENES_TMP  = "/scenes.tmp";
@@ -406,6 +412,7 @@ void triggerSceneFX(int slot) {
   pRotFX.rasterSync = chaserScenes[slot].prRp;
   moveFX.burst = chaserScenes[slot].fBn > 0 ? chaserScenes[slot].fBn : 1;
   moveFX.rasterSync = chaserScenes[slot].fRp;
+  moveFX.geoTrue = chaserScenes[slot].fGeo;   // the reference is global, see SceneData
   dimFX.spacingSync = chaserScenes[slot].dSg;  gRotFX.spacingSync = chaserScenes[slot].grSg;
   pRotFX.spacingSync = chaserScenes[slot].prSg; moveFX.spacingSync = chaserScenes[slot].fSg;
   if(dimFX.active) dimFX.start(); else dimFX.stop();
@@ -782,6 +789,7 @@ void setup() {
   Serial.begin(115200); if(!LittleFS.begin(true)) Serial.println("FS Error");
   prefs.begin("sys", true); String sta_ssid = prefs.getString("ssid", ""), sta_pass = prefs.getString("pass", ""); 
   dimSmoothVal = constrain(prefs.getInt("ds", 0), 0, 100); masterBrightness = prefs.getFloat("mdim", 1.0f); dipToBlack = prefs.getBool("dip", false);
+  moveFX.geoTiltRef = constrain(prefs.getInt("g_ref", 32767), 0, 65535);   // rig calibration, not per scene
   joyMaxSpeed = prefs.getInt("j_msp", 2000); ptMaxRatePan = prefs.getInt("j_rtp", 40000); ptMaxRateTilt = prefs.getInt("j_rtt", 40000); joyCurve = prefs.getFloat("j_crv", 1.5f); joyMomentum = prefs.getFloat("j_mom", 0.7f); joyPanRev = prefs.getBool("j_prv", false); joyTiltRev = prefs.getBool("j_trv", false); panMinLimit = prefs.getInt("j_pmi", 0); panMaxLimit = prefs.getInt("j_pma", 65535); tiltMinLimit = prefs.getInt("j_tmi", 0); tiltMaxLimit = prefs.getInt("j_tma", 65535);
   chaserStartSlot = prefs.getInt("c_st", 0); chaserEndSlot = prefs.getInt("c_en", 3); fadeTime = prefs.getInt("c_fd", 2000); holdTime = prefs.getInt("c_hd", 2000); chaserTrigger = prefs.getInt("c_tr", 0); chaserSync = prefs.getInt("c_sy", 3); chaserOrder = prefs.getInt("c_or", 0); chaserFadeTrigger = prefs.getInt("c_ftr", 0); chaserFadeSync = prefs.getInt("c_fsy", 3); prefs.end();
   // presetNames[] is populated by loadAllChaserScenes() below — no need to read it separately here first.

@@ -261,7 +261,7 @@ void setupAPI() {
     json += "\"mB\":" + String(masterBrightness) + ",";
     json += "\"dip\":" + String(dipToBlack ? 1 : 0) + ",\"hwA\":" + String(hwAudioEnabled?1:0) + ",";
 
-    json += "\"fA\":" + String(moveFX.active?1:0) + ",\"fT\":" + String(moveFX.type) + ",\"fR\":" + String(moveFX.rot) + ",\"fTr\":" + String(moveFX.trigger) + ",\"fSy\":" + String(moveFX.sync) + ",\"fSS\":" + String(moveFX.spdSt) + ",\"fSE\":" + String(moveFX.spdEn) + ",\"fZS\":" + String(moveFX.szSt) + ",\"fZE\":" + String(moveFX.szEn) + ",\"fMM\":" + String(moveFX.modMo) + ",\"fMC\":" + String(moveFX.modCu) + ",\"fMS\":" + String(moveFX.modSp) + "," + "\"fBn\":" + String(moveFX.burst) + ",\"fRp\":" + String(moveFX.rasterSync) + ",\"fSg\":" + String(moveFX.spacingSync) + ",";
+    json += "\"fA\":" + String(moveFX.active?1:0) + ",\"fT\":" + String(moveFX.type) + ",\"fR\":" + String(moveFX.rot) + ",\"fTr\":" + String(moveFX.trigger) + ",\"fSy\":" + String(moveFX.sync) + ",\"fSS\":" + String(moveFX.spdSt) + ",\"fSE\":" + String(moveFX.spdEn) + ",\"fZS\":" + String(moveFX.szSt) + ",\"fZE\":" + String(moveFX.szEn) + ",\"fMM\":" + String(moveFX.modMo) + ",\"fMC\":" + String(moveFX.modCu) + ",\"fMS\":" + String(moveFX.modSp) + "," + "\"fBn\":" + String(moveFX.burst) + ",\"fRp\":" + String(moveFX.rasterSync) + ",\"fSg\":" + String(moveFX.spacingSync) + ",\"fGeo\":" + String(moveFX.geoTrue?1:0) + ",\"fGeoRef\":" + String(moveFX.geoTiltRef) + ",";
     json += "\"dA\":" + String(dimFX.active?1:0) + ",\"dSt\":" + String(dimFX.startVal) + ",\"dEn\":" + String(dimFX.endVal) + ",\"dMo\":" + String(dimFX.mode) + ",\"dCu\":" + String(dimFX.curve) + ",\"dSp\":" + String(dimFX.speed) + ",\"dTr\":" + String(dimFX.trigger) + ",\"dSy\":" + String(dimFX.sync) + "," + "\"dBn\":" + String(dimFX.burst) + ",\"dRp\":" + String(dimFX.rasterSync) + ",\"dSg\":" + String(dimFX.spacingSync) + ",";
     json += "\"grA\":" + String(gRotFX.active?1:0) + ",\"grSt\":" + String(gRotFX.startVal) + ",\"grEn\":" + String(gRotFX.endVal) + ",\"grMo\":" + String(gRotFX.mode) + ",\"grCu\":" + String(gRotFX.curve) + ",\"grSp\":" + String(gRotFX.speed) + ",\"grTr\":" + String(gRotFX.trigger) + ",\"grSy\":" + String(gRotFX.sync) + "," + "\"grBn\":" + String(gRotFX.burst) + ",\"grRp\":" + String(gRotFX.rasterSync) + ",\"grSg\":" + String(gRotFX.spacingSync) + ",";
     json += "\"prA\":" + String(pRotFX.active?1:0) + ",\"prSt\":" + String(pRotFX.startVal) + ",\"prEn\":" + String(pRotFX.endVal) + ",\"prMo\":" + String(pRotFX.mode) + ",\"prCu\":" + String(pRotFX.curve) + ",\"prSp\":" + String(pRotFX.speed) + ",\"prTr\":" + String(pRotFX.trigger) + ",\"prSy\":" + String(pRotFX.sync) + "," + "\"prBn\":" + String(pRotFX.burst) + ",\"prRp\":" + String(pRotFX.rasterSync) + ",\"prSg\":" + String(pRotFX.spacingSync) + ",";
@@ -329,6 +329,7 @@ void setupAPI() {
     sd.grBn = gRotFX.burst; sd.grRp = gRotFX.rasterSync;
     sd.prBn = pRotFX.burst; sd.prRp = pRotFX.rasterSync;
     sd.fBn = moveFX.burst;  sd.fRp = moveFX.rasterSync;
+    sd.fGeo = moveFX.geoTrue;
     sd.dSg = dimFX.spacingSync; sd.grSg = gRotFX.spacingSync;
     sd.prSg = pRotFX.spacingSync; sd.fSg = moveFX.spacingSync;
 
@@ -516,6 +517,20 @@ void setupAPI() {
       if (server.hasArg("bn")) moveFX.burst = constrain(server.arg("bn").toInt(), 1, 8);
       if (server.hasArg("rp")) moveFX.rasterSync = constrain(server.arg("rp").toInt(), -1, MOVE_SYNC_BEATS_COUNT - 1);
       if (server.hasArg("sg")) moveFX.spacingSync = constrain(server.arg("sg").toInt(), -1, MOVE_SYNC_BEATS_COUNT - 1);
+      // True geometry: corrects the pattern for the 2:1 pan/tilt aspect and for the way a
+      // pan sweep shrinks with elevation. `gref` is the tilt value where the beam stands
+      // perpendicular to the pan axis, which depends on the rig and is therefore tunable.
+      if (server.hasArg("geo"))  moveFX.geoTrue = (server.arg("geo") == "1");
+      if (server.hasArg("gref")) {
+        int gr = constrain(server.arg("gref").toInt(), 0, 65535);
+        if (gr != moveFX.geoTiltRef) {
+          moveFX.geoTiltRef = gr;
+          // Persisted globally, NOT in the scene: it says how the fixture hangs, which is the
+          // same for every scene on this rig. Written only on an actual change, because /fx
+          // is sent on every edit to any movement parameter.
+          prefs.begin("sys", false); prefs.putInt("g_ref", gr); prefs.end();
+        }
+      }
       // Clamped to 1 (not 0): a 0% size collapses the movement pattern's amplitude to a single point
       // (fixture sits static at dead center) with the FX still reporting "running" -- looks identical
       // to a stuck/broken FX. Frontend sliders already enforce min=1, this is defense-in-depth for

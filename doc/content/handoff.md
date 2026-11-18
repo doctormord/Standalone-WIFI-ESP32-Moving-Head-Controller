@@ -52,6 +52,12 @@ Laden werden beide aus dieser einen Liste erzeugt und können nicht auseinanderl
 Im **PATCH-Tab** gibt es dafür zwei Knöpfe („DOWNLOAD SCENES" / „RESTORE FROM FILE"); die
 Endpunkte darunter sind dieselben.
 
+**Wiederherstellen ersetzt alle zehn Slots**, es fuehrt nicht zusammen -- auch die, die in der
+Sicherung leer sind. Was seit der Sicherung programmiert wurde, ist danach weg. Am 2026-09-04
+durchgespielt und bestaetigt. Deshalb fragt der RESTORE-Knopf seit demselben Tag
+nach und zeigt dabei die Slot-Namen aus der Datei **und** die auf dem Geraet, die verloren
+gehen -- daran erkennt man die falsche Sicherung, bevor sie wirkt.
+
 Der Upload wird erst **geparst** und dann eingetauscht; eine abgeschnittene oder verfremdete
 Datei wird mit 400 und Begründung abgewiesen, ohne die laufenden Szenen anzufassen. Geprüft mit
 abgeschnittenem JSON, Nicht-JSON und JSON ohne `s`-Array.
@@ -109,6 +115,31 @@ reproduzieren — sonst fallen gespeicherte Szenen stillschweigend durch.
 
 **Und vor jedem neuen Parameter: die Checkliste in `CLAUDE.md` lesen.** Elf Stellen, jede
 Auslassung scheitert lautlos. Die Liste hat sich beim zweiten Parameter desselben Tages bewährt.
+
+## Movement: echte Kreise als Schalter
+
+`Shape · as-is` gegen `Shape · true circles` im Movement-Panel, Standard ist unveraendert.
+
+Der Grund: Pan deckt 540 Grad in denselben Schritten ab, in denen Tilt 270 abdeckt -- ein Kreis
+ist damit eine 2:1-Ellipse -- und eine Pan-Bewegung schrumpft zusaetzlich mit cos(Neigung), was
+die Figur unten breiter macht als oben. Am Ausgang gemessen: 2,00:1 mit 25 Prozent
+Radiusstreuung wird zu 1,00:1 mit 6 Prozent.
+
+**Die korrigierte Figur ist schmaler, nicht hoeher** -- der Pan-Weg wird halbiert, damit er zum
+Tilt-Weg passt. Fuer die alte Breite `Size` aufdrehen.
+
+**`SET LEVEL` einmal druecken**, wenn der Kopf waagerecht steht: die Korrektur muss wissen, wo
+der Strahl senkrecht zur Pan-Achse steht, und das haengt vom Rig ab. Ohne das rechnet sie gegen
+die Mitte des Tilt-Bereichs, was nur zufaellig stimmt.
+
+Bei 270 Grad Tilt steht der Strahl auf **beiden Seiten** einmal waagerecht, und **beide taugen
+als Referenz** -- die zwei Stellungen liegen 180 Grad auseinander, dort kippt nur das Vorzeichen
+des Kosinus, und die Korrektur nimmt den Betrag. Bis auf Rechenrauschen (1e-15) identisch
+nachgerechnet. Nimm also die, die sich leichter genau ausrichten laesst.
+
+Der Level ist eine **Rig-Einstellung, kein Szenenwert** -- er liegt global in `sys` unter
+`g_ref`, nicht in `SceneData`. Der Schalter `fGeo` dagegen schon: ob ein Look echte Kreise
+benutzt, gehoert zur Szene. Einmal kalibrieren, alle Presets nutzen es.
 
 ## Tappen: was man wissen sollte
 

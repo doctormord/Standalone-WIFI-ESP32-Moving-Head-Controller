@@ -1311,6 +1311,42 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
         <div style={{ marginTop: 8, marginBottom: 6, fontSize: 9.5, color: FX_HUE.movement, letterSpacing: 1.2, fontWeight: 700, textTransform: 'uppercase' }}>Size + Speed modulator</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}><Dropdown value={state.fxMode} onChange={(v) => setState((s) => ({ ...s, fxMode: parseInt(v) }))} options={MOD_MODES} accent={accent} dense /><Dropdown value={state.fxCurve} onChange={(v) => setState((s) => ({ ...s, fxCurve: parseInt(v) }))} options={MOVE_CURVES} accent={accent} dense /></div>
         <TriggerBlock trigger={state.fxTr} setTrigger={(v) => setState((s) => ({ ...s, fxTr: v }))} sync={state.fxSy} setSync={(v) => setState((s) => ({ ...s, fxSy: v }))} hold={state.fxMS} setHold={(v) => setState((s) => ({ ...s, fxMS: v }))} holdLabel="Modulation speed" accent={accent} syncOptions={MOVE_SYNCS}  burst={state.fxBn} setBurst={(v) => setState((s) => ({ ...s, fxBn: v }))} raster={state.fxRp} setRaster={(v) => setState((s) => ({ ...s, fxRp: v }))} length={state.fxSg} setLength={(v) => setState((s) => ({ ...s, fxSg: v }))} />
+        {/* The pattern is built in a square space and written straight into pan and tilt, which
+            are not square: pan covers 540 degrees where tilt covers 270, so a "circle" is a 2:1
+            ellipse -- and a pan sweep additionally shrinks with elevation, which makes the figure
+            wider at the bottom than the top. "true circles" corrects both. Off by default because
+            every show programmed so far was built against the uncorrected shape. */}
+        <div style={{ display: 'grid', gridTemplateColumns: state.fxGeo ? '1.4fr 1fr' : '1fr', gap: 6, marginTop: 6 }}>
+          <Dropdown value={state.fxGeo ? 1 : 0} onChange={(v) => setState((s) => ({ ...s, fxGeo: parseInt(v) === 1 }))}
+                    options={[[0, 'Shape · as-is'], [1, 'Shape · true circles']]} accent={FX_HUE.movement} dense />
+          {state.fxGeo ? (
+            <button onPointerDown={(e) => {
+                      pressFlash(e, 'rgba(20,184,166,0.55)');
+                      // The correction needs to know where the beam stands level, and that
+                      // depends on the rig. Aim the head level by eye and press this, rather
+                      // than guessing a raw number. Reading the live tilt back from the device
+                      // rather than from local state, because the joystick moves it directly.
+                      fetch('/api/get_dmx').then((r) => r.json()).then((d) => {
+                        const t16 = ((d['4'] || 0) << 8) | (d['16'] || 0);
+                        setState((s) => ({ ...s, fxGeoRef: t16 }));
+                      }).catch(() => {});
+                    }}
+                    title="Aim the head level, then press: the current tilt becomes the reference the correction measures elevation from."
+                    style={{ padding: '8px 0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.16)', borderRadius: 8, color: 'rgba(255,255,255,0.72)', fontWeight: 700, fontSize: 10, cursor: 'pointer', letterSpacing: 0.5, transition: 'background 140ms, transform 140ms' }}>
+              SET LEVEL
+            </button>
+          ) : null}
+        </div>
+        {state.fxGeo ? (
+          <div style={{ marginTop: 5, fontSize: 10, lineHeight: 1.5, color: 'rgba(255,255,255,0.45)' }}>
+            Point the head <b>level — beam horizontal</b>, then press SET LEVEL. The correction
+            measures elevation from there. The beam passes through horizontal on both sides of
+            the tilt range and <b>either one works</b> — take whichever is easier to aim. This is
+            a <b>rig setting, not part of the scene</b>: set it once for how the fixture hangs and
+            every preset uses it. Currently level at
+            tilt <b style={{ fontFamily: '"JetBrains Mono", monospace' }}>{state.fxGeoRef}</b>.
+          </div>
+        ) : null}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}><LabeledSlider label="Speed Start" value={state.fxSS} onChange={(v) => setState((s) => ({ ...s, fxSS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Speed End" value={state.fxSE} onChange={(v) => setState((s) => ({ ...s, fxSE: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size Start" value={state.fxZS} onChange={(v) => setState((s) => ({ ...s, fxZS: v }))} min={1} max={100} unit="%" accent={accent} compact /><LabeledSlider label="Size End" value={state.fxZE} onChange={(v) => setState((s) => ({ ...s, fxZE: v }))} min={1} max={100} unit="%" accent={accent} compact /></div>
         <FxButton running={state.fxRunning} label="MOVEMENT FX" onClick={() => setState((s) => ({ ...s, fxRunning: !s.fxRunning }))} />
       </Accordion>
@@ -1689,17 +1725,41 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
     // backup is literally that file -- no export format to keep in step with the firmware.
     const scenesFileRef = useRef(null);
     const [sceneMsg, setSceneMsg] = useState('');
+    // Restoring REPLACES all ten slots -- verified on the device 2026-09-04, a slot that is
+    // empty in the backup ends up empty here too. So it asks first, and the question names both
+    // sides: what the chosen file contains and what is about to be lost. Picking the wrong
+    // backup is the likely mistake, and the slot names are what tells them apart.
     const restoreScenes = useCallback((file) => {
       if (!file) return;
-      setSceneMsg('restoring…');
-      const fd = new FormData();
-      fd.append('file', file, 'scenes.json');
-      // The device parses the upload before swapping it in, so a bad file comes back as 400
-      // with a reason rather than replacing a working show.
-      fetch('/api/scenes', { method: 'POST', body: fd })
-        .then((r) => r.text().then((t) => ({ ok: r.ok, t })))
-        .then(({ ok, t }) => setSceneMsg(ok ? 'restored — reload the page to see the names' : ('rejected: ' + t)))
-        .catch((e) => setSceneMsg('failed: ' + e));
+      setSceneMsg('reading…');
+      const reader = new FileReader();
+      reader.onerror = () => setSceneMsg('could not read that file');
+      reader.onload = () => {
+        let doc;
+        try { doc = JSON.parse(reader.result); } catch (e) { setSceneMsg('not a scenes file: ' + e.message); return; }
+        if (!doc || !Array.isArray(doc.s)) { setSceneMsg('not a scenes file: no "s" array'); return; }
+        const incoming = doc.s.map((x, i) => (x && x.n) ? (i + 1) + ' ' + x.n : null).filter(Boolean);
+        fetch('/api/state').then((r) => r.json()).then((st) => {
+          const current = (st.pn || []).map((n, i) => n ? (i + 1) + ' ' + n : null).filter(Boolean);
+          const msg = 'Restore will REPLACE all ten slots.\n\n'
+            + 'From the file:\n  ' + (incoming.length ? incoming.join('\n  ') : '(no named slots)')
+            + '\n\nOn the device now, and about to be lost:\n  '
+            + (current.length ? current.join('\n  ') : '(no named slots)')
+            + '\n\nDownload the current scenes first if you have not.';
+          if (!window.confirm(msg)) { setSceneMsg('cancelled'); return; }
+          setSceneMsg('restoring…');
+          const fd = new FormData();
+          fd.append('file', file, 'scenes.json');
+          // The device parses the upload again before swapping it in, so a file that survived
+          // the check above but is damaged further in still comes back as 400 with a reason
+          // rather than replacing a working show.
+          fetch('/api/scenes', { method: 'POST', body: fd })
+            .then((r) => r.text().then((t) => ({ ok: r.ok, t })))
+            .then(({ ok, t }) => setSceneMsg(ok ? 'restored — reload the page to see the names' : ('rejected: ' + t)))
+            .catch((e) => setSceneMsg('failed: ' + e));
+        }).catch((e) => setSceneMsg('could not read the current scenes: ' + e));
+      };
+      reader.readAsText(file);
     }, []);
 
     useEffect(() => { fetch('/api/patch').then(r => r.json()).then(d => { if (d && d.length) setFixtures(d); }).catch(() => {}); }, []);
@@ -1763,8 +1823,10 @@ window.confirmDialog = (message, opts = {}) => new Promise((resolve) => {
           <div style={colStyle}>
             <div style={labelStyle}>Scenes · backup</div>
             <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.45)', lineHeight: 1.6, marginBottom: 10 }}>
-              All ten preset and chaser slots, as one file. Keep it before reprogramming a show —
-              restoring puts every slot back exactly as it was.
+              All ten preset and chaser slots, as one file. Keep it before reprogramming a show,
+              and before flashing the filesystem — that wipes the scenes and nothing else can
+              rebuild them. <b>Restoring replaces all ten slots</b>, so anything programmed since
+              the backup is lost, not merged.
             </div>
             <a href="/api/scenes" download="scenes.json" style={{ display: 'block', textAlign: 'center', padding: '10px 0', marginBottom: 8, background: 'rgba(34,197,94,0.16)', border: '1px solid rgba(34,197,94,0.4)', borderRadius: 9, color: '#4ade80', fontWeight: 700, fontSize: 11.5, textDecoration: 'none', letterSpacing: 0.6 }}>
               ↓ DOWNLOAD SCENES
@@ -2232,7 +2294,7 @@ const VALID_TABS = ['LIVE', 'FOLLOWSPOT', 'PROGRAMMER', 'AUDIO', 'PATCH'];
       joySpeed: 2000, joyCurve: 20, joyMomentum: 50, panRev: false, tiltRev: false, panMin: 0, panMax: 255, tiltMin: 0, tiltMax: 255,
       presetNames: Array(10).fill(''), presetActive: null, presetSaveSlot: 1, presetSaveName: '',
       chaserTrigger: 0, chaserSync: 3, chaserHold: 2000, chaserFadeMode: 0, chaserFade: 2000, chaserFadeSync: 3, chaserOrder: 0, chaserFrom: 0, chaserTo: 3, showRunning: false, transMode: 0,
-      fxRunning: false, fxType: 1, fxRot: 0, fxMode: 0, fxCurve: 3, fxMS: 1000, fxSS: 10, fxSE: 10, fxZS: 10, fxZE: 10, fxTr: 0, fxSy: 3, fxBn: 1, fxRp: -1, fxSg: -1,
+      fxRunning: false, fxType: 1, fxRot: 0, fxMode: 0, fxCurve: 3, fxMS: 1000, fxSS: 10, fxSE: 10, fxZS: 10, fxZE: 10, fxTr: 0, fxSy: 3, fxBn: 1, fxRp: -1, fxSg: -1, fxGeo: false, fxGeoRef: 32767,
       dimFxRunning: false, dimSt: 0, dimEn: 255, dimMo: 2, dimCu: 3, dimSp: 2000, dimTr: 0, dimSy: 3, dimBn: 1, dimRp: -1, dimSg: -1,
       grFxRunning: false, grSt: 135, grEn: 190, grMo: 0, grCu: 3, grSp: 2000, grTr: 0, grSy: 3, grBn: 1, grRp: -1, grSg: -1,
       prFxRunning: false, prSt: 193, prEn: 255, prMo: 0, prCu: 3, prSp: 2000, prTr: 0, prSy: 3, prBn: 1, prRp: -1, prSg: -1,
@@ -2433,7 +2495,7 @@ const isReceiving = useRef(false);
             if (d.fA !== undefined) {
               // Running flag first (already individually gated above), then the group's parameters
               // only when no local write for that group is still pending -- see the fxDirty block.
-              next.fxRunning = fxRunning; if (!fxDirty) { next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS; next.fxBn = d.fBn ?? prev.fxBn; next.fxRp = d.fRp ?? prev.fxRp; next.fxSg = d.fSg ?? prev.fxSg; }
+              next.fxRunning = fxRunning; if (!fxDirty) { next.fxType = d.fT ?? prev.fxType; next.fxRot = d.fR ?? prev.fxRot; next.fxTr = d.fTr ?? prev.fxTr; next.fxSy = d.fSy ?? prev.fxSy; next.fxSS = d.fSS ?? prev.fxSS; next.fxSE = d.fSE ?? prev.fxSE; next.fxZS = d.fZS ?? prev.fxZS; next.fxZE = d.fZE ?? prev.fxZE; next.fxMode = d.fMM ?? prev.fxMode; next.fxCurve = d.fMC ?? prev.fxCurve; next.fxMS = d.fMS ?? prev.fxMS; next.fxBn = d.fBn ?? prev.fxBn; next.fxRp = d.fRp ?? prev.fxRp; next.fxSg = d.fSg ?? prev.fxSg; next.fxGeo = d.fGeo != null ? !!d.fGeo : prev.fxGeo; next.fxGeoRef = d.fGeoRef ?? prev.fxGeoRef; }
               next.dimFxRunning = dimFxRunning; if (!dimDirty) { next.dimSt = d.dSt ?? prev.dimSt; next.dimEn = d.dEn ?? prev.dimEn; next.dimMo = d.dMo ?? prev.dimMo; next.dimCu = d.dCu ?? prev.dimCu; next.dimSp = d.dSp ?? prev.dimSp; next.dimTr = d.dTr ?? prev.dimTr; next.dimSy = d.dSy ?? prev.dimSy; next.dimBn = d.dBn ?? prev.dimBn; next.dimRp = d.dRp ?? prev.dimRp; next.dimSg = d.dSg ?? prev.dimSg; }
               next.grFxRunning = grFxRunning; if (!grDirty) { next.grSt = d.grSt ?? prev.grSt; next.grEn = d.grEn ?? prev.grEn; next.grMo = d.grMo ?? prev.grMo; next.grCu = d.grCu ?? prev.grCu; next.grSp = d.grSp ?? prev.grSp; next.grTr = d.grTr ?? prev.grTr; next.grSy = d.grSy ?? prev.grSy; next.grBn = d.grBn ?? prev.grBn; next.grRp = d.grRp ?? prev.grRp; next.grSg = d.grSg ?? prev.grSg; }
               next.prFxRunning = prFxRunning; if (!prDirty) { next.prSt = d.prSt ?? prev.prSt; next.prEn = d.prEn ?? prev.prEn; next.prMo = d.prMo ?? prev.prMo; next.prCu = d.prCu ?? prev.prCu; next.prSp = d.prSp ?? prev.prSp; next.prTr = d.prTr ?? prev.prTr; next.prSy = d.prSy ?? prev.prSy; next.prBn = d.prBn ?? prev.prBn; next.prRp = d.prRp ?? prev.prRp; next.prSg = d.prSg ?? prev.prSg; }
@@ -2462,7 +2524,7 @@ const isReceiving = useRef(false);
               // diff below sees "nothing to send" and the edit is lost for good rather than merely
               // delayed by a cycle. Recomputing it only for clean groups keeps the original
               // purpose (a recalled preset's own config must not look like an unsent local edit).
-              if (!fxDirty) pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy, next.fxBn, next.fxRp, next.fxSg]);
+              if (!fxDirty) pr2.fxState = JSON.stringify([next.fxRunning, next.fxType, next.fxRot, next.fxMode, next.fxCurve, next.fxMS, next.fxSS, next.fxSE, next.fxZS, next.fxZE, next.fxTr, next.fxSy, next.fxBn, next.fxRp, next.fxSg, next.fxGeo, next.fxGeoRef]);
               if (!dimDirty) pr2.dimFxState = JSON.stringify([next.dimFxRunning, next.dimSt, next.dimEn, next.dimMo, next.dimCu, next.dimSp, next.dimTr, next.dimSy, next.dimBn, next.dimRp, next.dimSg]);
               if (!grDirty) pr2.grFxState = JSON.stringify([next.grFxRunning, next.grSt, next.grEn, next.grMo, next.grCu, next.grSp, next.grTr, next.grSy, next.grBn, next.grRp, next.grSg]);
               if (!prDirty) pr2.prFxState = JSON.stringify([next.prFxRunning, next.prSt, next.prEn, next.prMo, next.prCu, next.prSp, next.prTr, next.prSy, next.prBn, next.prRp, next.prSg]);
@@ -2580,8 +2642,8 @@ const isReceiving = useRef(false);
       // value back over it. Adding a parameter means touching FOUR places -- this array, the
       // URL, the poll merge, and the pr2.*State fingerprint. Missing this one cost an hour
       // on 2026-09-03 ("die werte werden immer wieder ueberschrieben auf every 1 beat").
-      syncFx('fxState', 'fxRunning', [s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy, s.fxBn, s.fxRp, s.fxSg],
-        () => `/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}&bn=${s.fxBn}&rp=${s.fxRp}&sg=${s.fxSg}&g=${lastKnownGenRef.current}`, 'fx');
+      syncFx('fxState', 'fxRunning', [s.fxRunning, s.fxType, s.fxRot, s.fxMode, s.fxCurve, s.fxMS, s.fxSS, s.fxSE, s.fxZS, s.fxZE, s.fxTr, s.fxSy, s.fxBn, s.fxRp, s.fxSg, s.fxGeo, s.fxGeoRef],
+        () => `/fx?a=${s.fxRunning?1:0}&t=${s.fxType}&r=${s.fxRot}&ss=${s.fxSS}&se=${s.fxSE}&zs=${s.fxZS}&ze=${s.fxZE}&mm=${s.fxMode}&mc=${s.fxCurve}&ms=${s.fxMS}&tr=${s.fxTr}&sy=${s.fxSy}&bn=${s.fxBn}&rp=${s.fxRp}&sg=${s.fxSg}&geo=${s.fxGeo?1:0}&gref=${s.fxGeoRef}&g=${lastKnownGenRef.current}`, 'fx');
       syncFx('dimFxState', 'dimFxRunning', [s.dimFxRunning, s.dimSt, s.dimEn, s.dimMo, s.dimCu, s.dimSp, s.dimTr, s.dimSy, s.dimBn, s.dimRp, s.dimSg],
         () => `/modfx?pfx=dim&a=${s.dimFxRunning?1:0}&st=${s.dimSt}&en=${s.dimEn}&sp=${s.dimSp}&mo=${s.dimMo}&cu=${s.dimCu}&tr=${s.dimTr}&sy=${s.dimSy}&bn=${s.dimBn}&rp=${s.dimRp}&sg=${s.dimSg}&mv=${s.dimmer}&g=${lastKnownGenRef.current}`, 'mfx_dim');
       syncFx('grFxState', 'grFxRunning', [s.grFxRunning, s.grSt, s.grEn, s.grMo, s.grCu, s.grSp, s.grTr, s.grSy, s.grBn, s.grRp, s.grSg],

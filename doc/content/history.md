@@ -6541,3 +6541,157 @@ FS-Flash waren alle Preset-Namen leer, die zuvor gezogene Sicherung hat sie voll
 zurückgebracht. Ausgelieferte Seite entpackt zu 221.032 Bytes und ist **byte-identisch mit
 `ui/index.html`**; `Content-Encoding: gzip` und `Cache-Control: no-store` stehen im Header;
 Slot 4 ruft mit denselben Werten ab wie vor dem ganzen Umbau.
+
+## 2026-09-04 (Nachtrag 2) — Szenen-Sicherung am Gerät durchgespielt
+
+Nicht die Endpunkte einzeln geprüft, sondern der Ablauf, den man im Betrieb hat.
+
+    1. Sicherung ziehen        7097 Bytes, Content-Disposition gesetzt, SHA 45f7bcb6…
+    2. Unfall bauen            Slot 4 "Wiggler" mit fremden Werten ueberschrieben, in "KAPUTT"
+                               umbenannt -- Pruefsumme aendert sich auf d4a99db0…
+    3. Wiederherstellen        Multipart-POST, genau was der RESTORE-Knopf schickt
+    4. Kontrolle               Pruefsumme wieder 45f7bcb6…, Datei BYTE-IDENTISCH,
+                               null abweichende Felder ueber alle zehn Slots
+    5. Ohne Neustart?          ja -- Slot 4 ruft sofort mit seinen sieben Originalwerten ab
+    6. Andere Slots            1, 2, 3 spielen unveraendert
+    7. Ersetzen oder mergen?   Slot 5 vorher mit "ZUSATZ" belegt, Sicherung ohne Slot 5
+                               eingespielt -> Slot 5 ist LEER. Es ersetzt.
+    8. Neustart                Datei danach byte-identisch, Slot 4 spielt korrekt
+    9. Der Ernstfall           Dateisystem geflasht -> alle Namen leer -> Sicherung
+                               eingespielt -> alle vier zurueck
+
+### Was der Durchlauf ergeben hat
+
+Der Ablauf trägt, und zwar auch im Ernstfall: nach einem Dateisystem-Flash sind die Szenen
+weg — es gibt seit dem Rückbau des NVS-Pfads nichts mehr, was sie rekonstruieren könnte — und
+die Sicherung bringt sie vollständig zurück.
+
+**Neu gelernt und nachgetragen: Wiederherstellen ist ein ERSETZEN, kein Zusammenführen.** Alle
+zehn Slots werden überschrieben, auch die, die in der Sicherung leer sind. Für eine Sicherung ist
+das die richtige Semantik, aber es heißt: was seit der Sicherung programmiert wurde, ist weg.
+Stand nirgends, steht jetzt im Panel selbst — zusammen mit dem Hinweis, vor einem
+Dateisystem-Flash zu sichern.
+
+Dass eine Datei stimmt, heißt nicht, dass das Licht stimmt: deshalb wurde nach jeder
+Wiederherstellung nicht nur die Datei verglichen, sondern auch abgerufen und die gespielten
+Werte geprüft.
+
+
+## 2026-09-04 (Nachtrag 3) -- Rueckfrage vor dem Wiederherstellen
+
+Nachgefragt, ob es vor dem Ruecksspielen eine Warnung gibt. Gab es nicht: der Knopf oeffnete den
+Dateidialog, und sobald eine Datei gewaehlt war, ging sie sofort hoch und ersetzte alle zehn
+Slots. Nach dem Durchlauf vom selben Tag, der gezeigt hat, dass Wiederherstellen **ersetzt** und
+nicht zusammenfuehrt, ist das zu scharf -- ein Fehlklick oder die falsche Datei loeschen die
+aktuelle Programmierung ohne Rueckfrage.
+
+Jetzt wird die Datei zuerst im Browser gelesen und geprueft, und dann gefragt. Die Frage nennt
+**beide Seiten**:
+
+    Restore will REPLACE all ten slots.
+
+    From the file:
+      1 Sky Moover
+      4 Wiggler
+
+    On the device now, and about to be lost:
+      1 Sky Moover
+      4 Wiggler
+      5 ZUSATZ
+
+    Download the current scenes first if you have not.
+
+Die Slot-Namen sind genau das, woran man die falsche Sicherung erkennt -- und das ist der
+wahrscheinlichere Fehler als ein versehentlicher Klick. Ungueltiges JSON oder eine Datei ohne
+`s`-Array werden schon hier abgefangen und gar nicht erst hochgeladen; die Pruefung auf dem
+Geraet bleibt trotzdem bestehen, als zweite Verteidigungslinie.
+
+**Nicht selbst geprueft:** wie sich der Dialog anfuehlt, laesst sich von hier aus nicht klicken.
+Die Logik ist gebaut, uebersetzt und ausgeliefert; der Klick gehoert dem Menschen davor.
+
+## 2026-09-04 (Nachtrag 4) -- Echte Kreise: die Bewegung auf der Kugel korrigiert
+
+Frage aus dem Chat, ob sich mit Haversine an der Bewegung etwas verbessern lasse. Ja -- und es
+sind zwei Fehler, von denen nur der zweite mit Kugelgeometrie zu tun hat.
+
+### Was schiefliegt
+
+Das Muster wird in einem quadratischen Koordinatenraum gebaut und dann direkt in Pan und Tilt
+geschrieben. Nur sind Pan und Tilt nicht quadratisch:
+
+**1. Seitenverhaeltnis, reine Arithmetik.** Pan ueberstreicht 540 Grad in denselben 65535
+Schritten, in denen Tilt 270 Grad ueberstreicht. Derselbe Versatz ist in Pan also der doppelte
+Winkel -- ein "Kreis" ist eine liegende 2:1-Ellipse, bevor irgendein Kugeleffekt auftritt.
+
+**2. Konvergenz, hier kommt Haversine ins Spiel.** Pan dreht um die Hochachse, eine Pan-Bewegung
+ueberstreicht am Himmel also nur cos(Neigung) ihres Winkels; entlang der Achse gar nichts -- das
+bekannte "Pan bewirkt fast nichts, wenn der Kopf nach unten zeigt". Und weil sich die Neigung
+WAEHREND der Figur aendert, ist sie unten breiter als oben: bei Radius 20 Grad um Neigung 45
+gemessene 73 Prozent Unterschied. Das ist der Grund, warum ein "Kreis" eher wie ein Ei wirkt.
+
+Beide Fehler heben sich bei genau 60 Grad Neigung auf. Vermutlich deshalb ist es nie aufgefallen.
+
+### Gebaut als Schalter, nicht als neuer Standard
+
+`Shape · as-is` gegen `Shape · true circles` im Movement-Panel, Standard unveraendert -- jede
+bisher programmierte Show wurde gegen die unkorrigierte Form gebaut. Korrigiert wird pro Probe,
+nicht pro Figur, denn nur das nimmt die Eiform heraus.
+
+Dazu ein zweiter Wert: der Tilt, bei dem der Strahl senkrecht zur Pan-Achse steht. Der haengt vom
+Rig ab und ist deshalb einstellbar -- aber nicht als rohe Zahl, sondern ueber einen Knopf
+`SET LEVEL`, der den aktuellen Tilt uebernimmt. Kopf waagerecht ausrichten, druecken, fertig.
+
+### Am DMX-Ausgang gemessen, nicht gerechnet
+
+Kreis, Size 25 Prozent, Mitte auf Tilt 32767, Tempo fest auf 60, je rund 360 Proben von
+`op`/`ot`, umgerechnet in Winkel am Himmel:
+
+    ohne Korrektur   Breite 135,0 Grad   Hoehe 67,5 Grad   2,00 : 1   Radiusstreuung 25 %
+    mit Korrektur    Breite  67,5 Grad   Hoehe 67,5 Grad   1,00 : 1   Radiusstreuung  6 %
+
+Die verbleibenden 6 Prozent sind Abtastrauschen plus der Anteil, den die Begrenzung nahe der
+Pan-Achse stehen laesst (dort ginge der noetige Pan-Weg gegen unendlich, und der Motor kann ihm
+ohnehin nicht folgen).
+
+**Zu erwarten und zu wissen:** die korrigierte Figur ist SCHMALER, nicht hoeher -- die Korrektur
+halbiert den Pan-Weg, damit er zum Tilt-Weg passt. Wer die alte Breite will, dreht `Size` auf.
+
+Der Umbau kostete diesmal zwei Zeilen in der Szenen-Speicherung statt der frueheren elf Stellen
+-- der erste Beleg dafuer, dass der Umbau auf geschluesseltes JSON sich rechnet.
+
+
+## 2026-09-04 (Nachtrag 5) -- Rig-Kalibrierung gehoert nicht ins Preset
+
+Nachgefragt, ob der Level-Wert im Preset gespeichert wird. Er wurde -- und das war falsch.
+
+`SET LEVEL` beschreibt, **wie das Geraet haengt**, nicht wie eine Szene aussieht. Als Feld in
+`SceneData` haette der Abruf eines aelteren Presets die Kalibrierung stillschweigend
+zurueckgesetzt: einmal kalibriert, Preset 1 gespeichert, dann Preset 2 abgerufen -- und die
+Korrektur rechnet wieder gegen die Mitte des Tilt-Bereichs.
+
+Sauber getrennt ist es jetzt so:
+
+    fGeo     (an/aus)   im Preset      -- ob DIESER Look echte Kreise benutzt, ist eine
+                                          kuenstlerische Entscheidung je Szene
+    g_ref    (Level)    in "sys"       -- Rig-Eigenschaft, fuer alle Szenen dieselbe,
+                                          geschrieben nur bei echter Aenderung
+
+Am Geraet geprueft:
+
+    Level 41000 gesetzt      fGeo=1  fGeoRef=41000
+    nach recall Slot 1       fGeo=0  fGeoRef=41000
+    nach recall Slot 4       fGeo=0  fGeoRef=41000
+    nach Neustart            fGeo=0  fGeoRef=41000
+
+Der Schalter folgt dem Preset, die Kalibrierung nicht. Der Hinweistext in der Oberflaeche sagt
+das jetzt auch: "This is a rig setting, not part of the scene."
+
+Nebenbei ein Beleg fuer das neue Szenenformat: `fGeoRef` aus `SCENE_FIELDS` zu entfernen war
+folgenlos. Die bereits geschriebenen Dateien tragen den Schluessel noch, er wird einfach nicht
+mehr gelesen -- die Toleranz gegen fehlende Felder gilt in beide Richtungen.
+
+### Und die Frage dahinter
+
+Ein Wert gehoert dorthin, wo sein **Geltungsbereich** liegt, nicht dorthin, wo er zufaellig
+gebraucht wird. Beim Einbauen lag es nahe, alles Neue in die Szene zu legen, weil das gerade der
+bequeme Weg war. Die richtige Frage ist: aendert sich das mit dem Look oder mit dem Aufbau?

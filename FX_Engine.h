@@ -272,6 +272,15 @@ public:
     // so the first call fills the cache.
     float rotCachedDeg = 1e30f;
     float rotCos = 1.0f, rotSin = 0.0f;
+    // True-geometry mode, off by default so existing shows are untouched. See the block in
+    // getValues() for what it corrects and why the default is "wrong but familiar".
+    bool geoTrue = false;
+    // The tilt value at which the beam stands perpendicular to the pan axis -- the "equator",
+    // where a pan movement sweeps its full angle. Needs to be right for the correction to be
+    // right, and it depends on how the fixture is rigged, so it is adjustable. Mid-range is the
+    // starting guess: with a symmetric 270 degree tilt range that is where a horizontal beam
+    // usually sits.
+    int geoTiltRef = 32767;
     float modPhase = 0.0f;
     float audioAnchorBeats = 0.0f;
     bool audioHitPending = false;
@@ -401,6 +410,48 @@ public:
 
         if (invP) rx = -rx;
         if (invT) ry = -ry;
+
+        // --- True geometry -------------------------------------------------------------------
+        // The pattern is built in a square coordinate space and then written straight into pan
+        // and tilt, which are not square at all. Two things are wrong with that, and this fixes
+        // both -- but only on request, because every programmed show was built against the
+        // uncorrected behaviour.
+        //
+        // 1. ASPECT. Pan covers 540 degrees in the same 65535 steps that tilt covers 270. The
+        //    same offset is therefore TWICE the angle in pan, so a "circle" is a 2:1 ellipse
+        //    lying on its side -- before any spherical effect at all.
+        //
+        // 2. CONVERGENCE. Pan turns about the vertical axis, so a pan movement sweeps only
+        //    cos(elevation) of its angle across the sky; pointing along that axis it sweeps
+        //    nothing, which is the familiar "pan does almost nothing when aimed straight down".
+        //    Since the elevation changes DURING the figure, the width changes with it -- measured
+        //    at radius 20 degrees around elevation 45, the figure is 73% wider at the bottom than
+        //    at the top. That is what makes a "circle" look like an egg rather than a clean
+        //    ellipse, and it is the part a haversine-style spherical treatment addresses.
+        //
+        // Corrected, `size` finally means the same angle on both axes and a circle is a circle
+        // wherever it is aimed. Note the two errors happen to cancel at 60 degrees of elevation,
+        // which is presumably why this was never obvious.
+        if (geoTrue) {
+            const float TILT_DEG_PER_UNIT = 270.0f / 65535.0f;
+            // Elevation of THIS sample, not of the pattern centre -- correcting per sample is
+            // what removes the egg shape rather than just the average width error.
+            float elevRad = ((float)centerT + ry - (float)geoTiltRef)
+                          * TILT_DEG_PER_UNIT * (PI_F / 180.0f);
+            // The magnitude is what matters, and taking it has a second, useful consequence:
+            // with 270 degrees of tilt the beam passes through horizontal TWICE, once on each
+            // side, and those two positions are 180 degrees of tilt apart. cos(e-180) = -cos(e),
+            // so the absolute value makes both references give an identical correction --
+            // verified to 1e-15 across the whole tilt range. Whichever horizontal is easier to
+            // aim accurately is the right one to calibrate against.
+            float c = cosf(elevRad);
+            if (c < 0.0f) c = -c;
+            // Near the pan axis the required pan angle goes to infinity. Clamped at 1/0.15, so
+            // roughly a sevenfold stretch: past that the motor cannot follow anyway and the only
+            // effect would be slamming into the pan limits.
+            if (c < 0.15f) c = 0.15f;
+            rx = rx * 0.5f / c;
+        }
 
         // No software compensation for the tilt-axis defect around DMX tilt ~127 (8-bit) -- see
         // mapping_sheds_160w_3in1_gobo.md / history.md 2026-08-20 for the full diagnosis. A prior
